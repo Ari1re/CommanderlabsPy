@@ -8,7 +8,7 @@ use crate::{
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct TypeStats {
     pub lands: u32,
     pub creatures: u32,
@@ -20,7 +20,7 @@ pub struct TypeStats {
     pub battles: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct RoleStats {
     pub ramp: u32,
     pub draw: u32,
@@ -33,7 +33,7 @@ pub struct RoleStats {
     pub graveyard: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct CardRoles {
     pub ramp: bool,
     pub draw: bool,
@@ -65,7 +65,7 @@ impl CardRoles {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CutCandidate {
     pub card: String,
     pub score: i32,
@@ -73,7 +73,7 @@ pub struct CutCandidate {
     pub reason: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AddSuggestion {
     pub card: String,
     pub role: String,
@@ -81,7 +81,7 @@ pub struct AddSuggestion {
     pub tag_fit: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DeckAnalysis {
     pub deck_name: String,
     pub commanders: Vec<String>,

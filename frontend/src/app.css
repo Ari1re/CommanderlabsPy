@@ -1,0 +1,335 @@
+@import '@fontsource/marcellus/400.css';
+@import '@fontsource/atkinson-hyperlegible/400.css';
+@import '@fontsource/atkinson-hyperlegible/700.css';
+
+/* ------------------------------------------------------------------------
+   Tokens
+   Plum ink + parchment text + foil brass. Mana colours only appear where
+   they carry data (identity, mana charts).
+   ------------------------------------------------------------------------ */
+:root,
+[data-theme='dark'] {
+  --ink: #1a1622;
+  --ink-2: #211c2b;
+  --panel: #241f2e;
+  --panel-2: #2c2638;
+  --line: #3a3247;
+  --line-soft: #2f2939;
+  --text: #ece4d4;
+  --text-2: #b9aec6;
+  --muted: #8a7f99;
+  --brass: #c9a45c;
+  --brass-strong: #e0bc72;
+  --brass-ink: #241a08;
+  --danger: #e2735f;
+  --ok: #7cc28a;
+  --shadow: 0 18px 40px rgba(8, 5, 14, 0.55);
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --ink: #f2f0f6;
+  --ink-2: #e9e6ef;
+  --panel: #ffffff;
+  --panel-2: #f6f4f9;
+  --line: #d9d3e2;
+  --line-soft: #e7e2ee;
+  --text: #241f2e;
+  --text-2: #4d4559;
+  --muted: #7a7187;
+  --brass: #9a7426;
+  --brass-strong: #7f5f1c;
+  --brass-ink: #fffaf0;
+  --danger: #b8432e;
+  --ok: #2f7d43;
+  --shadow: 0 18px 40px rgba(40, 30, 60, 0.18);
+  color-scheme: light;
+}
+
+:root {
+  --w: #efe6c6;
+  --u: #4f93d6;
+  --b: #7d6f86;
+  --r: #dd5b3c;
+  --g: #3f9a5b;
+  --c: #b3aaa1;
+
+  --display: 'Marcellus', 'Palatino Linotype', Georgia, serif;
+  --body: 'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-card: 4.75% / 3.5%; /* real card corner ratio */
+
+  --rail: 76px;
+  --tabbar: 64px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--display);
+  font-weight: 400;
+  margin: 0;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+}
+h1 {
+  font-size: clamp(1.9rem, 3.4vw, 2.75rem);
+}
+h2 {
+  font-size: 1.45rem;
+}
+h3 {
+  font-size: 1.12rem;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--brass-strong);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--brass) 45%, transparent);
+}
+
+/* ------------------------------------------------------------------------
+   Controls
+   ------------------------------------------------------------------------ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 38px;
+  padding: 0 0.95rem;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+.btn:hover {
+  border-color: var(--muted);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn.primary {
+  background: var(--brass);
+  border-color: var(--brass);
+  color: var(--brass-ink);
+}
+.btn.primary:hover {
+  background: var(--brass-strong);
+}
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-2);
+}
+.btn.ghost:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.btn.danger {
+  color: var(--danger);
+}
+.btn.small {
+  min-height: 30px;
+  padding: 0 0.6rem;
+  font-size: 0.85rem;
+}
+.btn.icon {
+  padding: 0;
+  width: 38px;
+}
+.btn.small.icon {
+  width: 30px;
+}
+
+.field {
+  display: grid;
+  gap: 0.35rem;
+}
+.field > span {
+  color: var(--text-2);
+  font-size: 0.88rem;
+}
+.input,
+select.input,
+textarea.input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--ink-2);
+  color: var(--text);
+}
+textarea.input {
+  resize: vertical;
+  line-height: 1.45;
+}
+.input:focus {
+  border-color: var(--brass);
+  outline: none;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--ink-2);
+}
+.segmented button {
+  border: 0;
+  background: transparent;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+  color: var(--text-2);
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+.segmented button[aria-pressed='true'] {
+  background: var(--panel-2);
+  color: var(--brass-strong);
+}
+
+.muted {
+  color: var(--muted);
+}
+.dim {
+  color: var(--text-2);
+}
+.small {
+  font-size: 0.86rem;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+}
+
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.spacer {
+  flex: 1;
+}
+
+.empty {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  padding: 2rem 0;
+  max-width: 34rem;
+}
+
+.progress {
+  height: 6px;
+  background: var(--line-soft);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.progress > i {
+  display: block;
+  height: 100%;
+  background: var(--brass);
+  transition: width 0.4s ease;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 99px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  border: 1px solid var(--line);
+  color: var(--text-2);
+}
+.badge.brass {
+  border-color: var(--brass);
+  color: var(--brass-strong);
+}
+.badge.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.badge.ok {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.card-img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 63 / 88;
+  border-radius: var(--r-card);
+  background: var(--panel-2);
+  object-fit: cover;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

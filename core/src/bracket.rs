@@ -6,7 +6,7 @@ use crate::{
 };
 use anyhow::Result;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct BracketEstimate {
     pub bracket: u8,
     pub label: String,

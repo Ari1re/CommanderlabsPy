@@ -44,14 +44,14 @@ pub struct GeneratedDeck {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GenerationTheme {
     pub name: String,
     pub score: i32,
     pub reason: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GenerationProgress {
     pub percent: u16,
     pub step: String,
