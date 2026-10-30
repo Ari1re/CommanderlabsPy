@@ -15,7 +15,7 @@ const USER_AGENT_VALUE: &str =
     concat!("CommanderLab/", env!("CARGO_PKG_VERSION"), " (local Commander deck analyzer)");
 const CACHE_HOURS: u64 = 72;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct EdhrecTheme {
     pub name: String,
     pub slug: String,

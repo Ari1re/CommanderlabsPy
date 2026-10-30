@@ -9,3 +9,5 @@
 /android/app/build
 /android/app/src/main/jniLibs
 /android/local.properties
+/frontend/node_modules
+/frontend/dist

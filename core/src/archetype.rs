@@ -5,7 +5,7 @@ use crate::{
 use anyhow::Result;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ArchetypeTag {
     pub name: String,
     pub score: i32,

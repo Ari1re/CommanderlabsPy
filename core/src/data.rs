@@ -24,7 +24,7 @@ const DATA_DIR: &str = "./data";
 const DEBUG_DIR: &str = "./data/debug";
 const BULK_GZIP_PATH: &str = "./data/oracle-cards.jsonl.gz";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Card {
     pub oracle_id: String,
     pub name: String,
@@ -56,7 +56,7 @@ pub struct CardDb {
 }
 
 /// A card's default printing as recorded from Scryfall Oracle bulk data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PrintingInfo {
     pub name: String,
     pub set_code: String,
@@ -491,6 +491,48 @@ impl CardDb {
         }
 
         Ok(cards)
+    }
+
+    /// Card-name search for the deck editor: prefix matches first, then
+    /// substring matches, most-played (EDHREC rank) first.
+    pub fn search_cards(&self, query: &str, limit: usize) -> Result<Vec<Card>> {
+        let needle = query.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT oracle_id, name, mana_cost, cmc, type_line, oracle_text,
+                   color_identity, produced_mana, commander_legal,
+                   edhrec_rank, keywords, is_basic, commander_eligible,
+                   image_uri, price_usd, price_usd_foil, price_eur,
+                   price_eur_foil, price_tix, tcgplayer_uri,
+                   cardmarket_uri, cardhoarder_uri, game_changer
+            FROM cards
+            WHERE name_lower LIKE ?1
+            ORDER BY
+                CASE WHEN name_lower = ?2 THEN 0
+                     WHEN name_lower LIKE ?3 THEN 1
+                     ELSE 2 END,
+                edhrec_rank IS NULL,
+                edhrec_rank ASC,
+                name ASC
+            LIMIT ?4
+            "#,
+        )?;
+
+        let rows = stmt.query_map(
+            params![
+                format!("%{needle}%"),
+                needle,
+                format!("{needle}%"),
+                limit as i64
+            ],
+            row_to_card,
+        )?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
     pub fn update_from_scryfall(&mut self) -> Result<usize> {

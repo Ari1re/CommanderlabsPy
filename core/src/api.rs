@@ -1,0 +1,1267 @@
+//! JSON API used by every Commander Lab front end.
+//!
+//! One entry point: [`Engine::call`]`(command, args) -> JSON`. The Tauri app
+//! forwards `invoke("api", { cmd, args })` here and the web server forwards
+//! `POST /api/<cmd>` here, so both run exactly the same logic.
+//!
+//! All file paths are relative to the data directory; [`Engine::new`] makes it
+//! the process working directory, which is what the engine modules expect
+//! (`./decks`, `./data`, `./exports`).
+
+use crate::{
+    ai::{chat_with_deck_agent, model_presets, AgentChatMessage, AiConfig, AiProvider},
+    ai_runtime::LocalAiRuntime,
+    analysis::{analyze_deck, classify_card, CardRoles},
+    archidekt::import_archidekt,
+    bracket::refine_with_combo_report,
+    commander::{commander_name_suggestions, resolve_generation_commanders},
+    data::{Card, CardDb},
+    deck::{
+        deck_to_moxfield_text, deck_to_text, load_deck_files, parse_deck_file, parse_deck_text,
+        safe_deck_filename, write_deck_file, DeckEntry, ExportPrinting, ParsedDeck,
+    },
+    deck_history::{delete_history, load_history, render_history_lines, save_agent_session},
+    deep_agent::{run_optimization_agent, OptimizationGoal},
+    deep_learn::TestingIntensity,
+    generator::{
+        game_plan_markdown, generate_optimized_deck, suggest_generation_themes, GamePlan,
+        GeneratedDeck, GenerationBracket,
+    },
+    jobs::Jobs,
+    moxfield::import_moxfield,
+    mpc::{MpcClient, MpcConfig, MpcOrder, OrderLine},
+    simulation::run_draw_simulation,
+    sources::{
+        delete_sources_sidecar, load_sources_for_deck, save_sources_for_deck,
+        sources_for_existing_deck, DeckSource,
+    },
+    spellbook::find_my_combos,
+    user_reference::import_user_reference,
+};
+use anyhow::{anyhow, bail, Context, Result};
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::{json, Map, Value};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::UNIX_EPOCH,
+};
+
+pub const DB_PATH: &str = "./data/cards.sqlite";
+const DECKS_DIR: &str = "./decks";
+const EXPORTS_DIR: &str = "./exports";
+const SETTINGS_PATH: &str = "./data/ui_settings.json";
+
+pub struct Engine {
+    root: PathBuf,
+    platform: String,
+    db: Mutex<CardDb>,
+    jobs: Arc<Jobs>,
+    mpc_orders: Mutex<HashMap<String, MpcOrder>>,
+    ai_runtime: Mutex<Option<LocalAiRuntime>>,
+}
+
+fn arg<T: DeserializeOwned>(args: &Value, key: &str) -> Result<T> {
+    let value = args.get(key).cloned().unwrap_or(Value::Null);
+    serde_json::from_value(value).with_context(|| format!("Missing or invalid argument '{key}'"))
+}
+
+fn opt<T: DeserializeOwned>(args: &Value, key: &str) -> Option<T> {
+    args.get(key)
+        .cloned()
+        .filter(|v| !v.is_null())
+        .and_then(|v| serde_json::from_value(v).ok())
+}
+
+fn to_value<T: Serialize>(value: T) -> Result<Value> {
+    serde_json::to_value(value).map_err(Into::into)
+}
+
+// ---------------------------------------------------------------------------
+// View models
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CardView {
+    #[serde(flatten)]
+    pub card: Card,
+    pub roles: CardRoles,
+    pub kind: &'static str,
+    pub set_code: Option<String>,
+    pub collector_number: Option<String>,
+    pub double_faced: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EntryView {
+    pub quantity: u32,
+    pub name: String,
+    pub zone: &'static str,
+    pub card: Option<CardView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeckSummary {
+    pub name: String,
+    pub commanders: Vec<String>,
+    pub identity: String,
+    pub cards: u32,
+    pub image: String,
+    pub modified_ms: u128,
+    pub has_plan: bool,
+    pub price_usd: f64,
+}
+
+/// Primary card type used for grouping, Moxfield-style.
+pub fn card_kind(type_line: &str) -> &'static str {
+    let front = type_line.split("//").next().unwrap_or(type_line).to_ascii_lowercase();
+    if front.contains("creature") {
+        "Creature"
+    } else if front.contains("planeswalker") {
+        "Planeswalker"
+    } else if front.contains("battle") {
+        "Battle"
+    } else if front.contains("instant") {
+        "Instant"
+    } else if front.contains("sorcery") {
+        "Sorcery"
+    } else if front.contains("land") {
+        "Land"
+    } else if front.contains("artifact") {
+        "Artifact"
+    } else if front.contains("enchantment") {
+        "Enchantment"
+    } else {
+        "Other"
+    }
+}
+
+impl Engine {
+    /// Create the engine with `root` as the data directory (decks, card
+    /// database, exports, settings).
+    pub fn new(root: impl Into<PathBuf>, platform: &str) -> Result<Arc<Self>> {
+        let root = root.into();
+        fs::create_dir_all(&root).with_context(|| format!("Could not create {}", root.display()))?;
+        std::env::set_current_dir(&root)
+            .with_context(|| format!("Could not enter {}", root.display()))?;
+        for dir in [DECKS_DIR, "./data", "./data/images", EXPORTS_DIR] {
+            fs::create_dir_all(dir)?;
+        }
+
+        let db = CardDb::open(DB_PATH)?;
+
+        Ok(Arc::new(Self {
+            root,
+            platform: platform.to_string(),
+            db: Mutex::new(db),
+            jobs: Arc::new(Jobs::default()),
+            mpc_orders: Mutex::new(HashMap::new()),
+            ai_runtime: Mutex::new(None),
+        }))
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn shutdown(&self) {
+        if let Some(runtime) = self.ai_runtime.lock().unwrap().as_mut() {
+            runtime.shutdown();
+        }
+    }
+
+    /// Dispatch one API command.
+    pub fn call(self: &Arc<Self>, cmd: &str, args: Value) -> Result<Value> {
+        let a = &args;
+        match cmd {
+            // --- app ----------------------------------------------------------
+            "status" => self.status(),
+            "settings_get" => Ok(read_settings()),
+            "settings_set" => self.settings_set(a),
+
+            // --- jobs ---------------------------------------------------------
+            "job" => {
+                let id: u64 = arg(a, "id")?;
+                to_value(self.jobs.get(id).ok_or_else(|| anyhow!("Unknown job {id}"))?)
+            }
+            "jobs" => to_value(self.jobs.list()),
+
+            // --- card data ------------------------------------------------------
+            "update_cards" => Ok(json!({ "job": self.start_update_cards() })),
+            "card" => self.card(&arg::<String>(a, "name")?),
+            "search_cards" => self.search_cards(&arg::<String>(a, "query")?, opt(a, "limit").unwrap_or(20)),
+            "commander_suggestions" => self.commander_suggestions(&arg::<String>(a, "query")?),
+
+            // --- deck library --------------------------------------------------
+            "list_decks" => self.list_decks(),
+            "deck" => self.deck(&arg::<String>(a, "name")?),
+            "deck_text" => {
+                let deck = self.load(&arg::<String>(a, "name")?)?;
+                Ok(json!({ "text": deck_to_text(&deck) }))
+            }
+            "save_deck_text" => self.save_deck_text(&arg::<String>(a, "name")?, &arg::<String>(a, "text")?, opt(a, "overwrite").unwrap_or(false)),
+            "import_url" => Ok(json!({ "job": self.start_import_url(arg(a, "url")?, opt(a, "name")) })),
+            "delete_deck" => self.delete_deck(&arg::<String>(a, "name")?),
+            "rename_deck" => self.rename_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
+            "duplicate_deck" => self.duplicate_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
+            "edit_deck" => self.edit_deck(&arg::<String>(a, "name")?, a),
+            "apply_suggestion" => self.apply_suggestion(&arg::<String>(a, "name")?, opt(a, "cut"), opt(a, "add")),
+
+            // --- analysis ---------------------------------------------------------
+            "analyze" => self.analyze(&arg::<String>(a, "name")?),
+            "simulate" => self.simulate(&arg::<String>(a, "name")?, opt(a, "runs").unwrap_or(50_000)),
+            "combos" => Ok(json!({ "job": self.start_combos(arg(a, "name")?) })),
+            "history" => {
+                let path = self.deck_path(&arg::<String>(a, "name")?)?;
+                Ok(json!({ "lines": render_history_lines(&path) }))
+            }
+
+            // --- sources ----------------------------------------------------------
+            "sources" => self.sources(&arg::<String>(a, "name")?),
+            "add_reference" => Ok(json!({ "job": self.start_add_reference(arg(a, "name")?, arg(a, "url")?) })),
+            "remove_reference" => self.remove_reference(&arg::<String>(a, "name")?, &arg::<String>(a, "url")?),
+
+            // --- generation -------------------------------------------------------
+            "generation_themes" => self.generation_themes(&arg::<String>(a, "commander")?),
+            "generate" => Ok(json!({ "job": self.start_generate(arg(a, "commander")?, opt(a, "theme").unwrap_or_default(), opt(a, "bracket").unwrap_or(3))? })),
+
+            // --- exports ----------------------------------------------------------
+            "export_moxfield" => self.export_moxfield(&arg::<String>(a, "name")?),
+
+            // --- MPC ----------------------------------------------------------------
+            "mpc_config" => to_value(MpcConfig::load_or_create()),
+            "mpc_config_set" => self.mpc_config_set(a),
+            "mpc_order" => self.mpc_order(&arg::<String>(a, "name")?, opt(a, "rebuild").unwrap_or(false)),
+            "mpc_search" => Ok(json!({ "job": self.start_mpc_search(arg(a, "name")?)? })),
+            "mpc_select" => self.mpc_select(&arg::<String>(a, "name")?, arg(a, "index")?, opt(a, "back").unwrap_or(false), arg(a, "selected")?),
+            "mpc_export" => self.mpc_export(&arg::<String>(a, "name")?),
+
+            // --- AI -----------------------------------------------------------------
+            "ai_status" => self.ai_status(),
+            "ai_config_set" => self.ai_config_set(a),
+            "ai_start" => Ok(json!({ "job": self.start_ai_runtime() })),
+            "ai_stop" => {
+                if let Some(mut runtime) = self.ai_runtime.lock().unwrap().take() {
+                    runtime.shutdown();
+                }
+                self.ai_status()
+            }
+            "agent_state" => self.agent_state(&arg::<String>(a, "name")?),
+            "agent_run" => Ok(json!({ "job": self.start_agent(a)? })),
+            "agent_chat" => Ok(json!({ "job": self.start_chat(arg(a, "name")?, arg(a, "message")?)? })),
+            "agent_chat_clear" => self.chat_clear(&arg::<String>(a, "name")?),
+            "agent_save" => self.agent_save(&arg::<String>(a, "name")?, opt(a, "iteration")),
+
+            other => bail!("Unknown command '{other}'"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // App
+    // -----------------------------------------------------------------------
+
+    fn status(&self) -> Result<Value> {
+        let cards = self.db.lock().unwrap().card_count().unwrap_or(0);
+        let decks = load_deck_files(DECKS_DIR).map(|d| d.len()).unwrap_or(0);
+        Ok(json!({
+            "version": crate::VERSION,
+            "platform": self.platform,
+            "data_dir": self.root.display().to_string(),
+            "cards": cards,
+            "card_data_ready": cards > 1000,
+            "decks": decks,
+            "ai_running": self.ai_runtime.lock().unwrap().is_some(),
+        }))
+    }
+
+    fn settings_set(&self, args: &Value) -> Result<Value> {
+        let mut settings = read_settings();
+        if let (Some(target), Some(patch)) = (settings.as_object_mut(), args.get("settings").and_then(Value::as_object)) {
+            for (k, v) in patch {
+                target.insert(k.clone(), v.clone());
+            }
+        }
+        fs::write(SETTINGS_PATH, serde_json::to_string_pretty(&settings)?)?;
+        Ok(settings)
+    }
+
+    // -----------------------------------------------------------------------
+    // Card data
+    // -----------------------------------------------------------------------
+
+    fn card_view(&self, db: &CardDb, card: Card) -> CardView {
+        let printing = db.printing(&card.name).ok().flatten();
+        CardView {
+            roles: classify_card(&card),
+            kind: card_kind(&card.type_line),
+            set_code: printing.as_ref().map(|p| p.set_code.clone()),
+            collector_number: printing.as_ref().map(|p| p.collector_number.clone()),
+            double_faced: printing.map(|p| p.double_faced).unwrap_or(false),
+            card,
+        }
+    }
+
+    fn card(&self, name: &str) -> Result<Value> {
+        let db = self.db.lock().unwrap();
+        let card = db.get_card(name)?.ok_or_else(|| anyhow!("'{name}' is not in the card database."))?;
+        to_value(self.card_view(&db, card))
+    }
+
+    fn search_cards(&self, query: &str, limit: usize) -> Result<Value> {
+        let db = self.db.lock().unwrap();
+        let cards = db.search_cards(query, limit.clamp(1, 60))?;
+        to_value(cards.into_iter().map(|c| self.card_view(&db, c)).collect::<Vec<_>>())
+    }
+
+    fn commander_suggestions(&self, query: &str) -> Result<Value> {
+        let db = self.db.lock().unwrap();
+        let cards = commander_name_suggestions(query, &db, 12)?;
+        to_value(cards.into_iter().map(|c| self.card_view(&db, c)).collect::<Vec<_>>())
+    }
+
+    fn start_update_cards(self: &Arc<Self>) -> u64 {
+        if let Some(id) = self.jobs.running("update_cards", "") {
+            return id;
+        }
+        let engine = self.clone();
+        self.jobs.spawn("update_cards", "", move |job| {
+            job.progress(5, "Downloading Scryfall card data", "This takes a minute or two.");
+            let mut db = CardDb::open(DB_PATH)?;
+            let count = db.update_from_scryfall()?;
+            job.progress(95, "Reloading card database", format!("{count} cards"));
+            *engine.db.lock().unwrap() = CardDb::open(DB_PATH)?;
+            Ok(json!({ "cards": count }))
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Deck library
+    // -----------------------------------------------------------------------
+
+    fn deck_path(&self, name: &str) -> Result<PathBuf> {
+        load_deck_files(DECKS_DIR)?
+            .into_iter()
+            .find(|d| d.name == name)
+            .map(|d| d.path)
+            .ok_or_else(|| anyhow!("Deck '{name}' was not found."))
+    }
+
+    fn load(&self, name: &str) -> Result<ParsedDeck> {
+        let mut deck = parse_deck_file(&self.deck_path(name)?)?;
+        deck.name = name.to_string();
+        Ok(deck)
+    }
+
+    fn save(&self, name: &str, deck: &ParsedDeck) -> Result<()> {
+        write_deck_file(&self.deck_path(name)?, deck)?;
+        self.mpc_orders.lock().unwrap().remove(name);
+        Ok(())
+    }
+
+    fn unique_name(&self, wanted: &str) -> Result<String> {
+        let base = safe_deck_filename(wanted);
+        let existing: Vec<String> = load_deck_files(DECKS_DIR)?.into_iter().map(|d| d.name).collect();
+        if !existing.iter().any(|n| n.eq_ignore_ascii_case(&base)) {
+            return Ok(base);
+        }
+        for i in 2.. {
+            let candidate = format!("{base} ({i})");
+            if !existing.iter().any(|n| n.eq_ignore_ascii_case(&candidate)) {
+                return Ok(candidate);
+            }
+        }
+        unreachable!()
+    }
+
+    fn list_decks(&self) -> Result<Value> {
+        let db = self.db.lock().unwrap();
+        let mut out = Vec::new();
+        for file in load_deck_files(DECKS_DIR)? {
+            let Ok(deck) = parse_deck_file(&file.path) else { continue };
+            let commanders: Vec<Card> = deck
+                .commanders
+                .iter()
+                .filter_map(|e| db.get_card(&e.name).ok().flatten())
+                .collect();
+            let mut identity = String::new();
+            for c in ['W', 'U', 'B', 'R', 'G'] {
+                if commanders.iter().any(|card| card.color_identity.contains(c)) {
+                    identity.push(c);
+                }
+            }
+            let mut price = 0.0;
+            for entry in deck.commanders.iter().chain(deck.main.iter()) {
+                if let Ok(Some(card)) = db.get_card(&entry.name) {
+                    price += card.price_usd.unwrap_or(0.0) * entry.quantity as f64;
+                }
+            }
+            let modified_ms = fs::metadata(&file.path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            out.push(DeckSummary {
+                name: file.name.clone(),
+                commanders: deck.commanders.iter().map(|e| e.name.clone()).collect(),
+                identity,
+                cards: deck.commanders.iter().chain(deck.main.iter()).map(|e| e.quantity).sum(),
+                image: commanders.first().map(|c| c.image_uri.clone()).unwrap_or_default(),
+                modified_ms,
+                has_plan: file.path.with_extension("plan.json").exists(),
+                price_usd: (price * 100.0).round() / 100.0,
+            });
+        }
+        out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+        to_value(out)
+    }
+
+    fn deck(&self, name: &str) -> Result<Value> {
+        let deck = self.load(name)?;
+        let path = self.deck_path(name)?;
+        let db = self.db.lock().unwrap();
+
+        let mut entries = Vec::new();
+        for (zone, list) in [("commander", &deck.commanders), ("main", &deck.main), ("sideboard", &deck.sideboard)] {
+            for entry in list {
+                let card = db.get_card(&entry.name).ok().flatten().map(|c| self.card_view(&db, c));
+                entries.push(EntryView {
+                    quantity: entry.quantity,
+                    name: card.as_ref().map(|c| c.card.name.clone()).unwrap_or_else(|| entry.name.clone()),
+                    zone,
+                    card,
+                });
+            }
+        }
+
+        let plan: Option<GamePlan> = fs::read_to_string(path.with_extension("plan.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok());
+
+        Ok(json!({
+            "name": name,
+            "entries": entries,
+            "plan": plan,
+            "plan_markdown": fs::read_to_string(path.with_extension("plan.md")).ok(),
+        }))
+    }
+
+    fn save_deck_text(&self, name: &str, text: &str, overwrite: bool) -> Result<Value> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("Give the deck a name.");
+        }
+        let mut deck = parse_deck_text(name, text)?;
+        if deck.main.is_empty() && deck.commanders.is_empty() {
+            bail!("No cards were recognised in that list.");
+        }
+        let final_name = if overwrite && self.deck_path(name).is_ok() {
+            safe_deck_filename(name)
+        } else {
+            self.unique_name(name)?
+        };
+        deck.name = final_name.clone();
+        let path = PathBuf::from(DECKS_DIR).join(format!("{final_name}.txt"));
+        write_deck_file(&path, &deck)?;
+        self.mpc_orders.lock().unwrap().remove(&final_name);
+        Ok(json!({ "name": final_name }))
+    }
+
+    fn start_import_url(self: &Arc<Self>, url: String, name: Option<String>) -> u64 {
+        let engine = self.clone();
+        self.jobs.spawn("import_url", &url.clone(), move |job| {
+            job.progress(20, "Importing deck", url.clone());
+            let lower = url.to_ascii_lowercase();
+            let deck = if lower.contains("moxfield.com") {
+                import_moxfield(&url)?
+            } else if lower.contains("archidekt.com") {
+                import_archidekt(&url)?
+            } else {
+                bail!("Paste a Moxfield or Archidekt deck link.");
+            };
+            let wanted = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| deck.name.clone());
+            let final_name = engine.unique_name(&wanted)?;
+            let mut deck = deck;
+            deck.name = final_name.clone();
+            write_deck_file(&PathBuf::from(DECKS_DIR).join(format!("{final_name}.txt")), &deck)?;
+            Ok(json!({ "name": final_name }))
+        })
+    }
+
+    fn sidecars(path: &Path) -> Vec<PathBuf> {
+        vec![
+            path.with_extension("plan.md"),
+            path.with_extension("plan.json"),
+        ]
+    }
+
+    fn delete_deck(&self, name: &str) -> Result<Value> {
+        let path = self.deck_path(name)?;
+        fs::remove_file(&path)?;
+        delete_sources_sidecar(&path);
+        delete_history(&path);
+        for extra in Self::sidecars(&path) {
+            let _ = fs::remove_file(extra);
+        }
+        self.mpc_orders.lock().unwrap().remove(name);
+        Ok(json!({ "deleted": name }))
+    }
+
+    fn copy_deck(&self, name: &str, new_name: &str, keep_original: bool) -> Result<Value> {
+        let from = self.deck_path(name)?;
+        let final_name = self.unique_name(new_name)?;
+        let to = PathBuf::from(DECKS_DIR).join(format!("{final_name}.txt"));
+        let mut deck = parse_deck_file(&from)?;
+        deck.name = final_name.clone();
+        write_deck_file(&to, &deck)?;
+        for (a, b) in Self::sidecars(&from).into_iter().zip(Self::sidecars(&to)) {
+            if a.exists() {
+                let _ = fs::copy(&a, &b);
+            }
+        }
+        if let Ok(Some(sources)) = load_sources_for_deck(&from) {
+            let _ = save_sources_for_deck(&to, &sources);
+        }
+        if !keep_original {
+            self.delete_deck(name)?;
+        }
+        Ok(json!({ "name": final_name }))
+    }
+
+    fn rename_deck(&self, name: &str, new_name: &str) -> Result<Value> {
+        if new_name.trim().is_empty() {
+            bail!("Give the deck a name.");
+        }
+        self.copy_deck(name, new_name, false)
+    }
+
+    fn duplicate_deck(&self, name: &str, new_name: &str) -> Result<Value> {
+        self.copy_deck(name, new_name, true)
+    }
+
+    fn zone_mut<'a>(deck: &'a mut ParsedDeck, zone: &str) -> Result<&'a mut Vec<DeckEntry>> {
+        Ok(match zone {
+            "commander" => &mut deck.commanders,
+            "main" => &mut deck.main,
+            "sideboard" => &mut deck.sideboard,
+            other => bail!("Unknown zone '{other}'"),
+        })
+    }
+
+    fn canonical(&self, name: &str) -> String {
+        self.db
+            .lock()
+            .unwrap()
+            .get_card(name)
+            .ok()
+            .flatten()
+            .map(|c| c.name)
+            .unwrap_or_else(|| name.trim().to_string())
+    }
+
+    fn take(list: &mut Vec<DeckEntry>, card: &str, qty: Option<u32>) -> u32 {
+        let Some(index) = list.iter().position(|e| e.name.eq_ignore_ascii_case(card)) else {
+            return 0;
+        };
+        let take = qty.unwrap_or(list[index].quantity).min(list[index].quantity);
+        list[index].quantity -= take;
+        if list[index].quantity == 0 {
+            list.remove(index);
+        }
+        take
+    }
+
+    fn put(list: &mut Vec<DeckEntry>, card: &str, qty: u32) {
+        if qty == 0 {
+            return;
+        }
+        if let Some(entry) = list.iter_mut().find(|e| e.name.eq_ignore_ascii_case(card)) {
+            entry.quantity += qty;
+        } else {
+            list.push(DeckEntry { quantity: qty, name: card.to_string() });
+        }
+    }
+
+    /// Moxfield-style editing: add, remove, set quantity, move between zones.
+    fn edit_deck(&self, name: &str, args: &Value) -> Result<Value> {
+        let mut deck = self.load(name)?;
+        let action: String = arg(args, "action")?;
+        let card_arg: String = arg(args, "card")?;
+        let card = self.canonical(&card_arg);
+        let zone: String = opt(args, "zone").unwrap_or_else(|| "main".to_string());
+        let qty: Option<u32> = opt(args, "qty");
+
+        match action.as_str() {
+            "add" => Self::put(Self::zone_mut(&mut deck, &zone)?, &card, qty.unwrap_or(1)),
+            "remove" => {
+                let list = Self::zone_mut(&mut deck, &zone)?;
+                if Self::take(list, &card, qty) == 0 {
+                    Self::take(list, &card_arg, qty);
+                }
+            }
+            "set_qty" => {
+                let list = Self::zone_mut(&mut deck, &zone)?;
+                Self::take(list, &card, None);
+                Self::put(list, &card, qty.unwrap_or(0));
+            }
+            "move" => {
+                let to: String = arg(args, "to")?;
+                let moved = Self::take(Self::zone_mut(&mut deck, &zone)?, &card, qty);
+                let moved = if moved == 0 {
+                    Self::take(Self::zone_mut(&mut deck, &zone)?, &card_arg, qty)
+                } else {
+                    moved
+                };
+                if moved == 0 {
+                    bail!("{card} is not in the {zone}.");
+                }
+                let to_list = Self::zone_mut(&mut deck, &to)?;
+                Self::put(to_list, &card, if to == "commander" { 1 } else { moved });
+            }
+            other => bail!("Unknown edit action '{other}'"),
+        }
+
+        self.save(name, &deck)?;
+        self.deck(name)
+    }
+
+    fn apply_suggestion(&self, name: &str, cut: Option<String>, add: Option<String>) -> Result<Value> {
+        let mut deck = self.load(name)?;
+        if let Some(cut) = cut {
+            let cut = self.canonical(&cut);
+            let moved = Self::take(&mut deck.main, &cut, None);
+            Self::put(&mut deck.sideboard, &cut, moved.max(1));
+        }
+        if let Some(add) = add {
+            let add = self.canonical(&add);
+            Self::take(&mut deck.sideboard, &add, None);
+            Self::put(&mut deck.main, &add, 1);
+        }
+        self.save(name, &deck)?;
+        self.deck(name)
+    }
+
+    // -----------------------------------------------------------------------
+    // Analysis
+    // -----------------------------------------------------------------------
+
+    fn analyze(&self, name: &str) -> Result<Value> {
+        let deck = self.load(name)?;
+        let db = self.db.lock().unwrap();
+        if !db.has_cards() {
+            bail!("Download the card database first (Update card data).");
+        }
+        to_value(analyze_deck(&deck, &db)?)
+    }
+
+    fn simulate(&self, name: &str, runs: u32) -> Result<Value> {
+        let deck = self.load(name)?;
+        let db = self.db.lock().unwrap();
+        to_value(run_draw_simulation(&deck, &db, runs.clamp(1_000, 200_000))?)
+    }
+
+    fn start_combos(self: &Arc<Self>, name: String) -> u64 {
+        if let Some(id) = self.jobs.running("combos", &name) {
+            return id;
+        }
+        let engine = self.clone();
+        self.jobs.spawn("combos", &name.clone(), move |job| {
+            job.progress(20, "Asking Commander Spellbook", name.clone());
+            let deck = engine.load(&name)?;
+            let report = find_my_combos(&deck)?;
+            let db = CardDb::open(DB_PATH)?;
+            let mut analysis = analyze_deck(&deck, &db)?;
+            refine_with_combo_report(&mut analysis.bracket, &report);
+            Ok(json!({ "report": report, "bracket": analysis.bracket }))
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Sources
+    // -----------------------------------------------------------------------
+
+    fn current_sources(&self, name: &str) -> Result<(PathBuf, Vec<DeckSource>)> {
+        let path = self.deck_path(name)?;
+        if let Some(saved) = load_sources_for_deck(&path)? {
+            return Ok((path, saved));
+        }
+        let deck = self.load(name)?;
+        let db = self.db.lock().unwrap();
+        let commanders: Vec<Card> = deck
+            .commanders
+            .iter()
+            .filter_map(|e| db.get_card(&e.name).ok().flatten())
+            .collect();
+        let bracket = analyze_deck(&deck, &db).map(|a| a.bracket.bracket).unwrap_or(3);
+        Ok((path, sources_for_existing_deck(&deck, &commanders, bracket)))
+    }
+
+    fn sources(&self, name: &str) -> Result<Value> {
+        let (_, sources) = self.current_sources(name)?;
+        let slim: Vec<Value> = sources
+            .iter()
+            .map(|s| {
+                json!({
+                    "source": s.source, "title": s.title, "url": s.url, "detail": s.detail,
+                    "user_provided": s.user_provided, "is_deck": s.reference_deck.is_some(),
+                })
+            })
+            .collect();
+        Ok(Value::Array(slim))
+    }
+
+    fn start_add_reference(self: &Arc<Self>, name: String, url: String) -> u64 {
+        let engine = self.clone();
+        self.jobs.spawn("add_reference", &name.clone(), move |job| {
+            job.progress(30, "Fetching reference", url.clone());
+            let source = import_user_reference(&url)?;
+            let (path, mut sources) = engine.current_sources(&name)?;
+            sources.retain(|s| s.url != source.url);
+            sources.insert(0, source);
+            save_sources_for_deck(&path, &sources)?;
+            engine.sources(&name)
+        })
+    }
+
+    fn remove_reference(&self, name: &str, url: &str) -> Result<Value> {
+        let (path, mut sources) = self.current_sources(name)?;
+        sources.retain(|s| !(s.user_provided && s.url == url));
+        save_sources_for_deck(&path, &sources)?;
+        self.sources(name)
+    }
+
+    // -----------------------------------------------------------------------
+    // Generation
+    // -----------------------------------------------------------------------
+
+    fn generation_themes(&self, commander: &str) -> Result<Value> {
+        let db = self.db.lock().unwrap();
+        let commanders = resolve_generation_commanders(commander, &db)?;
+        let themes = suggest_generation_themes(&commanders, &db)?;
+        Ok(json!({
+            "commanders": commanders.into_iter().map(|c| self.card_view(&db, c)).collect::<Vec<_>>(),
+            "themes": themes,
+        }))
+    }
+
+    fn start_generate(self: &Arc<Self>, commander: String, theme: String, bracket: u8) -> Result<u64> {
+        if !self.db.lock().unwrap().has_cards() {
+            bail!("Download the card database first (Update card data).");
+        }
+        let engine = self.clone();
+        Ok(self.jobs.spawn("generate", &commander.clone(), move |job| {
+            let db = CardDb::open(DB_PATH)?;
+            let generated = generate_optimized_deck(
+                &commander,
+                &theme,
+                GenerationBracket::new(bracket),
+                &db,
+                |p| job.progress(p.percent, p.step, p.detail),
+            )?;
+            let name = engine.save_generated(generated)?;
+            Ok(json!({ "name": name }))
+        }))
+    }
+
+    fn save_generated(&self, mut generated: GeneratedDeck) -> Result<String> {
+        let name = self.unique_name(&generated.deck.name)?;
+        generated.deck.name = name.clone();
+        let path = PathBuf::from(DECKS_DIR).join(format!("{name}.txt"));
+        write_deck_file(&path, &generated.deck)?;
+        fs::write(path.with_extension("plan.md"), game_plan_markdown(&generated.plan))?;
+        fs::write(path.with_extension("plan.json"), serde_json::to_string_pretty(&generated.plan)?)?;
+        save_sources_for_deck(&path, &generated.plan.sources)?;
+        Ok(name)
+    }
+
+    // -----------------------------------------------------------------------
+    // Moxfield export
+    // -----------------------------------------------------------------------
+
+    fn export_moxfield(&self, name: &str) -> Result<Value> {
+        let deck = self.load(name)?;
+        let db = self.db.lock().unwrap();
+        let text = deck_to_moxfield_text(&deck, |card| match db.printing(card) {
+            Ok(Some(p)) => ExportPrinting {
+                name: p.name,
+                set_code: Some(p.set_code),
+                collector_number: Some(p.collector_number),
+            },
+            _ => ExportPrinting {
+                name: db.get_card(card).ok().flatten().map(|c| c.name).unwrap_or_else(|| card.to_string()),
+                set_code: None,
+                collector_number: None,
+            },
+        });
+        let path = PathBuf::from(EXPORTS_DIR).join(format!("{}.moxfield.txt", safe_deck_filename(name)));
+        fs::write(&path, &text)?;
+        Ok(json!({
+            "text": text,
+            "path": self.root.join(&path).display().to_string(),
+            "with_printings": text.lines().filter(|l| l.ends_with(|c: char| c.is_ascii_alphanumeric()) && l.contains(") ")).count(),
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // MPC Autofill
+    // -----------------------------------------------------------------------
+
+    fn mpc_config_set(&self, args: &Value) -> Result<Value> {
+        let mut current = to_value(MpcConfig::load_or_create())?;
+        if let (Some(target), Some(patch)) = (current.as_object_mut(), args.get("config").and_then(Value::as_object)) {
+            for (k, v) in patch {
+                target.insert(k.clone(), v.clone());
+            }
+        }
+        let config: MpcConfig = serde_json::from_value(current)?;
+        config.save()?;
+        // Keep open orders in sync with stock/foil.
+        for order in self.mpc_orders.lock().unwrap().values_mut() {
+            order.stock = config.stock.clone();
+            order.foil = config.foil;
+            if !config.cardback_id.is_empty() {
+                order.cardback_id = config.cardback_id.clone();
+            }
+        }
+        to_value(config)
+    }
+
+    fn build_mpc_order(&self, name: &str) -> Result<MpcOrder> {
+        let deck = self.load(name)?;
+        let config = MpcConfig::load_or_create();
+        let db = self.db.lock().unwrap();
+
+        let mut entries = deck.commanders.clone();
+        entries.extend(deck.main.iter().cloned());
+        if config.include_sideboard {
+            entries.extend(deck.sideboard.iter().cloned());
+        }
+
+        let lines: Vec<OrderLine> = entries
+            .into_iter()
+            .map(|entry| {
+                let printing = db.printing(&entry.name).ok().flatten();
+                let canonical = printing
+                    .as_ref()
+                    .map(|p| p.name.clone())
+                    .or_else(|| db.get_card(&entry.name).ok().flatten().map(|c| c.name))
+                    .unwrap_or_else(|| entry.name.clone());
+                let faces = printing.filter(|p| p.double_faced).and_then(|_| {
+                    let mut split = canonical.split(" // ");
+                    match (split.next(), split.next()) {
+                        (Some(f), Some(b)) => Some((f.trim().to_string(), b.trim().to_string())),
+                        _ => None,
+                    }
+                });
+                let name = if faces.is_none() && canonical.contains(" // ") {
+                    canonical.split(" // ").next().unwrap_or(&canonical).to_string()
+                } else {
+                    canonical
+                };
+                OrderLine { name, quantity: entry.quantity, faces }
+            })
+            .collect();
+
+        Ok(MpcOrder::from_lines(name, &lines, &config))
+    }
+
+    fn mpc_order_view(order: &MpcOrder) -> Result<Value> {
+        let (resolved, total) = order.resolved_faces();
+        let mut value = to_value(order)?;
+        value["total_slots"] = json!(order.total_slots());
+        value["bracket"] = json!(order.bracket());
+        value["resolved"] = json!(resolved);
+        value["faces"] = json!(total);
+        Ok(value)
+    }
+
+    fn mpc_order(&self, name: &str, rebuild: bool) -> Result<Value> {
+        let mut orders = self.mpc_orders.lock().unwrap();
+        if rebuild || !orders.contains_key(name) {
+            drop(orders);
+            let mut fresh = self.build_mpc_order(name)?;
+            orders = self.mpc_orders.lock().unwrap();
+            // Keep art already chosen for cards still in the list.
+            if let Some(previous) = orders.get(name) {
+                for card in &mut fresh.cards {
+                    if let Some(old) = previous.cards.iter().find(|c| c.name == card.name) {
+                        card.front = old.front.clone();
+                        if card.back.is_some() {
+                            card.back = old.back.clone();
+                        }
+                    }
+                }
+                if fresh.cardback_id.is_empty() {
+                    fresh.cardback_id = previous.cardback_id.clone();
+                }
+            }
+            orders.insert(name.to_string(), fresh);
+        }
+        Self::mpc_order_view(orders.get(name).unwrap())
+    }
+
+    fn start_mpc_search(self: &Arc<Self>, name: String) -> Result<u64> {
+        self.mpc_order(&name, true)?;
+        let queries = self.mpc_orders.lock().unwrap().get(&name).map(|o| o.queries()).unwrap_or_default();
+        let config = MpcConfig::load_or_create();
+        let engine = self.clone();
+        Ok(self.jobs.spawn("mpc_search", &name.clone(), move |job| {
+            job.progress(2, "Searching MPC Autofill", format!("{} faces at {}", queries.len(), config.backend_url));
+            let client = MpcClient::new(&config)?;
+            let outcome = client.search(&queries, &config, |done, total| {
+                let pct = 5 + (done * 90 / total.max(1)) as u16;
+                job.progress(pct, "Searching MPC Autofill", format!("{done}/{total}"));
+            })?;
+            let mut orders = engine.mpc_orders.lock().unwrap();
+            let order = orders.get_mut(&name).ok_or_else(|| anyhow!("Order was closed"))?;
+            order.apply_results(&outcome.results);
+            if order.cardback_id.is_empty() {
+                if let Some(cb) = outcome.default_cardback {
+                    order.cardback_id = cb;
+                }
+            }
+            let mut view = Self::mpc_order_view(order)?;
+            view["not_found"] = json!(outcome.not_found);
+            Ok(view)
+        }))
+    }
+
+    fn mpc_select(&self, name: &str, index: usize, back: bool, selected: usize) -> Result<Value> {
+        let mut orders = self.mpc_orders.lock().unwrap();
+        let order = orders.get_mut(name).ok_or_else(|| anyhow!("Open the MPC order first."))?;
+        let card = order.cards.get_mut(index).ok_or_else(|| anyhow!("No card at {index}"))?;
+        let face = match (back, card.back.as_mut()) {
+            (true, Some(b)) => b,
+            _ => &mut card.front,
+        };
+        if selected < face.candidates.len() {
+            face.selected = selected;
+        }
+        Self::mpc_order_view(order)
+    }
+
+    fn mpc_export(&self, name: &str) -> Result<Value> {
+        let order = {
+            let orders = self.mpc_orders.lock().unwrap();
+            orders.get(name).cloned()
+        };
+        let order = match order {
+            Some(o) => o,
+            None => self.build_mpc_order(name)?,
+        };
+        let base = PathBuf::from(EXPORTS_DIR).join(safe_deck_filename(name));
+        let text_path = base.with_extension("mpc.txt");
+        let text = order.to_text();
+        fs::write(&text_path, &text)?;
+        let (xml, xml_path, error) = match order.to_xml() {
+            Ok(xml) => {
+                let path = base.with_extension("mpc.xml");
+                fs::write(&path, &xml)?;
+                (Some(xml), Some(self.root.join(path).display().to_string()), None)
+            }
+            Err(err) => (None, None, Some(err.to_string())),
+        };
+        Ok(json!({
+            "text": text,
+            "text_path": self.root.join(text_path).display().to_string(),
+            "xml": xml,
+            "xml_path": xml_path,
+            "error": error,
+            "file_stem": safe_deck_filename(name),
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // AI
+    // -----------------------------------------------------------------------
+
+    fn ai_status(&self) -> Result<Value> {
+        let config = AiConfig::load_or_create();
+        let presets = |p| {
+            model_presets(p)
+                .iter()
+                .map(|m| json!({ "name": m.name, "model": m.model, "description": m.description }))
+                .collect::<Vec<_>>()
+        };
+        let runtime = self.ai_runtime.lock().unwrap();
+        Ok(json!({
+            "available": self.platform != "android",
+            "running": runtime.is_some(),
+            "status": runtime.as_ref().map(|r| r.status_line()),
+            "config": {
+                "provider": config.provider,
+                "model": config.model,
+                "base_url": config.base_url,
+                "api_base_url": config.api_base_url,
+                "api_model": config.api_model,
+                "has_api_key": !config.api_key.is_empty(),
+                "web_research": config.web_research,
+            },
+            "presets": {
+                "llama_cpp": presets(AiProvider::LlamaCpp),
+                "ollama": presets(AiProvider::Ollama),
+            },
+        }))
+    }
+
+    fn ai_config_set(&self, args: &Value) -> Result<Value> {
+        let mut config = AiConfig::load_or_create();
+        if let Some(provider) = opt::<AiProvider>(args, "provider") {
+            config.provider = provider;
+        }
+        if let Some(model) = opt::<String>(args, "model") {
+            config.model = model;
+        }
+        if let Some(url) = opt::<String>(args, "api_base_url") {
+            config.api_base_url = url;
+        }
+        if let Some(model) = opt::<String>(args, "api_model") {
+            config.api_model = model;
+        }
+        if let Some(key) = opt::<String>(args, "api_key") {
+            config.api_key = key;
+        }
+        if let Some(web) = opt::<bool>(args, "web_research") {
+            config.web_research = web;
+        }
+        config.save()?;
+        self.ai_status()
+    }
+
+    fn start_ai_runtime(self: &Arc<Self>) -> u64 {
+        if let Some(id) = self.jobs.running("ai_start", "") {
+            return id;
+        }
+        let engine = self.clone();
+        self.jobs.spawn("ai_start", "", move |job| {
+            if engine.platform == "android" {
+                bail!("The local AI model isn't available on Android.");
+            }
+            job.progress(10, "Starting AI backend", "First start may download the model.");
+            let runtime = LocalAiRuntime::ensure_running()?;
+            let line = runtime.status_line();
+            *engine.ai_runtime.lock().unwrap() = Some(runtime);
+            Ok(json!({ "status": line }))
+        })
+    }
+
+    fn agent_state(&self, name: &str) -> Result<Value> {
+        let path = self.deck_path(name)?;
+        let history = load_history(&path);
+        Ok(json!({
+            "chat": history.agent_chat,
+            "brief": history.agent_last_brief,
+            "agent": history.latest_agent,
+        }))
+    }
+
+    fn start_agent(self: &Arc<Self>, args: &Value) -> Result<u64> {
+        let name: String = arg(args, "name")?;
+        let bracket: u8 = opt(args, "bracket").unwrap_or(3);
+        let goal = match opt::<String>(args, "goal").as_deref() {
+            Some("stax") | Some("stax_lock") => OptimizationGoal::StaxLock,
+            _ => OptimizationGoal::FastWin,
+        };
+        let intensity = match opt::<String>(args, "intensity").as_deref() {
+            Some("quick") => TestingIntensity::Quick,
+            Some("thorough") => TestingIntensity::Thorough,
+            Some("exhaustive") => TestingIntensity::Exhaustive,
+            _ => TestingIntensity::Standard,
+        };
+        let rounds: u16 = match intensity {
+            TestingIntensity::Quick => 1,
+            TestingIntensity::Standard => 3,
+            TestingIntensity::Thorough => 5,
+            TestingIntensity::Exhaustive => 8,
+        };
+        let brief: String = opt(args, "brief").unwrap_or_default();
+        let archetype: Option<String> = opt(args, "archetype");
+
+        if let Some(id) = self.jobs.running("agent", &name) {
+            return Ok(id);
+        }
+        let engine = self.clone();
+        Ok(self.jobs.spawn("agent", &name.clone(), move |job| {
+            let deck = engine.load(&name)?;
+            let path = engine.deck_path(&name)?;
+            let db = CardDb::open(DB_PATH)?;
+            let (_, sources) = engine.current_sources(&name)?;
+            let user_refs: Vec<DeckSource> = sources.into_iter().filter(|s| s.user_provided).collect();
+
+            // Fold recent chat direction into the brief, like the old Chat screen.
+            let history = load_history(&path);
+            let chat_direction: Vec<String> = history
+                .agent_chat
+                .iter()
+                .rev()
+                .filter(|m| m.role == "user")
+                .take(4)
+                .map(|m| m.content.clone())
+                .collect();
+            let mut full_brief = brief.clone();
+            if !chat_direction.is_empty() {
+                full_brief.push_str("\n\nRecent direction from chat:\n");
+                for line in chat_direction.iter().rev() {
+                    full_brief.push_str(&format!("- {line}\n"));
+                }
+            }
+
+            let result = run_optimization_agent(
+                &deck,
+                &db,
+                bracket,
+                goal,
+                archetype,
+                Some(full_brief.clone()).filter(|b| !b.trim().is_empty()),
+                user_refs,
+                intensity,
+                None,
+                rounds,
+                |p| {
+                    job.progress(p.percent as u16, p.task.clone(), p.detail.clone());
+                    if let Some(done) = &p.completed {
+                        job.log(format!("✓ {done}"));
+                    }
+                },
+            )?;
+
+            let _ = save_agent_session(
+                &path,
+                &history.agent_chat,
+                &brief,
+                Some(&result.research),
+                Some(&result),
+                history.latest_meta_matchup.as_ref(),
+            );
+            to_value(&result)
+        }))
+    }
+
+    fn start_chat(self: &Arc<Self>, name: String, message: String) -> Result<u64> {
+        if message.trim().is_empty() {
+            bail!("Type a message first.");
+        }
+        let engine = self.clone();
+        Ok(self.jobs.spawn("agent_chat", &name.clone(), move |job| {
+            job.progress(20, "Agent is thinking", "");
+            let deck = engine.load(&name)?;
+            let path = engine.deck_path(&name)?;
+            let db = CardDb::open(DB_PATH)?;
+            let history = load_history(&path);
+            let (_, sources) = engine.current_sources(&name)?;
+            let user_refs: Vec<DeckSource> = sources.into_iter().filter(|s| s.user_provided).collect();
+            let agent = history.latest_agent.clone();
+            let reply = chat_with_deck_agent(
+                &deck,
+                &db,
+                history.latest_research.as_ref().or(agent.as_ref().map(|a| &a.research)),
+                agent.as_ref().map(|a| &a.ai_profile),
+                Some(history.agent_last_brief.as_str()).filter(|b| !b.is_empty()),
+                &user_refs,
+                &history.agent_chat,
+                "",
+                &message,
+            )?;
+            let mut chat = history.agent_chat.clone();
+            chat.push(AgentChatMessage { role: "user".into(), content: message.clone() });
+            chat.push(AgentChatMessage { role: "assistant".into(), content: reply });
+            save_agent_session(
+                &path,
+                &chat,
+                &history.agent_last_brief,
+                history.latest_research.as_ref(),
+                history.latest_agent.as_ref(),
+                history.latest_meta_matchup.as_ref(),
+            )?;
+            Ok(json!({ "chat": chat }))
+        }))
+    }
+
+    fn chat_clear(&self, name: &str) -> Result<Value> {
+        let path = self.deck_path(name)?;
+        let history = load_history(&path);
+        save_agent_session(
+            &path,
+            &[],
+            &history.agent_last_brief,
+            history.latest_research.as_ref(),
+            history.latest_agent.as_ref(),
+            history.latest_meta_matchup.as_ref(),
+        )?;
+        Ok(json!({ "chat": [] }))
+    }
+
+    fn agent_save(&self, name: &str, iteration: Option<usize>) -> Result<Value> {
+        let path = self.deck_path(name)?;
+        let agent = load_history(&path)
+            .latest_agent
+            .ok_or_else(|| anyhow!("Run the agent first."))?;
+        let generated = match iteration {
+            Some(i) => agent
+                .top_iterations
+                .get(i)
+                .map(|it| it.deck.clone())
+                .ok_or_else(|| anyhow!("No iteration {i}"))?,
+            None => agent.best.clone(),
+        };
+        let mut generated = generated;
+        generated.deck.name = format!("{name} - Agent B{}", agent.target_bracket);
+        let saved = self.save_generated(generated)?;
+        Ok(json!({ "name": saved }))
+    }
+}
+
+fn read_settings() -> Value {
+    fs::read_to_string(SETTINGS_PATH)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| Value::Object(Map::new()))
+}
+
+/// Default data directory for desktop builds.
+pub fn default_data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("COMMANDER_LAB_HOME") {
+        return PathBuf::from(dir);
+    }
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return PathBuf::from(appdata).join("CommanderLab");
+        }
+    }
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        return PathBuf::from(xdg).join("commander-lab");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".local/share/commander-lab");
+    }
+    PathBuf::from(".")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kinds_group_like_moxfield() {
+        assert_eq!(card_kind("Artifact Creature — Golem"), "Creature");
+        assert_eq!(card_kind("Legendary Land"), "Land");
+        assert_eq!(card_kind("Artifact"), "Artifact");
+        assert_eq!(card_kind("Kindred Instant — Elf"), "Instant");
+        assert_eq!(card_kind("Creature — Human // Land"), "Creature");
+    }
+
+    #[test]
+    fn take_and_put_merge_quantities() {
+        let mut list = vec![DeckEntry { quantity: 3, name: "Island".into() }];
+        assert_eq!(Engine::take(&mut list, "island", Some(2)), 2);
+        assert_eq!(list[0].quantity, 1);
+        Engine::put(&mut list, "Island", 4);
+        assert_eq!(list[0].quantity, 5);
+        assert_eq!(Engine::take(&mut list, "Island", None), 5);
+        assert!(list.is_empty());
+    }
+}
