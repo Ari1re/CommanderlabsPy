@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.22.0 — the graphical app
+
+Commander Lab is now a graphical app for Windows, Linux and Android instead of a terminal program. The deck engine is unchanged underneath and shared by every platform.
+
+- New interface: deck library with commander art, Moxfield-style deck editor (search-to-add, +/−, move to sideboard, make commander, list or image view), card details with store links.
+- Card printings: choose any printing of any card with art and prices, and mark cards foil. Printings are kept in the decklist (`1 Sol Ring (C21) 263 *F*`) and used by Moxfield export.
+- Suggestions tab: cards to add as images, grouped by combo completions, EDHREC synergy, popularity and role gaps, with role and price filters.
+- Version history: every change is recorded with a diff; view or restore any version without losing the current one.
+- Share by QR code or share code (deck + printings, no server); scan with the camera or a photo, or paste the code.
+- "How to play" guide built from the deck's cards: strengths, weaknesses, mulligans, early turns, engines, win lines and interaction.
+- Analysis: goldfish win-speed test and "rebuild at another bracket" alongside the existing curve, colors, roles, bracket, legality, cuts/adds and draw simulation.
+- Combos, Sources (reference decks/pages), Proxies (MPC Autofill) and AI Agent (runs, ranked results, save as deck, chat) are now full screens.
+- Settings: dark/light/system theme, currency, card data updates, AI provider and model.
+- Builds: Windows installer and portable exe, Linux self-installing `.sh` (desktop window, or browser edition on NixOS), AppImage, `.deb`, static browser edition, and Android APK (all signed with the same key so updates install over each other).
+- Removed: the terminal interface.
+
 ## 0.21.0
 
 - New MPC tab: MPC Autofill search, per-card art cycling with live preview, double-faced back slots, foil/stock/sideboard options, XML order + mpcfill.com text export.

@@ -11,7 +11,7 @@
 use crate::{
     ai::{chat_with_deck_agent, model_presets, AgentChatMessage, AiConfig, AiProvider},
     ai_runtime::LocalAiRuntime,
-    analysis::{analyze_deck, classify_card, CardRoles},
+    analysis::{analyze_deck, classify_card, identity_subset, CardRoles},
     archidekt::import_archidekt,
     bracket::refine_with_combo_report,
     commander::{commander_name_suggestions, resolve_generation_commanders},
@@ -22,11 +22,17 @@ use crate::{
     },
     deck_history::{delete_history, load_history, render_history_lines, save_agent_session},
     deep_agent::{run_optimization_agent, OptimizationGoal},
-    deep_learn::TestingIntensity,
+    deep_learn::{simulate_deep_learn_games, TestingIntensity},
+    edhrec::commander_build_cards,
     generator::{
-        game_plan_markdown, generate_optimized_deck, suggest_generation_themes, GamePlan,
-        GeneratedDeck, GenerationBracket,
+        game_plan_markdown, generate_ai_upgrade, generate_optimized_deck, suggest_generation_themes,
+        GamePlan, GeneratedDeck, GenerationBracket,
     },
+    guide::build_guide,
+    printings::printings,
+    share,
+    spellbook::ComboReport,
+    versions,
     jobs::Jobs,
     moxfield::import_moxfield,
     mpc::{MpcClient, MpcConfig, MpcOrder, OrderLine},
@@ -100,6 +106,9 @@ pub struct EntryView {
     pub name: String,
     pub zone: &'static str,
     pub card: Option<CardView>,
+    pub set_code: Option<String>,
+    pub collector_number: Option<String>,
+    pub foil: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -208,6 +217,32 @@ impl Engine {
             "duplicate_deck" => self.duplicate_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
             "edit_deck" => self.edit_deck(&arg::<String>(a, "name")?, a),
             "apply_suggestion" => self.apply_suggestion(&arg::<String>(a, "name")?, opt(a, "cut"), opt(a, "add")),
+            "printings" => to_value(printings(&self.canonical(&arg::<String>(a, "card")?))?),
+            "set_printing" => self.set_printing(&arg::<String>(a, "name")?, a),
+
+            // --- history ------------------------------------------------------
+            "versions" => self.versions(&arg::<String>(a, "name")?),
+            "version_text" => Ok(json!({ "text": versions::text(&arg::<String>(a, "name")?, arg(a, "id")?)? })),
+            "restore_version" => self.restore_version(&arg::<String>(a, "name")?, arg(a, "id")?),
+
+            // --- sharing --------------------------------------------------------
+            "share" => self.share(&arg::<String>(a, "name")?),
+            "share_preview" => {
+                let (name, text) = share::decode(&arg::<String>(a, "code")?)?;
+                let deck = parse_deck_text(&name, &text)?;
+                Ok(json!({
+                    "name": name,
+                    "commanders": deck.commanders.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+                    "cards": deck.commanders.iter().chain(deck.main.iter()).map(|e| e.quantity).sum::<u32>(),
+                }))
+            }
+            "import_share" => self.import_share(&arg::<String>(a, "code")?, opt(a, "name")),
+
+            // --- improvement --------------------------------------------------
+            "guide" => self.guide(&arg::<String>(a, "name")?),
+            "recommendations" => Ok(json!({ "job": self.start_recommendations(arg(a, "name")?) })),
+            "upgrade" => Ok(json!({ "job": self.start_upgrade(arg(a, "name")?, opt(a, "bracket").unwrap_or(3))? })),
+            "win_speed" => Ok(json!({ "job": self.start_win_speed(arg(a, "name")?) })),
 
             // --- analysis ---------------------------------------------------------
             "analyze" => self.analyze(&arg::<String>(a, "name")?),
@@ -354,10 +389,23 @@ impl Engine {
         Ok(deck)
     }
 
-    fn save(&self, name: &str, deck: &ParsedDeck) -> Result<()> {
-        write_deck_file(&self.deck_path(name)?, deck)?;
+    /// Write a deck and record a version with `message`. If the deck has no
+    /// history yet, its previous contents are kept as the starting version.
+    fn commit(&self, name: &str, path: &Path, deck: &ParsedDeck, message: &str) -> Result<()> {
+        if versions::list(name).is_empty() && path.exists() {
+            if let Ok(previous) = parse_deck_file(path) {
+                let _ = versions::record(name, &previous, "Starting version");
+            }
+        }
+        write_deck_file(path, deck)?;
+        let _ = versions::record(name, deck, message);
         self.mpc_orders.lock().unwrap().remove(name);
         Ok(())
+    }
+
+    fn save(&self, name: &str, deck: &ParsedDeck, message: &str) -> Result<()> {
+        let path = self.deck_path(name)?;
+        self.commit(name, &path, deck, message)
     }
 
     fn unique_name(&self, wanted: &str) -> Result<String> {
@@ -432,6 +480,9 @@ impl Engine {
                     name: card.as_ref().map(|c| c.card.name.clone()).unwrap_or_else(|| entry.name.clone()),
                     zone,
                     card,
+                    set_code: entry.set_code.clone(),
+                    collector_number: entry.collector_number.clone(),
+                    foil: entry.foil,
                 });
             }
         }
@@ -462,10 +513,10 @@ impl Engine {
         } else {
             self.unique_name(name)?
         };
+        let existed = overwrite && final_name == safe_deck_filename(name);
         deck.name = final_name.clone();
         let path = PathBuf::from(DECKS_DIR).join(format!("{final_name}.txt"));
-        write_deck_file(&path, &deck)?;
-        self.mpc_orders.lock().unwrap().remove(&final_name);
+        self.commit(&final_name, &path, &deck, if existed { "Edited the decklist as text" } else { "Created from a pasted list" })?;
         Ok(json!({ "name": final_name }))
     }
 
@@ -485,7 +536,8 @@ impl Engine {
             let final_name = engine.unique_name(&wanted)?;
             let mut deck = deck;
             deck.name = final_name.clone();
-            write_deck_file(&PathBuf::from(DECKS_DIR).join(format!("{final_name}.txt")), &deck)?;
+            let source = if lower.contains("moxfield") { "Moxfield" } else { "Archidekt" };
+            engine.commit(&final_name, &PathBuf::from(DECKS_DIR).join(format!("{final_name}.txt")), &deck, &format!("Imported from {source}"))?;
             Ok(json!({ "name": final_name }))
         })
     }
@@ -494,6 +546,7 @@ impl Engine {
         vec![
             path.with_extension("plan.md"),
             path.with_extension("plan.json"),
+            path.with_extension("combos.json"),
         ]
     }
 
@@ -505,6 +558,7 @@ impl Engine {
         for extra in Self::sidecars(&path) {
             let _ = fs::remove_file(extra);
         }
+        versions::delete(name);
         self.mpc_orders.lock().unwrap().remove(name);
         Ok(json!({ "deleted": name }))
     }
@@ -524,6 +578,12 @@ impl Engine {
         if let Ok(Some(sources)) = load_sources_for_deck(&from) {
             let _ = save_sources_for_deck(&to, &sources);
         }
+        versions::rename(name, &final_name, true);
+        let _ = versions::record(
+            &final_name,
+            &deck,
+            &if keep_original { format!("Duplicated from {name}") } else { format!("Renamed from {name}") },
+        );
         if !keep_original {
             self.delete_deck(name)?;
         }
@@ -580,7 +640,7 @@ impl Engine {
         if let Some(entry) = list.iter_mut().find(|e| e.name.eq_ignore_ascii_case(card)) {
             entry.quantity += qty;
         } else {
-            list.push(DeckEntry { quantity: qty, name: card.to_string() });
+            list.push(DeckEntry { quantity: qty, name: card.to_string(), ..Default::default() });
         }
     }
 
@@ -592,6 +652,22 @@ impl Engine {
         let card = self.canonical(&card_arg);
         let zone: String = opt(args, "zone").unwrap_or_else(|| "main".to_string());
         let qty: Option<u32> = opt(args, "qty");
+
+        let zone_label = |z: &str| match z {
+            "commander" => "the command zone",
+            "sideboard" => "the sideboard",
+            _ => "the deck",
+        };
+        let message = match action.as_str() {
+            "add" => format!("Added {} {card}", qty.unwrap_or(1)),
+            "remove" => match qty {
+                Some(n) => format!("Removed {n} {card}"),
+                None => format!("Removed {card}"),
+            },
+            "set_qty" => format!("Set {card} to {}", qty.unwrap_or(0)),
+            "move" => format!("Moved {card} to {}", zone_label(&opt::<String>(args, "to").unwrap_or_default())),
+            _ => action.clone(),
+        };
 
         match action.as_str() {
             "add" => Self::put(Self::zone_mut(&mut deck, &zone)?, &card, qty.unwrap_or(1)),
@@ -623,23 +699,30 @@ impl Engine {
             other => bail!("Unknown edit action '{other}'"),
         }
 
-        self.save(name, &deck)?;
+        self.save(name, &deck, &message)?;
         self.deck(name)
     }
 
     fn apply_suggestion(&self, name: &str, cut: Option<String>, add: Option<String>) -> Result<Value> {
         let mut deck = self.load(name)?;
+        let mut parts = Vec::new();
         if let Some(cut) = cut {
             let cut = self.canonical(&cut);
             let moved = Self::take(&mut deck.main, &cut, None);
             Self::put(&mut deck.sideboard, &cut, moved.max(1));
+            parts.push(format!("cut {cut} to the sideboard"));
         }
         if let Some(add) = add {
             let add = self.canonical(&add);
             Self::take(&mut deck.sideboard, &add, None);
             Self::put(&mut deck.main, &add, 1);
+            parts.push(format!("added {add}"));
         }
-        self.save(name, &deck)?;
+        let mut message = parts.join(", ");
+        if let Some(first) = message.get(0..1) {
+            message = first.to_uppercase() + &message[1..];
+        }
+        self.save(name, &deck, &message)?;
         self.deck(name)
     }
 
@@ -671,6 +754,9 @@ impl Engine {
             job.progress(20, "Asking Commander Spellbook", name.clone());
             let deck = engine.load(&name)?;
             let report = find_my_combos(&deck)?;
+            if let Ok(path) = engine.deck_path(&name) {
+                let _ = fs::write(path.with_extension("combos.json"), serde_json::to_string(&report)?);
+            }
             let db = CardDb::open(DB_PATH)?;
             let mut analysis = analyze_deck(&deck, &db)?;
             refine_with_combo_report(&mut analysis.bracket, &report);
@@ -760,16 +846,21 @@ impl Engine {
                 &db,
                 |p| job.progress(p.percent, p.step, p.detail),
             )?;
-            let name = engine.save_generated(generated)?;
+            let message = if theme.trim().is_empty() {
+                format!("Generated at Bracket {bracket}")
+            } else {
+                format!("Generated at Bracket {bracket} ({theme})")
+            };
+            let name = engine.save_generated(generated, &message)?;
             Ok(json!({ "name": name }))
         }))
     }
 
-    fn save_generated(&self, mut generated: GeneratedDeck) -> Result<String> {
+    fn save_generated(&self, mut generated: GeneratedDeck, message: &str) -> Result<String> {
         let name = self.unique_name(&generated.deck.name)?;
         generated.deck.name = name.clone();
         let path = PathBuf::from(DECKS_DIR).join(format!("{name}.txt"));
-        write_deck_file(&path, &generated.deck)?;
+        self.commit(&name, &path, &generated.deck, message)?;
         fs::write(path.with_extension("plan.md"), game_plan_markdown(&generated.plan))?;
         fs::write(path.with_extension("plan.json"), serde_json::to_string_pretty(&generated.plan)?)?;
         save_sources_for_deck(&path, &generated.plan.sources)?;
@@ -783,14 +874,14 @@ impl Engine {
     fn export_moxfield(&self, name: &str) -> Result<Value> {
         let deck = self.load(name)?;
         let db = self.db.lock().unwrap();
-        let text = deck_to_moxfield_text(&deck, |card| match db.printing(card) {
+        let text = deck_to_moxfield_text(&deck, |entry| match db.printing(&entry.name) {
             Ok(Some(p)) => ExportPrinting {
                 name: p.name,
                 set_code: Some(p.set_code),
                 collector_number: Some(p.collector_number),
             },
             _ => ExportPrinting {
-                name: db.get_card(card).ok().flatten().map(|c| c.name).unwrap_or_else(|| card.to_string()),
+                name: db.get_card(&entry.name).ok().flatten().map(|c| c.name).unwrap_or_else(|| entry.name.clone()),
                 set_code: None,
                 collector_number: None,
             },
@@ -1208,8 +1299,270 @@ impl Engine {
         };
         let mut generated = generated;
         generated.deck.name = format!("{name} - Agent B{}", agent.target_bracket);
-        let saved = self.save_generated(generated)?;
+        let saved = self.save_generated(generated, "Saved from the AI Agent")?;
         Ok(json!({ "name": saved }))
+    }
+}
+
+impl Engine {
+    // -----------------------------------------------------------------------
+    // Printings
+    // -----------------------------------------------------------------------
+
+    fn set_printing(&self, name: &str, args: &Value) -> Result<Value> {
+        let mut deck = self.load(name)?;
+        let zone: String = opt(args, "zone").unwrap_or_else(|| "main".into());
+        let card: String = arg(args, "card")?;
+        let set_code: Option<String> = opt::<String>(args, "set_code").filter(|s| !s.is_empty());
+        let number: Option<String> = opt::<String>(args, "collector_number").filter(|s| !s.is_empty());
+        let foil: Option<bool> = opt(args, "foil");
+        let list = Self::zone_mut(&mut deck, &zone)?;
+        let entry = list
+            .iter_mut()
+            .find(|e| e.name.eq_ignore_ascii_case(&card))
+            .ok_or_else(|| anyhow!("{card} is not in that part of the deck."))?;
+        if args.get("set_code").is_some() {
+            entry.set_code = set_code.map(|s| s.to_ascii_uppercase());
+            entry.collector_number = number;
+        }
+        if let Some(f) = foil {
+            entry.foil = f;
+        }
+        let message = match (&entry.set_code, &entry.collector_number) {
+            (Some(set), Some(num)) => format!(
+                "Changed {} to {set} #{num}{}",
+                entry.name,
+                if entry.foil { " (foil)" } else { "" }
+            ),
+            _ => format!("Reset {} to the default printing", entry.name),
+        };
+        self.save(name, &deck, &message)?;
+        self.deck(name)
+    }
+
+    // -----------------------------------------------------------------------
+    // Version history
+    // -----------------------------------------------------------------------
+
+    fn versions(&self, name: &str) -> Result<Value> {
+        let path = self.deck_path(name)?;
+        let mut list = versions::list(name);
+        if list.is_empty() {
+            if let Ok(deck) = parse_deck_file(&path) {
+                versions::record(name, &deck, "Starting version")?;
+                list = versions::list(name);
+            }
+        }
+        list.reverse();
+        to_value(list)
+    }
+
+    fn restore_version(&self, name: &str, id: u64) -> Result<Value> {
+        let mut deck = versions::load(name, id)?;
+        deck.name = name.to_string();
+        let when = chrono::DateTime::from_timestamp_millis(id as i64)
+            .map(|t| t.with_timezone(&chrono::Local).format("%b %-d, %H:%M").to_string())
+            .unwrap_or_else(|| id.to_string());
+        self.save(name, &deck, &format!("Restored the version from {when}"))?;
+        self.deck(name)
+    }
+
+    // -----------------------------------------------------------------------
+    // Sharing
+    // -----------------------------------------------------------------------
+
+    fn share(&self, name: &str) -> Result<Value> {
+        let deck = self.load(name)?;
+        let code = share::encode(name, &deck_to_text(&deck))?;
+        let (svg, error) = match share::qr_svg(&code) {
+            Ok(svg) => (Some(svg), None),
+            Err(err) => (None, Some(err.to_string())),
+        };
+        Ok(json!({ "code": code, "svg": svg, "error": error }))
+    }
+
+    fn import_share(&self, code: &str, name: Option<String>) -> Result<Value> {
+        let (shared_name, text) = share::decode(code)?;
+        let wanted = name.filter(|n| !n.trim().is_empty()).unwrap_or(shared_name);
+        let final_name = self.unique_name(&wanted)?;
+        let mut deck = parse_deck_text(&final_name, &text)?;
+        deck.name = final_name.clone();
+        let path = PathBuf::from(DECKS_DIR).join(format!("{final_name}.txt"));
+        self.commit(&final_name, &path, &deck, "Imported from a share code")?;
+        Ok(json!({ "name": final_name }))
+    }
+
+    // -----------------------------------------------------------------------
+    // Play guide and improvements
+    // -----------------------------------------------------------------------
+
+    fn cached_combos(&self, name: &str) -> Option<ComboReport> {
+        let path = self.deck_path(name).ok()?;
+        fs::read_to_string(path.with_extension("combos.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+    }
+
+    fn cached_plan(&self, name: &str) -> Option<GamePlan> {
+        let path = self.deck_path(name).ok()?;
+        fs::read_to_string(path.with_extension("plan.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+    }
+
+    fn guide(&self, name: &str) -> Result<Value> {
+        let deck = self.load(name)?;
+        let combos = self.cached_combos(name);
+        let plan = self.cached_plan(name);
+        let db = self.db.lock().unwrap();
+        if !db.has_cards() {
+            bail!("Download the card database first (Update card data).");
+        }
+        let analysis = analyze_deck(&deck, &db)?;
+        let guide = build_guide(&deck, &db, &analysis, combos.as_ref(), plan.as_ref())?;
+        let mut value = to_value(guide)?;
+        value["has_combos"] = json!(combos.is_some());
+        Ok(value)
+    }
+
+    fn start_recommendations(self: &Arc<Self>, name: String) -> u64 {
+        if let Some(id) = self.jobs.running("recommendations", &name) {
+            return id;
+        }
+        let engine = self.clone();
+        self.jobs.spawn("recommendations", &name.clone(), move |job| {
+            let deck = engine.load(&name)?;
+            let db = CardDb::open(DB_PATH)?;
+            let commanders: Vec<Card> = deck.commanders.iter().filter_map(|e| db.get_card(&e.name).ok().flatten()).collect();
+            let mut identity = String::new();
+            for c in ['W', 'U', 'B', 'R', 'G'] {
+                if commanders.iter().any(|card| card.color_identity.contains(c)) {
+                    identity.push(c);
+                }
+            }
+            let in_deck: std::collections::HashSet<String> = deck
+                .commanders
+                .iter()
+                .chain(deck.main.iter())
+                .filter_map(|e| db.get_card(&e.name).ok().flatten().map(|c| c.name.to_ascii_lowercase()))
+                .collect();
+            let fits = |card: &Card| {
+                card.commander_legal
+                    && !card.is_basic
+                    && !in_deck.contains(&card.name.to_ascii_lowercase())
+                    && (commanders.is_empty() || identity_subset(&card.color_identity, &identity))
+            };
+
+            let mut sections = Vec::new();
+
+            // Cards that complete a combo you're one card away from.
+            if let Some(report) = engine.cached_combos(&name) {
+                let mut items = Vec::new();
+                for line in report.variants.iter().filter(|v| v.almost) {
+                    for piece in &line.cards {
+                        if let Ok(Some(card)) = db.get_card(piece) {
+                            if fits(&card) && !items.iter().any(|i: &Value| i["card"]["name"] == card.name) {
+                                items.push(json!({
+                                    "card": engine.card_view(&db, card),
+                                    "reason": format!("Completes {}: {}", line.cards.join(" + "), line.result.lines().next().unwrap_or("")),
+                                }));
+                            }
+                        }
+                    }
+                }
+                if !items.is_empty() {
+                    items.truncate(24);
+                    sections.push(json!({ "id": "combos", "title": "Completes a combo", "items": items }));
+                }
+            }
+
+            job.progress(20, "Reading EDHREC for your commander", "");
+            let theme = engine.cached_plan(&name).and_then(|p| p.primary_tags.first().cloned()).unwrap_or_default();
+            let signals = if commanders.is_empty() { Vec::new() } else { commander_build_cards(&commanders, &theme, 300) };
+            job.progress(70, "Ranking suggestions", format!("{} candidates", signals.len()));
+
+            let mut synergy = Vec::new();
+            let mut popular = Vec::new();
+            for signal in &signals {
+                let Ok(Some(card)) = db.get_card(&signal.name) else { continue };
+                if !fits(&card) {
+                    continue;
+                }
+                let pct = (signal.inclusion_pct() * 100.0).round();
+                let item = json!({
+                    "card": engine.card_view(&db, card),
+                    "reason": if signal.synergy > 0.0 {
+                        format!("In {pct}% of decks · +{:.0}% synergy", signal.synergy * 100.0)
+                    } else {
+                        format!("In {pct}% of this commander's decks")
+                    },
+                    "inclusion": pct,
+                    "synergy": signal.synergy,
+                });
+                if signal.synergy >= 0.15 {
+                    synergy.push(item);
+                } else {
+                    popular.push(item);
+                }
+            }
+            synergy.truncate(36);
+            popular.truncate(48);
+            if !synergy.is_empty() {
+                sections.push(json!({ "id": "synergy", "title": "High synergy with your commander", "items": synergy }));
+            }
+            if !popular.is_empty() {
+                sections.push(json!({ "id": "popular", "title": "Popular in decks like yours", "items": popular }));
+            }
+
+            // Role gaps from the deck analysis.
+            if let Ok(analysis) = analyze_deck(&deck, &db) {
+                let items: Vec<Value> = analysis
+                    .add_suggestions
+                    .iter()
+                    .filter_map(|s| db.get_card(&s.card).ok().flatten().map(|c| (s, c)))
+                    .filter(|(_, c)| fits(c))
+                    .take(30)
+                    .map(|(s, c)| json!({ "card": engine.card_view(&db, c), "reason": format!("Fills a gap: {}", s.role) }))
+                    .collect();
+                if !items.is_empty() {
+                    sections.push(json!({ "id": "gaps", "title": "Fills a gap in your deck", "items": items }));
+                }
+            }
+
+            Ok(json!({ "sections": sections, "theme": theme }))
+        })
+    }
+
+    fn start_upgrade(self: &Arc<Self>, name: String, bracket: u8) -> Result<u64> {
+        let engine = self.clone();
+        Ok(self.jobs.spawn("upgrade", &name.clone(), move |job| {
+            let deck = engine.load(&name)?;
+            let db = CardDb::open(DB_PATH)?;
+            let theme = engine.cached_plan(&name).and_then(|p| p.primary_tags.first().cloned());
+            let mut generated = generate_ai_upgrade(
+                &deck,
+                GenerationBracket::new(bracket),
+                theme.as_deref(),
+                &[],
+                &db,
+                |p| job.progress(p.percent, p.step, p.detail),
+            )?;
+            generated.deck.name = format!("{name} - Bracket {bracket}");
+            let saved = engine.save_generated(generated, &format!("Upgraded from {name} to Bracket {bracket}"))?;
+            Ok(json!({ "name": saved }))
+        }))
+    }
+
+    fn start_win_speed(self: &Arc<Self>, name: String) -> u64 {
+        let engine = self.clone();
+        self.jobs.spawn("win_speed", &name.clone(), move |job| {
+            let deck = engine.load(&name)?;
+            let db = CardDb::open(DB_PATH)?;
+            let summary = simulate_deep_learn_games(&deck, &db, TestingIntensity::Standard, |line| {
+                job.progress(50, "Goldfishing games", line)
+            })?;
+            to_value(summary)
+        })
     }
 }
 
@@ -1256,7 +1609,7 @@ mod tests {
 
     #[test]
     fn take_and_put_merge_quantities() {
-        let mut list = vec![DeckEntry { quantity: 3, name: "Island".into() }];
+        let mut list = vec![DeckEntry { quantity: 3, name: "Island".into(), ..Default::default() }];
         assert_eq!(Engine::take(&mut list, "island", Some(2)), 2);
         assert_eq!(list[0].quantity, 1);
         Engine::put(&mut list, "Island", 4);

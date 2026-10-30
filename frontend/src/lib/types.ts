@@ -44,6 +44,55 @@ export interface Entry {
   name: string;
   zone: Zone;
   card: CardView | null;
+  set_code?: string | null;
+  collector_number?: string | null;
+  foil?: boolean;
+}
+
+export interface Printing {
+  set_code: string;
+  set_name: string;
+  collector_number: string;
+  released_at: string;
+  image: string;
+  finishes: string[];
+  price_usd: string | null;
+  price_usd_foil: string | null;
+  price_eur: string | null;
+}
+
+export interface Change {
+  name: string;
+  delta: number;
+  zone: Zone;
+}
+
+export interface Version {
+  id: number;
+  timestamp_ms: number;
+  message: string;
+  cards: number;
+  changes: Change[];
+}
+
+export interface GuideSection {
+  title: string;
+  text: string;
+  points: string[];
+  cards: string[];
+}
+
+export interface PlayGuide {
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  sections: GuideSection[];
+  has_combos: boolean;
+}
+
+export interface Suggestion {
+  card: CardView;
+  reason: string;
 }
 
 export interface Combo {

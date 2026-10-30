@@ -1,13 +1,8 @@
 /target
-/data/*.sqlite
-/data/cache
-/data/models
-*.gguf
+/data
+/decks
 /exports
-/android/.gradle
-/android/build
-/android/app/build
-/android/app/src/main/jniLibs
-/android/local.properties
+*.gguf
 /frontend/node_modules
 /frontend/dist
+/desktop/src-tauri/gen

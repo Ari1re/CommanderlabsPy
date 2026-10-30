@@ -186,7 +186,7 @@ fn archidekt_card_name(entry: &Value) -> Option<String> {
 fn map_entries(map: HashMap<String, u32>) -> Vec<DeckEntry> {
     let mut entries = map
         .into_iter()
-        .map(|(name, quantity)| DeckEntry { quantity, name })
+        .map(|(name, quantity)| DeckEntry { quantity, name, ..Default::default() })
         .collect::<Vec<_>>();
 
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));

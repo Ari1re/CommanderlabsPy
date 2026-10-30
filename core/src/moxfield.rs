@@ -172,6 +172,5 @@ fn parse_card_object(value: &Value) -> Option<DeckEntry> {
 
     Some(DeckEntry {
         quantity,
-        name: name.to_string(),
-    })
+        name: name.to_string(), ..Default::default() })
 }

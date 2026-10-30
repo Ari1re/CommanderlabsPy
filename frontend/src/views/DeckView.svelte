@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { api, copyText, download, runtime } from '../lib/api';
   import { app, go } from '../lib/store.svelte';
   import type { Analysis, Deck } from '../lib/types';
@@ -13,6 +13,10 @@
   import DeckProxies from './deck/DeckProxies.svelte';
   import DeckSources from './deck/DeckSources.svelte';
   import DeckAgent from './deck/DeckAgent.svelte';
+  import DeckSuggestions from './deck/DeckSuggestions.svelte';
+  import DeckGuide from './deck/DeckGuide.svelte';
+  import DeckHistory from './deck/DeckHistory.svelte';
+  import ShareDialog from '../components/ShareDialog.svelte';
 
   let { name }: { name: string } = $props();
 
@@ -20,15 +24,20 @@
   let analysis = $state<Analysis | null>(null);
   let loadError = $state<string | null>(null);
   let menu = $state(false);
-  let dialog = $state<null | 'rename' | 'duplicate' | 'delete' | 'text' | 'export'>(null);
+  let dialog = $state<null | 'rename' | 'duplicate' | 'delete' | 'text' | 'export' | 'share'>(null);
+  /** Bumped on every change so tabs that summarise the deck reload. */
+  let version = $state(0);
   let input = $state('');
   let exportText = $state('');
   let exportPath = $state('');
 
   const tabs = [
     { id: 'cards', label: 'Cards', icon: 'cards' },
+    { id: 'suggestions', label: 'Suggestions', icon: 'plus' },
     { id: 'analysis', label: 'Analysis', icon: 'chart' },
     { id: 'combos', label: 'Combos', icon: 'combo' },
+    { id: 'play', label: 'How to play', icon: 'play' },
+    { id: 'history', label: 'History', icon: 'refresh' },
     { id: 'proxies', label: 'Proxies', icon: 'print' },
     { id: 'sources', label: 'Sources', icon: 'link' },
     { id: 'agent', label: 'AI Agent', icon: 'sparkle' },
@@ -54,10 +63,17 @@
     }
   }
 
-  onMount(load);
+  onMount(() => {
+    load();
+    app.deckUpdated = updated;
+  });
+  onDestroy(() => {
+    if (app.deckUpdated === updated) app.deckUpdated = null;
+  });
 
   function updated(next: Deck) {
     deck = next;
+    version += 1;
     refreshAnalysis();
   }
 
@@ -101,6 +117,7 @@
       await api('save_deck_text', { name, text: input, overwrite: true });
       dialog = null;
       await load();
+      version += 1;
       app.toast('Decklist saved.', 'success');
     } catch (err) {
       app.error(err);
@@ -156,6 +173,7 @@
       </div>
       <div class="row actions">
         <button class="btn primary" onclick={exportMoxfield}><Icon name="copy" size={17} /> Export to Moxfield</button>
+        <button class="btn" onclick={() => (dialog = 'share')}><Icon name="link" size={17} /> Share</button>
         <div class="menu-wrap">
           <button class="btn icon" aria-label="More deck actions" aria-expanded={menu} onclick={() => (menu = !menu)}>
             <Icon name="more" />
@@ -184,8 +202,14 @@
   <section class="tab-body">
     {#if tab === 'cards'}
       <DeckCards {deck} onchange={updated} />
+    {:else if tab === 'suggestions'}
+      <DeckSuggestions {deck} onchange={updated} />
     {:else if tab === 'analysis'}
       <DeckAnalysis {name} {analysis} onchange={updated} />
+    {:else if tab === 'play'}
+      <DeckGuide {name} {version} />
+    {:else if tab === 'history'}
+      <DeckHistory {name} {version} onchange={updated} />
     {:else if tab === 'combos'}
       <DeckCombos {name} />
     {:else if tab === 'proxies'}
@@ -198,7 +222,9 @@
   </section>
 {/if}
 
-{#if dialog === 'export'}
+{#if dialog === 'share'}
+  <ShareDialog {name} onclose={() => (dialog = null)} />
+{:else if dialog === 'export'}
   <Modal title="Export to Moxfield" onclose={() => (dialog = null)} wide>
     <div class="stack">
       <p class="dim">

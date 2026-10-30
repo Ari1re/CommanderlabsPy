@@ -35,7 +35,7 @@
 
   async function inspect(card: string) {
     try {
-      app.inspect = await api<CardView>('card', { name: card });
+      app.open(await api<CardView>('card', { name: card }));
     } catch (err) {
       app.error(err);
     }

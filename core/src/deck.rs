@@ -13,10 +13,35 @@ pub struct DeckFile {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct DeckEntry {
     pub quantity: u32,
     pub name: String,
+    /// Chosen printing, kept in the decklist as `(SET) number`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collector_number: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub foil: bool,
+}
+
+impl DeckEntry {
+    pub fn new(quantity: u32, name: impl Into<String>) -> Self {
+        Self { quantity, name: name.into(), ..Default::default() }
+    }
+
+    /// `1 Sol Ring (C21) 263 *F*` — the printing suffix Moxfield understands.
+    pub fn line(&self) -> String {
+        let mut out = format!("{} {}", self.quantity, self.name);
+        if let (Some(set), Some(num)) = (&self.set_code, &self.collector_number) {
+            out.push_str(&format!(" ({}) {}", set.to_ascii_uppercase(), num));
+        }
+        if self.foil {
+            out.push_str(" *F*");
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,7 +307,8 @@ pub fn deck_to_text(deck: &ParsedDeck) -> String {
         out.push_str("Commander\n");
 
         for entry in &deck.commanders {
-            out.push_str(&format!("{} {}\n", entry.quantity, entry.name));
+            out.push_str(&entry.line());
+            out.push('\n');
         }
 
         out.push('\n');
@@ -291,14 +317,16 @@ pub fn deck_to_text(deck: &ParsedDeck) -> String {
     out.push_str("Deck\n");
 
     for entry in &deck.main {
-        out.push_str(&format!("{} {}\n", entry.quantity, entry.name));
+        out.push_str(&entry.line());
+            out.push('\n');
     }
 
     if !deck.sideboard.is_empty() {
         out.push_str("\nSideboard\n");
 
         for entry in &deck.sideboard {
-            out.push_str(&format!("{} {}\n", entry.quantity, entry.name));
+            out.push_str(&entry.line());
+            out.push('\n');
         }
     }
 
@@ -313,13 +341,19 @@ pub struct ExportPrinting {
     pub collector_number: Option<String>,
 }
 
-fn moxfield_line(quantity: u32, printing: &ExportPrinting) -> String {
-    match (&printing.set_code, &printing.collector_number) {
-        (Some(set), Some(number)) => {
-            format!("{} {} ({}) {}", quantity, printing.name, set, number)
-        }
-        _ => format!("{} {}", quantity, printing.name),
+fn moxfield_line(entry: &DeckEntry, printing: &ExportPrinting) -> String {
+    DeckEntry {
+        quantity: entry.quantity,
+        name: printing.name.clone(),
+        set_code: entry.set_code.clone().or_else(|| printing.set_code.clone()),
+        collector_number: if entry.set_code.is_some() {
+            entry.collector_number.clone()
+        } else {
+            printing.collector_number.clone()
+        },
+        foil: entry.foil,
     }
+    .line()
 }
 
 /// Moxfield-importable decklist.
@@ -329,7 +363,7 @@ fn moxfield_line(quantity: u32, printing: &ExportPrinting) -> String {
 /// printing is known so Moxfield picks the same card art.
 pub fn deck_to_moxfield_text<F>(deck: &ParsedDeck, mut lookup: F) -> String
 where
-    F: FnMut(&str) -> ExportPrinting,
+    F: FnMut(&DeckEntry) -> ExportPrinting,
 {
     let mut out = String::new();
 
@@ -343,7 +377,7 @@ where
         out.push_str(title);
         out.push('\n');
         for entry in entries {
-            out.push_str(&moxfield_line(entry.quantity, &lookup(&entry.name)));
+            out.push_str(&moxfield_line(entry, &lookup(entry)));
             out.push('\n');
         }
     };
@@ -491,6 +525,22 @@ fn parse_card_line(line: &str) -> Option<(DeckEntry, bool)> {
         name = name.trim().to_string();
     }
 
+    static PRINTING_RE: OnceLock<Regex> = OnceLock::new();
+    let printing_re = PRINTING_RE.get_or_init(|| {
+        Regex::new(r"(?i)\s+\(([A-Z0-9]+)\)\s+([A-Z0-9][A-Z0-9\-★a-z]*)\s*$")
+            .expect("valid printing regex")
+    });
+    let foil = captures
+        .get(2)
+        .map(|m| {
+            let raw = m.as_str().to_ascii_uppercase();
+            raw.contains("*F*") || raw.contains("*E*")
+        })
+        .unwrap_or(false);
+    let printing = printing_re.captures(&name).map(|c| {
+        (c[1].to_ascii_uppercase(), c[2].to_string())
+    });
+
     name = set_suffix_re
         .replace(&name, "")
         .trim()
@@ -508,10 +558,18 @@ fn parse_card_line(line: &str) -> Option<(DeckEntry, bool)> {
         return None;
     }
 
+    let (set_code, collector_number) = match printing {
+        Some((set, num)) => (Some(set), Some(num)),
+        None => (None, None),
+    };
+
     Some((
         DeckEntry {
             quantity,
             name,
+            set_code,
+            collector_number,
+            foil,
         },
         explicit_commander,
     ))
@@ -660,10 +718,10 @@ mod tests {
             "Commander\n1 Kefka, Court Mage\n\nDeck\n1 Sol Ring\n1 Mystery Card\n\nSideboard\n1 Arcane Signet\n",
         )
         .unwrap();
-        let text = deck_to_moxfield_text(&deck, |name| ExportPrinting {
-            name: name.to_string(),
-            set_code: (name == "Sol Ring").then(|| "C21".to_string()),
-            collector_number: (name == "Sol Ring").then(|| "263".to_string()),
+        let text = deck_to_moxfield_text(&deck, |e| ExportPrinting {
+            name: e.name.to_string(),
+            set_code: (e.name == "Sol Ring").then(|| "C21".to_string()),
+            collector_number: (e.name == "Sol Ring").then(|| "263".to_string()),
         });
         assert!(text.starts_with("Commander\n1 Kefka, Court Mage\n\nDeck\n"));
         assert!(text.contains("1 Sol Ring (C21) 263\n"));

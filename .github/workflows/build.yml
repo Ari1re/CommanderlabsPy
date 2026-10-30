@@ -1,10 +1,10 @@
 name: Build Commander Lab
 
-# Every push to main builds Windows, Linux and Android and publishes them as a
-# GitHub release. Pull requests build and test only.
+# Every push builds Windows, Linux and Android and publishes a GitHub release
+# (pushes to main and version tags). Pull requests build and test only.
 on:
   push:
-    branches: [main]
+    branches: ['**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -20,165 +20,245 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      app_version: ${{ steps.v.outputs.app_version }}
       tag: ${{ steps.v.outputs.tag }}
+      release: ${{ steps.v.outputs.release }}
     steps:
       - uses: actions/checkout@v4
       - id: v
         run: |
-          crate=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
-          version="${crate}+build.${{ github.run_number }}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          base=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+          major_minor=$(echo "$base" | cut -d. -f1-2)
+          # Patch = run number so every Android build installs over the last.
+          app_version="${major_minor}.${{ github.run_number }}"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "version=$app_version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"; echo "release=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            echo "tag=build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"; echo "release=true" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"; echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run check && npm run build
+        working-directory: frontend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
   test:
+    needs: frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: frontend-dist, path: frontend/dist }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --release
+      - run: cargo test --release -p commander-lab-core -p commander-lab-web
 
-  windows:
-    needs: [meta, test]
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
-      - name: Package
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist/CommanderLab | Out-Null
-          Copy-Item target/release/commander-lab.exe dist/CommanderLab/
-          Copy-Item packaging/CommanderLab.bat dist/CommanderLab/
-          Copy-Item README.md, CHANGELOG.md dist/CommanderLab/
-          Copy-Item target/release/commander-lab.exe dist/CommanderLab-windows-x86_64.exe
-          Compress-Archive -Path dist/CommanderLab/* -DestinationPath dist/CommanderLab-windows-x86_64.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows
-          path: |
-            dist/CommanderLab-windows-x86_64.exe
-            dist/CommanderLab-windows-x86_64.zip
-
-  linux:
-    needs: [meta, test]
+  # Static browser edition: runs on any Linux (NixOS included) with no deps.
+  web-linux:
+    needs: [frontend, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: frontend-dist, path: frontend/dist }
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
+        with: { targets: x86_64-unknown-linux-musl }
       - uses: Swatinem/rust-cache@v2
+        with: { key: musl }
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
-      # Static musl build: runs on any distro, including NixOS, with no
-      # glibc or shared-library requirements.
-      - run: cargo build --release --target x86_64-unknown-linux-musl
-      - name: Package
-        run: |
-          mkdir -p dist/app
-          cp target/x86_64-unknown-linux-musl/release/commander-lab dist/app/
-          cp packaging/commander-lab.sh dist/app/
-          cp README.md CHANGELOG.md dist/app/
-          chmod +x dist/app/commander-lab dist/app/commander-lab.sh
-          tar -C dist/app -czf dist/CommanderLab-linux-x86_64.tar.gz .
-          sed "s/__CL_VERSION__/${{ needs.meta.outputs.version }}/" packaging/selfextract-header.sh > dist/CommanderLab-linux-x86_64.sh
-          cat dist/CommanderLab-linux-x86_64.tar.gz >> dist/CommanderLab-linux-x86_64.sh
-          chmod +x dist/CommanderLab-linux-x86_64.sh
-      - name: Smoke-test installer
-        run: |
-          COMMANDER_LAB_HOME="$RUNNER_TEMP/cl" sh dist/CommanderLab-linux-x86_64.sh --extract
-          test -x "$RUNNER_TEMP/cl/app/commander-lab"
+      - run: cargo build --release -p commander-lab-web --target x86_64-unknown-linux-musl
       - uses: actions/upload-artifact@v4
         with:
-          name: linux
-          path: |
-            dist/CommanderLab-linux-x86_64.sh
-            dist/CommanderLab-linux-x86_64.tar.gz
+          name: web-linux
+          path: target/x86_64-unknown-linux-musl/release/commander-lab-web
+
+  desktop:
+    needs: [meta, frontend, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-22.04
+            name: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: frontend-dist, path: frontend/dist }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { key: desktop }
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libxdo-dev
+      - name: Set app version
+        shell: bash
+        run: |
+          node -e "const f='desktop/src-tauri/tauri.conf.json';const c=require('./'+f);c.version='${{ needs.meta.outputs.app_version }}';require('fs').writeFileSync(f,JSON.stringify(c,null,2))"
+      - run: npm ci
+        working-directory: frontend
+      - name: Build app
+        shell: bash
+        working-directory: desktop
+        run: ../frontend/node_modules/.bin/tauri build ${{ runner.os == 'Linux' && '--bundles appimage,deb' || '--bundles nsis' }}
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/release/commander-lab.exe dist/CommanderLab-windows-x86_64-portable.exe
+            cp target/release/bundle/nsis/*.exe dist/CommanderLab-windows-x86_64-setup.exe
+          else
+            cp target/release/bundle/appimage/*.AppImage dist/CommanderLab-linux-x86_64.AppImage
+            cp target/release/bundle/deb/*.deb dist/CommanderLab-linux-amd64.deb
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: dist/*
+
+  linux-installer:
+    needs: [meta, desktop, web-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: desktop-linux, path: in }
+      - uses: actions/download-artifact@v4
+        with: { name: web-linux, path: in }
+      - name: Build self-installing .sh
+        run: |
+          mkdir -p app dist
+          cp in/CommanderLab-linux-x86_64.AppImage app/CommanderLab.AppImage
+          cp in/commander-lab-web app/commander-lab-web
+          cp packaging/commander-lab.sh app/
+          chmod +x app/*
+          tar -C app -czf payload.tar.gz .
+          sed "s/__CL_VERSION__/${{ needs.meta.outputs.version }}/" packaging/selfextract-header.sh > dist/CommanderLab-linux-x86_64.sh
+          cat payload.tar.gz >> dist/CommanderLab-linux-x86_64.sh
+          chmod +x dist/CommanderLab-linux-x86_64.sh
+          cp in/commander-lab-web dist/CommanderLab-web-linux-x86_64
+      - name: Smoke-test installer and browser edition
+        run: |
+          export COMMANDER_LAB_HOME="$RUNNER_TEMP/cl"
+          sh dist/CommanderLab-linux-x86_64.sh --extract
+          test -x "$COMMANDER_LAB_HOME/app/CommanderLab.AppImage"
+          "$COMMANDER_LAB_HOME/app/commander-lab-web" --no-browser --port 7999 &
+          sleep 3
+          curl -sf http://127.0.0.1:7999/health
+          curl -sf -X POST http://127.0.0.1:7999/api/status -d '{}' -H 'content-type: application/json'
+          curl -sf http://127.0.0.1:7999/ | grep -q '<div id="app">'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-installer
+          path: dist/*
 
   android:
-    needs: [meta, test]
-    # Pinned: this image ships the Android SDK + NDK preinstalled.
+    needs: [meta, frontend, test]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: frontend-dist, path: frontend/dist }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '17' }
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
+        with: { key: android }
       - name: Locate Android SDK / NDK
         run: |
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           NDK="${ANDROID_NDK_LATEST_HOME:-}"
-          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
-            NDK=$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1)
-          fi
+          [ -d "$NDK" ] || NDK=$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1)
           if [ -z "$NDK" ]; then
             yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"
             NDK="$SDK/ndk/27.2.12479018"
           fi
-          echo "Using NDK $NDK"
-          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
-          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-      - run: cargo install cargo-ndk --locked
-      - name: Build Rust for Android
+          BT=$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "BUILD_TOOLS=$BT" >> "$GITHUB_ENV"
+          echo "Using NDK $NDK and build-tools $BT"
+      - name: Set app version
         run: |
-          cargo ndk -t arm64-v8a -t x86_64 --platform 24 build --release
-          mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/jniLibs/x86_64
-          cp target/aarch64-linux-android/release/commander-lab android/app/src/main/jniLibs/arm64-v8a/libcommanderlab.so
-          cp target/x86_64-linux-android/release/commander-lab android/app/src/main/jniLibs/x86_64/libcommanderlab.so
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-      - name: Decode signing key (optional secret)
+          node -e "const f='desktop/src-tauri/tauri.conf.json';const c=require('./'+f);c.version='${{ needs.meta.outputs.app_version }}';require('fs').writeFileSync(f,JSON.stringify(c,null,2))"
+      - run: npm ci
+        working-directory: frontend
+      - name: Generate Android project
+        working-directory: desktop
+        run: |
+          ../frontend/node_modules/.bin/tauri android init --ci
+          # Camera access for scanning deck QR codes.
+          MANIFEST=src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.CAMERA' "$MANIFEST" || \
+            sed -i 's#<application#<uses-permission android:name="android.permission.CAMERA" />\n    <application#' "$MANIFEST"
+      - name: Build APK
+        working-directory: desktop
+        run: ../frontend/node_modules/.bin/tauri android build --apk --target aarch64 armv7 x86_64 --ci
+      - name: Sign APK
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
-          fi
-      - name: Build APK
-        working-directory: android
-        env:
-          CL_VERSION_NAME: ${{ needs.meta.outputs.version }}
-          CL_VERSION_CODE: ${{ github.run_number }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          # Empty secrets fall back to the committed CI key.
-          [ -z "$ANDROID_KEYSTORE_PASSWORD" ] && unset ANDROID_KEYSTORE_PASSWORD
-          [ -z "$ANDROID_KEY_ALIAS" ] && unset ANDROID_KEY_ALIAS
-          [ -z "$ANDROID_KEY_PASSWORD" ] && unset ANDROID_KEY_PASSWORD
-          gradle --no-daemon assembleRelease
-          mkdir -p ../dist
-          cp app/build/outputs/apk/release/app-release.apk ../dist/CommanderLab-android.apk
+          KS=desktop/commanderlab-ci.keystore
+          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"; KS="$RUNNER_TEMP/release.keystore"; fi
+          APK=$(ls desktop/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk | head -1)
+          mkdir -p dist
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$APK" aligned.apk
+          "$BUILD_TOOLS/apksigner" sign --ks "$KS" \
+            --ks-pass "pass:${KS_PASS:-commanderlab}" \
+            --ks-key-alias "${KEY_ALIAS:-commanderlab}" \
+            --key-pass "pass:${KEY_PASS:-commanderlab}" \
+            --out dist/CommanderLab-android.apk aligned.apk
+          "$BUILD_TOOLS/apksigner" verify dist/CommanderLab-android.apk
       - uses: actions/upload-artifact@v4
         with:
           name: android
           path: dist/CommanderLab-android.apk
 
   release:
-    if: github.event_name != 'pull_request'
-    needs: [meta, windows, linux, android]
+    if: needs.meta.outputs.release == 'true'
+    needs: [meta, desktop, linux-installer, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: dist
-          merge-multiple: true
+          path: dl
+      - name: Gather files
+        run: |
+          mkdir dist
+          cp dl/desktop-windows/* dl/linux-installer/* dl/android/* dist/
+          cp dl/desktop-linux/*.AppImage dl/desktop-linux/*.deb dist/
+          ls -la dist
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
@@ -189,9 +269,10 @@ jobs:
           body: |
             Automated build of `${{ github.sha }}`.
 
-            | Platform | Download | Run |
-            |---|---|---|
-            | Windows | `CommanderLab-windows-x86_64.zip` (or the bare `.exe`) | unzip, double-click `CommanderLab.bat` |
-            | Linux (any distro, incl. NixOS) | `CommanderLab-linux-x86_64.sh` | `sh CommanderLab-linux-x86_64.sh` |
-            | Android 7+ | `CommanderLab-android.apk` | install; updates install over the previous build |
+            | Platform | Download |
+            |---|---|
+            | Windows 10/11 | `CommanderLab-windows-x86_64-setup.exe` (installer) or `CommanderLab-windows-x86_64-portable.exe` |
+            | Linux, any distro incl. NixOS | `CommanderLab-linux-x86_64.sh` → `sh CommanderLab-linux-x86_64.sh` |
+            | Linux packages | `.AppImage`, `.deb`, or `CommanderLab-web-linux-x86_64` (browser edition) |
+            | Android 7+ | `CommanderLab-android.apk` |
           files: dist/*

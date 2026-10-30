@@ -2,7 +2,7 @@
   import { api } from '../../lib/api';
   import { app } from '../../lib/store.svelte';
   import type { CardView, Deck, Entry, Zone } from '../../lib/types';
-  import { KIND_ORDER, money, price } from '../../lib/util';
+  import { entryImage, KIND_ORDER, money, price } from '../../lib/util';
   import Icon from '../../components/Icon.svelte';
   import Mana from '../../components/Mana.svelte';
 
@@ -152,11 +152,13 @@
         {#if view === 'list'}
           <ul class="rows">
             {#each g.entries as e (key(e))}
-              <li class="entry" onmouseenter={() => (hovered = e.card)}>
+              <li class="entry" onmouseenter={() => (hovered = e.card ? { ...e.card, image_uri: entryImage(e) } : null)}>
                 <span class="qty num">{e.quantity}</span>
-                <button class="name" onclick={() => e.card && (app.inspect = e.card)} class:unknown={!e.card}>
+                <button class="name" onclick={() => e.card && app.open(e.card, { deck: deck.name, entry: e })} class:unknown={!e.card}>
                   {e.name}
                   {#if e.card?.game_changer}<span class="gc" title="Game Changer">◆</span>{/if}
+                  {#if e.set_code}<span class="set small muted">{e.set_code}</span>{/if}
+                  {#if e.foil}<span class="foil-tag small">foil</span>{/if}
                 </button>
                 {#if e.card}<Mana cost={e.card.mana_cost} size={14} />{/if}
                 <span class="price small num muted">{e.card ? money(price(e.card, app.currency), app.currency) : 'not found'}</span>
@@ -190,9 +192,9 @@
         {:else}
           <div class="images">
             {#each g.entries as e (key(e))}
-              <button class="image" onclick={() => e.card && (app.inspect = e.card)} aria-label={e.name}>
-                {#if e.card?.image_uri}
-                  <img class="card-img" src={e.card.image_uri} alt={e.name} loading="lazy" />
+              <button class="image" class:foil={e.foil} onclick={() => e.card && app.open(e.card, { deck: deck.name, entry: e })} aria-label={e.name}>
+                {#if entryImage(e)}
+                  <img class="card-img" src={entryImage(e)} alt={e.name} loading="lazy" />
                 {:else}
                   <span class="card-img placeholder">{e.name}</span>
                 {/if}
@@ -338,6 +340,18 @@
   }
   .name.unknown {
     color: var(--danger);
+  }
+  .set {
+    margin-left: 0.35rem;
+    font-size: 0.72rem;
+  }
+  .foil-tag {
+    margin-left: 0.3rem;
+    font-size: 0.7rem;
+    color: var(--brass-strong);
+  }
+  .image.foil :global(img) {
+    box-shadow: 0 0 0 2px var(--brass);
   }
   .gc {
     color: var(--brass);

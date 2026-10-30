@@ -1,0 +1,325 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { api, copyText, download, runJob, runtime } from '../../lib/api';
+  import { app } from '../../lib/store.svelte';
+  import type { MpcCard, MpcConfig, MpcOrder } from '../../lib/types';
+  import Icon from '../../components/Icon.svelte';
+
+  let { name }: { name: string } = $props();
+
+  let order = $state<MpcOrder | null>(null);
+  let config = $state<MpcConfig | null>(null);
+  let searching = $state<{ percent: number; detail: string } | null>(null);
+  let notFound = $state<string[]>([]);
+  let focus = $state(0);
+  let showBack = $state(false);
+  let settingsOpen = $state(false);
+  let exported = $state<{ text: string; xml: string | null; xml_path: string | null; text_path: string; error: string | null; file_stem: string } | null>(null);
+
+  const STOCKS = ['(S30) Standard Smooth', '(S33) Superior Smooth', '(M31) Linen', '(P10) Plastic', '(S27) Smooth'];
+
+  onMount(async () => {
+    try {
+      [order, config] = await Promise.all([api<MpcOrder>('mpc_order', { name, rebuild: true }), api<MpcConfig>('mpc_config')]);
+    } catch (err) {
+      app.error(err);
+    }
+  });
+
+  async function search() {
+    searching = { percent: 0, detail: '' };
+    try {
+      const res = await runJob<MpcOrder>('mpc_search', { name }, (j) => (searching = { percent: j.percent, detail: j.detail }), 700);
+      order = res;
+      notFound = res.not_found ?? [];
+      app.toast(`Found art for ${res.resolved} of ${res.faces} faces.`, 'success');
+    } catch (err) {
+      app.error(err);
+    } finally {
+      searching = null;
+    }
+  }
+
+  async function select(index: number, back: boolean, selected: number) {
+    try {
+      order = await api<MpcOrder>('mpc_select', { name, index, back, selected });
+    } catch (err) {
+      app.error(err);
+    }
+  }
+
+  async function setConfig(patch: Partial<MpcConfig>) {
+    try {
+      config = await api<MpcConfig>('mpc_config_set', { config: patch });
+      if ('include_sideboard' in patch) order = await api<MpcOrder>('mpc_order', { name, rebuild: true });
+      else if (order) order = { ...order, stock: config.stock, foil: config.foil };
+    } catch (err) {
+      app.error(err);
+    }
+  }
+
+  async function exportOrder() {
+    try {
+      exported = await api('mpc_export', { name });
+      if (exported?.error) app.toast(exported.error, 'error', 7000);
+      else app.toast('MPC order saved.', 'success');
+    } catch (err) {
+      app.error(err);
+    }
+  }
+
+  function faceOf(card: MpcCard, back: boolean) {
+    return back && card.back ? card.back : card.front;
+  }
+
+  let current = $derived(order?.cards[focus]);
+  let face = $derived(current ? faceOf(current, showBack) : null);
+</script>
+
+{#if !order}
+  <p class="muted">Preparing your proxy order…</p>
+{:else}
+  <div class="head">
+    <div>
+      <h2>Print proxies with MPC Autofill</h2>
+      <p class="dim small">
+        {order.total_slots} cards round up to an MPC order of {order.bracket}. Art found for {order.resolved} of {order.faces} faces.
+      </p>
+    </div>
+    <div class="row">
+      <button class="btn ghost" onclick={() => (settingsOpen = !settingsOpen)}><Icon name="settings" size={16} /> Order options</button>
+      <button class="btn" onclick={search} disabled={!!searching}><Icon name="search" size={16} /> {order.resolved ? 'Search again' : 'Find proxy art'}</button>
+      <button class="btn primary" onclick={exportOrder}><Icon name="download" size={16} /> Export order</button>
+    </div>
+  </div>
+
+  {#if searching}
+    <div class="searching">
+      <div class="progress"><i style:width="{searching.percent}%"></i></div>
+      <span class="small dim">Searching MPC Autofill… {searching.detail}</span>
+    </div>
+  {/if}
+
+  {#if settingsOpen && config}
+    <section class="panel options">
+      <label class="field"><span>Card stock</span>
+        <select class="input" value={config.stock} onchange={(e) => setConfig({ stock: (e.target as HTMLSelectElement).value })}>
+          {#each STOCKS as s (s)}<option>{s}</option>{/each}
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" checked={config.foil} onchange={(e) => setConfig({ foil: (e.target as HTMLInputElement).checked })} /> Foil</label>
+      <label class="check"><input type="checkbox" checked={config.include_sideboard} onchange={(e) => setConfig({ include_sideboard: (e.target as HTMLInputElement).checked })} /> Include sideboard</label>
+      <label class="field"><span>Minimum DPI</span>
+        <input class="input" type="number" min="0" step="50" value={config.minimum_dpi} onchange={(e) => setConfig({ minimum_dpi: Number((e.target as HTMLInputElement).value) })} />
+      </label>
+      <label class="field"><span>Preferred sources <span class="muted">(comma separated)</span></span>
+        <input class="input" value={config.preferred_sources.join(', ')} onchange={(e) => setConfig({ preferred_sources: (e.target as HTMLInputElement).value.split(',').map((s) => s.trim()).filter(Boolean) })} />
+      </label>
+      <label class="field"><span>Cardback image ID <span class="muted">(blank = default)</span></span>
+        <input class="input" value={config.cardback_id} onchange={(e) => setConfig({ cardback_id: (e.target as HTMLInputElement).value.trim() })} />
+      </label>
+      <label class="field wide"><span>MPC Autofill server</span>
+        <input class="input" value={config.backend_url} onchange={(e) => setConfig({ backend_url: (e.target as HTMLInputElement).value.trim() })} />
+      </label>
+    </section>
+  {/if}
+
+  <div class="layout">
+    <ul class="list">
+      {#each order.cards as c, i (c.name + i)}
+        {@const missing = !c.front.candidates.length || (c.back && !c.back.candidates.length)}
+        <li>
+          <button class="item" class:on={i === focus} class:missing onclick={() => { focus = i; showBack = false; }}>
+            <span class="num qty">{c.quantity}</span>
+            <span class="nm">{c.name}{c.back ? ' ⟲' : ''}</span>
+            <span class="small muted">{c.front.candidates.length ? `${c.front.selected + 1}/${c.front.candidates.length}` : 'no art'}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+
+    <section class="art">
+      {#if current && face}
+        <div class="row">
+          <h3>{current.name}</h3>
+          {#if current.back}
+            <div class="segmented">
+              <button aria-pressed={!showBack} onclick={() => (showBack = false)}>Front</button>
+              <button aria-pressed={showBack} onclick={() => (showBack = true)}>Back</button>
+            </div>
+          {/if}
+        </div>
+        {#if face.candidates.length}
+          {@const img = face.candidates[face.selected]}
+          <div class="chosen">
+            <img class="card-img" src={img.thumbnail_url} alt={img.name} />
+            <div class="small dim">
+              {img.source_name || 'Unknown source'} · {img.dpi} DPI
+            </div>
+          </div>
+          <h3 class="small dim">Other art ({face.candidates.length})</h3>
+          <div class="cands">
+            {#each face.candidates as cand, j (cand.identifier)}
+              <button class="cand" class:on={j === face.selected} onclick={() => select(focus, showBack, j)} title="{cand.source_name} · {cand.dpi} DPI">
+                <img class="card-img" src={cand.thumbnail_url} alt="" loading="lazy" />
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <p class="muted">No proxy art yet. Click “Find proxy art”.</p>
+        {/if}
+      {/if}
+    </section>
+  </div>
+
+  {#if notFound.length}
+    <p class="small dim">No MPC art found for: {notFound.join(', ')}.</p>
+  {/if}
+
+  {#if exported}
+    <section class="panel exported">
+      <h3>Your order</h3>
+      {#if exported.xml_path}
+        <p class="small">Saved <b>{exported.xml_path}</b>. Open it with the MPC Autofill desktop tool, or import it on mpcfill.com.</p>
+      {/if}
+      <p class="small">The plain list is in <b>{exported.text_path}</b>. Paste it into mpcfill.com's “Add cards → Text” box.</p>
+      <div class="row">
+        {#if !runtime.isTauri && exported.xml}
+          <button class="btn" onclick={() => download(`${exported!.file_stem}.mpc.xml`, exported!.xml!, 'application/xml')}><Icon name="download" size={15} /> Download XML</button>
+        {/if}
+        <button class="btn" onclick={async () => { await copyText(exported!.text); app.toast('List copied.', 'success'); }}><Icon name="copy" size={15} /> Copy list</button>
+        <a class="btn ghost" href="https://mpcfill.com" target="_blank" rel="noreferrer">Open mpcfill.com <Icon name="external" size={14} /></a>
+      </div>
+    </section>
+  {/if}
+{/if}
+
+<style>
+  .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: end;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .searching {
+    display: grid;
+    gap: 0.35rem;
+    margin-bottom: 1rem;
+    max-width: 30rem;
+  }
+  .options {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.9rem 1.25rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+    align-items: end;
+  }
+  .options .wide {
+    grid-column: 1 / -1;
+  }
+  .check {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    min-height: 40px;
+  }
+  .check input {
+    accent-color: var(--brass);
+    width: 18px;
+    height: 18px;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(240px, 340px) 1fr;
+    gap: 1.5rem;
+    align-items: start;
+  }
+  .list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 70vh;
+    overflow: auto;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-md);
+    background: var(--panel);
+  }
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.45rem 0.75rem;
+    border: 0;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .item:hover {
+    background: var(--panel-2);
+  }
+  .item.on {
+    background: color-mix(in srgb, var(--brass) 14%, var(--panel));
+  }
+  .item.missing .nm {
+    color: var(--muted);
+  }
+  .qty {
+    width: 1.5rem;
+    text-align: right;
+    color: var(--muted);
+  }
+  .nm {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .art {
+    position: sticky;
+    top: 4.5rem;
+    display: grid;
+    gap: 0.75rem;
+  }
+  .chosen {
+    display: grid;
+    gap: 0.4rem;
+    width: min(280px, 100%);
+  }
+  .cands {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+    gap: 0.5rem;
+  }
+  .cand {
+    padding: 2px;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    background: none;
+    cursor: pointer;
+  }
+  .cand.on {
+    border-color: var(--brass);
+  }
+  .exported {
+    margin-top: 1.5rem;
+    padding: 1rem 1.25rem;
+    display: grid;
+    gap: 0.5rem;
+  }
+  @media (max-width: 760px) {
+    .layout {
+      grid-template-columns: 1fr;
+    }
+    .list {
+      max-height: 40vh;
+    }
+    .art {
+      position: static;
+    }
+  }
+</style>

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Commander Lab",
+  "identifier": "com.ari1re.commanderlab",
+  "build": {
+    "frontendDist": "../../frontend/dist",
+    "devUrl": "http://localhost:5173"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Commander Lab",
+        "width": 1360,
+        "height": 880,
+        "minWidth": 380,
+        "minHeight": 560,
+        "backgroundColor": "#1a1622"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Build, analyze and share Magic: The Gathering Commander decks",
+    "longDescription": "Commander Lab builds Commander decks at the bracket you choose, analyzes them, finds combos and improvements, tracks every change, shares decks by QR code, exports to Moxfield and orders proxies with MPC Autofill.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

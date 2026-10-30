@@ -1,5 +1,5 @@
 import { api } from './api';
-import type { CardView, Status } from './types';
+import type { CardView, Deck, Entry, Status } from './types';
 import type { Currency } from './util';
 
 export type Route =
@@ -44,6 +44,10 @@ class AppState {
   preview = $state<CardView | null>(null);
   /** Card opened in the detail sheet. */
   inspect = $state<CardView | null>(null);
+  /** When the inspected card is in an open deck: lets the sheet change its printing. */
+  inspectEntry = $state<{ deck: string; entry: Entry } | null>(null);
+  /** Set by the open deck view so other components can push an updated deck. */
+  deckUpdated: ((deck: Deck) => void) | null = null;
   updatingCards = $state<{ percent: number; step: string } | null>(null);
   private toastId = 0;
 
@@ -86,6 +90,16 @@ class AppState {
     const id = ++this.toastId;
     this.toasts = [...this.toasts, { id, text, kind }];
     setTimeout(() => (this.toasts = this.toasts.filter((t) => t.id !== id)), ms);
+  }
+
+  open(card: CardView, ctx?: { deck: string; entry: Entry }) {
+    this.inspect = card;
+    this.inspectEntry = ctx ?? null;
+  }
+
+  close() {
+    this.inspect = null;
+    this.inspectEntry = null;
   }
 
   error(err: unknown) {
