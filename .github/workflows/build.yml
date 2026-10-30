@@ -1,0 +1,185 @@
+name: Build Commander Lab
+
+# Every push to main builds Windows, Linux and Android and publishes them as a
+# GitHub release. Pull requests build and test only.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          crate=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')
+          version="${crate}+build.${{ github.run_number }}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release
+
+  windows:
+    needs: [meta, test]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/CommanderLab | Out-Null
+          Copy-Item target/release/commander-lab.exe dist/CommanderLab/
+          Copy-Item packaging/CommanderLab.bat dist/CommanderLab/
+          Copy-Item README.md, CHANGELOG.md dist/CommanderLab/
+          Copy-Item target/release/commander-lab.exe dist/CommanderLab-windows-x86_64.exe
+          Compress-Archive -Path dist/CommanderLab/* -DestinationPath dist/CommanderLab-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/CommanderLab-windows-x86_64.exe
+            dist/CommanderLab-windows-x86_64.zip
+
+  linux:
+    needs: [meta, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # Static musl build: runs on any distro, including NixOS, with no
+      # glibc or shared-library requirements.
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Package
+        run: |
+          mkdir -p dist/app
+          cp target/x86_64-unknown-linux-musl/release/commander-lab dist/app/
+          cp packaging/commander-lab.sh dist/app/
+          cp README.md CHANGELOG.md dist/app/
+          chmod +x dist/app/commander-lab dist/app/commander-lab.sh
+          tar -C dist/app -czf dist/CommanderLab-linux-x86_64.tar.gz .
+          sed "s/__CL_VERSION__/${{ needs.meta.outputs.version }}/" packaging/selfextract-header.sh > dist/CommanderLab-linux-x86_64.sh
+          cat dist/CommanderLab-linux-x86_64.tar.gz >> dist/CommanderLab-linux-x86_64.sh
+          chmod +x dist/CommanderLab-linux-x86_64.sh
+      - name: Smoke-test installer
+        run: |
+          COMMANDER_LAB_HOME="$RUNNER_TEMP/cl" sh dist/CommanderLab-linux-x86_64.sh --extract
+          test -x "$RUNNER_TEMP/cl/app/commander-lab"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/CommanderLab-linux-x86_64.sh
+            dist/CommanderLab-linux-x86_64.tar.gz
+
+  android:
+    needs: [meta, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - run: cargo install cargo-ndk --locked
+      - name: Build Rust for Android
+        run: |
+          cargo ndk -t arm64-v8a -t x86_64 --platform 24 build --release
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/jniLibs/x86_64
+          cp target/aarch64-linux-android/release/commander-lab android/app/src/main/jniLibs/arm64-v8a/libcommanderlab.so
+          cp target/x86_64-linux-android/release/commander-lab android/app/src/main/jniLibs/x86_64/libcommanderlab.so
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Decode signing key (optional secret)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          fi
+      - name: Build APK
+        working-directory: android
+        env:
+          CL_VERSION_NAME: ${{ needs.meta.outputs.version }}
+          CL_VERSION_CODE: ${{ github.run_number }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # Empty secrets fall back to the committed CI key.
+          [ -z "$ANDROID_KEYSTORE_PASSWORD" ] && unset ANDROID_KEYSTORE_PASSWORD
+          [ -z "$ANDROID_KEY_ALIAS" ] && unset ANDROID_KEY_ALIAS
+          [ -z "$ANDROID_KEY_PASSWORD" ] && unset ANDROID_KEY_PASSWORD
+          gradle --no-daemon assembleRelease
+          mkdir -p ../dist
+          cp app/build/outputs/apk/release/app-release.apk ../dist/CommanderLab-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/CommanderLab-android.apk
+
+  release:
+    if: github.event_name != 'pull_request'
+    needs: [meta, windows, linux, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: Commander Lab ${{ needs.meta.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          make_latest: true
+          body: |
+            Automated build of `${{ github.sha }}`.
+
+            | Platform | Download | Run |
+            |---|---|---|
+            | Windows | `CommanderLab-windows-x86_64.zip` (or the bare `.exe`) | unzip, double-click `CommanderLab.bat` |
+            | Linux (any distro, incl. NixOS) | `CommanderLab-linux-x86_64.sh` | `sh CommanderLab-linux-x86_64.sh` |
+            | Android 7+ | `CommanderLab-android.apk` | install; updates install over the previous build |
+          files: dist/*

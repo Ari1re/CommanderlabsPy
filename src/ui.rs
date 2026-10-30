@@ -901,6 +901,7 @@ fn render_dashboard_wide(
         Page::Simulation => render_simulation(frame, cols[0], app),
         Page::Combos => render_combos(frame, cols[0], app),
         Page::Sources => render_sources(frame, cols[0], app),
+        Page::Mpc => render_mpc(frame, cols[0], app),
         Page::Log => render_deck_log(frame, cols[0], app),
         Page::Help => render_help(frame, cols[0]),
     }
@@ -1127,6 +1128,184 @@ fn render_dashboard_bottom_panels(
     );
 }
 
+fn render_mpc(frame: &mut Frame, area: Rect, app: &mut App) {
+    app.ensure_mpc_order();
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(5),
+            Constraint::Min(6),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    // --- Action buttons -----------------------------------------------------
+    let buttons = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+            Constraint::Ratio(1, 7),
+        ])
+        .split(rows[0]);
+
+    let searching = app.mpc_progress.is_some();
+    render_button(
+        frame,
+        buttons[0],
+        if searching { " SEARCHING… " } else { " SEARCH " },
+        UiAction::MpcSearch,
+        theme::cyan(),
+        app,
+    );
+    render_button(frame, buttons[1], " ◀ ART ", UiAction::MpcPrevArt, theme::blue(), app);
+    render_button(frame, buttons[2], " ART ▶ ", UiAction::MpcNextArt, theme::blue(), app);
+    let foil_label = if app.mpc_config.foil { " FOIL: ON " } else { " FOIL: OFF " };
+    render_button(frame, buttons[3], foil_label, UiAction::MpcToggleFoil, theme::magenta(), app);
+    render_button(frame, buttons[4], " STOCK ", UiAction::MpcCycleStock, theme::purple(), app);
+    render_button(frame, buttons[5], " EXPORT XML ", UiAction::MpcExport, theme::green(), app);
+    render_button(frame, buttons[6], " MOXFIELD ", UiAction::ExportMoxfield, theme::orange(), app);
+
+    // --- Summary ---------------------------------------------------------
+    let summary = match app.mpc_order.as_ref() {
+        Some(order) => {
+            let (resolved, total) = order.resolved_faces();
+            vec![
+                Line::from(format!(
+                    "{} • {} slots → MPC bracket {} • art {}/{} faces",
+                    order.deck_name,
+                    order.total_slots(),
+                    order.bracket(),
+                    resolved,
+                    total,
+                ))
+                .style(Style::default().fg(theme::text()).add_modifier(Modifier::BOLD)),
+                Line::from(format!(
+                    "Stock {} • foil {} • sideboard {} • cardback {}",
+                    order.stock,
+                    if order.foil { "yes" } else { "no" },
+                    if app.mpc_config.include_sideboard { "included" } else { "excluded" },
+                    if order.cardback_id.is_empty() { "not set" } else { "set" },
+                ))
+                .style(Style::default().fg(theme::muted_color())),
+                Line::from(match app.mpc_progress {
+                    Some((done, total)) => format!(
+                        "Searching {} … {done}/{total}",
+                        app.mpc_config.backend_url
+                    ),
+                    None => format!(
+                        "Backend {} • min {} DPI • edit data/mpc_config.json for sources/cardback",
+                        app.mpc_config.backend_url, app.mpc_config.minimum_dpi
+                    ),
+                })
+                .style(Style::default().fg(theme::cyan())),
+            ]
+        }
+        None => vec![Line::from(
+            "Analyze a deck first; the MPC tab turns it into a MakePlayingCards proxy order.",
+        )],
+    };
+
+    frame.render_widget(
+        Paragraph::new(summary).wrap(Wrap { trim: true }).block(
+            Block::default()
+                .title(" MPC AUTOFILL ")
+                .borders(Borders::ALL)
+                .border_type(theme::border_type())
+                .border_style(Style::default().fg(theme::cyan()))
+                .style(theme::panel()),
+        ),
+        rows[1],
+    );
+
+    // --- Card list --------------------------------------------------------
+    let list_area = rows[2];
+    let inner_height = list_area.height.saturating_sub(2) as usize;
+    let mut lines = Vec::<Line>::new();
+
+    if let Some(order) = app.mpc_order.as_ref() {
+        let start = app.mpc_scroll.min(order.cards.len().saturating_sub(1));
+        for (offset, card) in order.cards.iter().enumerate().skip(start).take(inner_height) {
+            let face = |f: &crate::mpc::MpcFace| match f.chosen() {
+                Some(image) => format!(
+                    "{} {}dpi {}/{}",
+                    if image.source_name.is_empty() { "?" } else { image.source_name.as_str() },
+                    image.dpi,
+                    f.selected + 1,
+                    f.candidates.len()
+                ),
+                None => "— no art —".to_string(),
+            };
+
+            let mut text = format!("{:>2}× {:<34.34} {}", card.quantity, card.name, face(&card.front));
+            if let Some(back) = &card.back {
+                text.push_str(&format!("  ⟲ {}", face(back)));
+            }
+
+            let missing = card.front.chosen().is_none()
+                || card.back.as_ref().map(|b| b.chosen().is_none()).unwrap_or(false);
+
+            let style = if offset == app.mpc_focus {
+                theme::selected()
+            } else if missing {
+                Style::default().fg(theme::muted_color())
+            } else {
+                Style::default().fg(theme::text())
+            };
+
+            let y = list_area.y + 1 + (offset - start) as u16;
+            app.regions.mpc_rows.push((
+                offset,
+                Rect::new(list_area.x + 1, y, list_area.width.saturating_sub(2), 1),
+            ));
+            lines.push(Line::from(text).style(style));
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title(if app.mpc_show_back { " ORDER • showing BACK faces " } else { " ORDER " })
+                .borders(Borders::ALL)
+                .border_type(theme::border_type())
+                .border_style(Style::default().fg(theme::blue()))
+                .style(theme::panel()),
+        ),
+        list_area,
+    );
+
+    // --- Missing ------------------------------------------------------------
+    let footer = if app.mpc_not_found.is_empty() {
+        "Exports land in ./exports: <deck>.mpc.xml (desktop tool / mpcfill.com import) and <deck>.mpc.txt (paste into mpcfill.com).".to_string()
+    } else {
+        format!(
+            "No MPC art for {}: {}",
+            app.mpc_not_found.len(),
+            app.mpc_not_found.iter().take(10).cloned().collect::<Vec<_>>().join(", ")
+        )
+    };
+
+    frame.render_widget(
+        Paragraph::new(footer)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(theme::muted_color()))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(theme::border_type())
+                    .border_style(Style::default().fg(theme::muted_color()))
+                    .style(theme::panel()),
+            ),
+        rows[3],
+    );
+}
+
 fn render_dashboard_key_strip(
     frame: &mut Frame,
     area: Rect,
@@ -1134,8 +1313,13 @@ fn render_dashboard_key_strip(
 ) {
     frame.render_widget(
         Paragraph::new(format!(
-            "{}     H/L tabs     ↑/↓ navigate     Enter select     S simulate     C combos     Q quit",
+            "{}     {}",
             app.page.title(),
+            if app.page == Page::Mpc {
+                "↑/↓ card   [ ] art   V front/back   F search   X export order   T foil   O stock   B sideboard   M Moxfield   H/L tabs"
+            } else {
+                "H/L tabs     ↑/↓ navigate     Enter select     S simulate     C combos     M Moxfield export     Q quit"
+            },
         ))
         .style(
             Style::default()
@@ -1176,6 +1360,7 @@ fn render_dashboard_compact(frame: &mut Frame, area: Rect, app: &mut App) {
         Page::Simulation => render_simulation(frame, rows[1], app),
         Page::Combos => render_combos(frame, rows[1], app),
         Page::Sources => render_sources(frame, rows[1], app),
+        Page::Mpc => render_mpc(frame, rows[1], app),
         Page::Log => render_deck_log(frame, rows[1], app),
         Page::Help => render_help(frame, rows[1]),
     }

@@ -16,7 +16,7 @@ use crate::{
         DeepLearnReport, DeepLearnTestSummary, TestingIntensity,
     },
     deck::{
-        deck_to_text, load_deck_files, parse_deck_file, parse_deck_text,
+        deck_to_moxfield_text, deck_to_text, load_deck_files, ExportPrinting, parse_deck_file, parse_deck_text,
         safe_deck_filename, write_deck_file, DeckFile, ParsedDeck,
     },
     deck_history::{
@@ -30,6 +30,7 @@ use crate::{
         GeneratedDeck, GenerationBracket, GenerationProgress,
     },
     moxfield::import_moxfield,
+    mpc::{MpcClient, MpcConfig, MpcOrder, OrderLine, SearchOutcome},
     runtime_stats::RuntimeStats,
     meta_sim::{simulate_meta_matchups, MetaMatchupSummary},
     references::{
@@ -48,7 +49,7 @@ use crate::{
     ui,
 };
 use anyhow::{anyhow, Context, Result};
-use arboard::Clipboard;
+use crate::clipboard::Clipboard;
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
@@ -77,6 +78,11 @@ use std::{
 const IMAGE_USER_AGENT: &str =
     concat!("CommanderLab/", env!("CARGO_PKG_VERSION"), " local Commander deck analyzer");
 const COMMANDER_AUTOCOMPLETE_DEBOUNCE_MS: u64 = 300;
+
+enum MpcEvent {
+    Progress(usize, usize),
+    Finished(Result<SearchOutcome, String>),
+}
 
 enum GenerationEvent {
     Progress(GenerationProgress),
@@ -184,12 +190,13 @@ pub enum Page {
     Simulation,
     Combos,
     Sources,
+    Mpc,
     Log,
     Help,
 }
 
 impl Page {
-    pub const ALL: [Page; 13] = [
+    pub const ALL: [Page; 14] = [
         Page::Overview,
         Page::Cards,
         Page::Mana,
@@ -201,6 +208,7 @@ impl Page {
         Page::Simulation,
         Page::Combos,
         Page::Sources,
+        Page::Mpc,
         Page::Log,
         Page::Help,
     ];
@@ -218,6 +226,7 @@ impl Page {
             Page::Simulation => "SIM",
             Page::Combos => "COMBOS",
             Page::Sources => "SOURCES",
+            Page::Mpc => "MPC",
             Page::Log => "LOG",
             Page::Help => "HELP",
         }
@@ -328,6 +337,14 @@ pub enum UiAction {
     SettingsCycleCurrency,
     SideboardSuggestion,
     CopyDecklist,
+    ExportMoxfield,
+    MpcSearch,
+    MpcExport,
+    MpcPrevArt,
+    MpcNextArt,
+    MpcToggleFoil,
+    MpcCycleStock,
+    MpcToggleSideboard,
     RunDeepLearn,
     OpenSelectedCombo,
     ThemeSaveNamed,
@@ -442,6 +459,7 @@ pub struct UiRegions {
     pub theme_slots: Vec<(ThemeSlot, Rect)>,
     pub theme_presets: Vec<(usize, Rect)>,
     pub combo_rows: Vec<(usize, Rect)>,
+    pub mpc_rows: Vec<(usize, Rect)>,
     pub suggestion_cards: Vec<(SuggestionKind, String, Rect)>,
     pub source_links: Vec<(usize, String, Rect)>,
     pub source_rows: Vec<(usize, Rect)>,
@@ -550,6 +568,15 @@ pub struct App {
     pub generation_progress: Option<GenerationProgress>,
     pub generation_trace: Vec<String>,
     generation_rx: Option<Receiver<GenerationEvent>>,
+
+    pub mpc_config: MpcConfig,
+    pub mpc_order: Option<MpcOrder>,
+    pub mpc_focus: usize,
+    pub mpc_scroll: usize,
+    pub mpc_show_back: bool,
+    pub mpc_progress: Option<(usize, usize)>,
+    pub mpc_not_found: Vec<String>,
+    mpc_rx: Option<Receiver<MpcEvent>>,
 
     commander_autocomplete_input: String,
     commander_autocomplete_results: Vec<String>,
@@ -687,6 +714,14 @@ impl App {
             generation_progress: None,
             generation_trace: Vec::new(),
             generation_rx: None,
+            mpc_config: MpcConfig::load_or_create(),
+            mpc_order: None,
+            mpc_focus: 0,
+            mpc_scroll: 0,
+            mpc_show_back: false,
+            mpc_progress: None,
+            mpc_not_found: Vec::new(),
+            mpc_rx: None,
             commander_autocomplete_input: String::new(),
             commander_autocomplete_results: Vec::new(),
             commander_autocomplete_last_edit: None,
@@ -699,6 +734,7 @@ impl App {
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.should_quit {
             self.poll_generation_events()?;
+            self.poll_mpc_events();
             self.poll_deep_learn_events()?;
             self.poll_deep_agent_events()?;
             self.poll_agent_chat_events()?;
@@ -922,6 +958,42 @@ fn handle_dashboard_key(&mut self, key: KeyEvent) -> Result<()> {
         {
             self.toggle_card_zone();
         }
+
+        // --- MPC Autofill tab ---------------------------------------------
+        KeyCode::Up | KeyCode::Char('k') if self.page == Page::Mpc => {
+            self.mpc_move_focus(-1);
+        }
+        KeyCode::Down | KeyCode::Char('j') if self.page == Page::Mpc => {
+            self.mpc_move_focus(1);
+        }
+        KeyCode::PageUp if self.page == Page::Mpc => self.mpc_move_focus(-10),
+        KeyCode::PageDown if self.page == Page::Mpc => self.mpc_move_focus(10),
+        KeyCode::Char('[') if self.page == Page::Mpc => self.mpc_cycle_art(false),
+        KeyCode::Char(']') if self.page == Page::Mpc => self.mpc_cycle_art(true),
+        KeyCode::Enter | KeyCode::Char('f') | KeyCode::Char('F')
+            if self.page == Page::Mpc =>
+        {
+            self.start_mpc_search();
+        }
+        KeyCode::Char('x') | KeyCode::Char('X') if self.page == Page::Mpc => {
+            self.export_mpc_order();
+        }
+        KeyCode::Char('t') | KeyCode::Char('T') if self.page == Page::Mpc => {
+            self.mpc_toggle_foil();
+        }
+        KeyCode::Char('o') | KeyCode::Char('O') if self.page == Page::Mpc => {
+            self.mpc_cycle_stock();
+        }
+        KeyCode::Char('b') | KeyCode::Char('B') if self.page == Page::Mpc => {
+            self.mpc_toggle_sideboard();
+        }
+        KeyCode::Char('v') | KeyCode::Char('V') if self.page == Page::Mpc => {
+            self.mpc_show_back = !self.mpc_show_back;
+            self.mpc_preview_focused();
+        }
+
+        // Moxfield export is available from every deck tab.
+        KeyCode::Char('m') | KeyCode::Char('M') => self.export_moxfield(),
 
         KeyCode::Char('u') | KeyCode::Char('U') => self.update_database(),
         KeyCode::Char('s') | KeyCode::Char('S') => self.run_simulation()?,
@@ -2411,6 +2483,14 @@ Modal::DeepLearnUpgradeBracket { selected } => {
                     }
                 }
 
+                for (index, area) in self.regions.mpc_rows.clone() {
+                    if point_in(area, mouse.column, mouse.row) {
+                        self.mpc_focus = index;
+                        self.mpc_preview_focused();
+                        return Ok(());
+                    }
+                }
+
                 for (name, area) in self.regions.named_cards.clone() {
                     if point_in(area, mouse.column, mouse.row) {
                         self.select_card_by_name(&name);
@@ -2669,6 +2749,14 @@ Modal::DeepLearnUpgradeBracket { selected } => {
                     self.sideboard_selected_suggestion()?;
                 }
                 UiAction::CopyDecklist => self.copy_current_deck_to_clipboard(),
+                UiAction::ExportMoxfield => self.export_moxfield(),
+                UiAction::MpcSearch => self.start_mpc_search(),
+                UiAction::MpcExport => self.export_mpc_order(),
+                UiAction::MpcPrevArt => self.mpc_cycle_art(false),
+                UiAction::MpcNextArt => self.mpc_cycle_art(true),
+                UiAction::MpcToggleFoil => self.mpc_toggle_foil(),
+                UiAction::MpcCycleStock => self.mpc_cycle_stock(),
+                UiAction::MpcToggleSideboard => self.mpc_toggle_sideboard(),
                 UiAction::RunDeepLearn => {
                     self.screen = Screen::DeepLearn;
                     self.deep_learn_page = DeepLearnPage::Overview;
@@ -3099,6 +3187,439 @@ fn copy_current_deck_to_clipboard(&mut self) {
         Err(err) => {
             self.status =
                 format!("Could not copy decklist to clipboard: {err}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Moxfield export
+// ---------------------------------------------------------------------
+
+fn moxfield_export_text(&self, deck: &ParsedDeck) -> String {
+    deck_to_moxfield_text(deck, |name| match self.db.printing(name) {
+        Ok(Some(printing)) => ExportPrinting {
+            name: printing.name,
+            set_code: Some(printing.set_code),
+            collector_number: Some(printing.collector_number),
+        },
+        _ => ExportPrinting {
+            name: self
+                .db
+                .get_card(name)
+                .ok()
+                .flatten()
+                .map(|card| card.name)
+                .unwrap_or_else(|| name.to_string()),
+            set_code: None,
+            collector_number: None,
+        },
+    })
+}
+
+/// Write a Moxfield-importable list to ./exports and copy it to the
+/// clipboard. Lines carry `(SET) collector#` when printings are known.
+fn export_moxfield(&mut self) {
+    let Some(deck) = self.parsed.clone() else {
+        self.status = "Analyze a deck before exporting to Moxfield.".to_string();
+        return;
+    };
+
+    let text = self.moxfield_export_text(&deck);
+    let with_printings = text.lines().filter(|line| line.ends_with(')') || line.contains(") ")).count();
+
+    let path = PathBuf::from("./exports")
+        .join(format!("{}.moxfield.txt", safe_deck_filename(&deck.name)));
+
+    let written = std::fs::create_dir_all("./exports")
+        .and_then(|_| std::fs::write(&path, &text));
+
+    let copied = Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text));
+
+    self.status = match (written, copied) {
+        (Ok(_), Ok(_)) => format!(
+            "Moxfield list saved to {} and copied to clipboard ({} lines with set/collector #). In Moxfield: Create Deck → Import → paste.",
+            path.display(),
+            with_printings,
+        ),
+        (Ok(_), Err(_)) => format!(
+            "Moxfield list saved to {} (clipboard unavailable).",
+            path.display()
+        ),
+        (Err(err), _) => format!("Could not write Moxfield export: {err}"),
+    };
+
+    if with_printings == 0 {
+        self.status.push_str(
+            " Tip: press UPDATE once to download printings so exports include set codes.",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// MPC Autofill
+// ---------------------------------------------------------------------
+
+/// (Re)build the MPC order from the analyzed deck, keeping any art the
+/// user already chose for cards that are still in the list.
+fn rebuild_mpc_order(&mut self) -> bool {
+    let Some(deck) = self.parsed.clone() else {
+        self.status = "Analyze a deck before building an MPC order.".to_string();
+        return false;
+    };
+
+    let mut entries = deck.commanders.clone();
+    entries.extend(deck.main.iter().cloned());
+    if self.mpc_config.include_sideboard {
+        entries.extend(deck.sideboard.iter().cloned());
+    }
+
+    let lines: Vec<OrderLine> = entries
+        .into_iter()
+        .map(|entry| {
+            let printing = self.db.printing(&entry.name).ok().flatten();
+            let canonical = printing
+                .as_ref()
+                .map(|p| p.name.clone())
+                .or_else(|| self.db.get_card(&entry.name).ok().flatten().map(|c| c.name))
+                .unwrap_or_else(|| entry.name.clone());
+
+            let faces = printing
+                .filter(|p| p.double_faced)
+                .and_then(|_| {
+                    let mut split = canonical.split(" // ");
+                    match (split.next(), split.next()) {
+                        (Some(front), Some(back)) => {
+                            Some((front.trim().to_string(), back.trim().to_string()))
+                        }
+                        _ => None,
+                    }
+                });
+
+            // Split/adventure cards keep the full name; MPC indexes them
+            // under the front face.
+            let name = if faces.is_none() && canonical.contains(" // ") {
+                canonical.split(" // ").next().unwrap_or(&canonical).to_string()
+            } else {
+                canonical
+            };
+
+            OrderLine {
+                name,
+                quantity: entry.quantity,
+                faces,
+            }
+        })
+        .collect();
+
+    let mut order = MpcOrder::from_lines(&deck.name, &lines, &self.mpc_config);
+
+    if let Some(previous) = self.mpc_order.as_ref() {
+        if previous.deck_name == order.deck_name {
+            for card in &mut order.cards {
+                if let Some(old) = previous.cards.iter().find(|c| c.name == card.name) {
+                    card.front = old.front.clone();
+                    if card.back.is_some() {
+                        card.back = old.back.clone();
+                    }
+                }
+            }
+            if order.cardback_id.is_empty() {
+                order.cardback_id = previous.cardback_id.clone();
+            }
+        }
+    }
+
+    self.mpc_focus = self.mpc_focus.min(order.cards.len().saturating_sub(1));
+    self.mpc_order = Some(order);
+    true
+}
+
+pub fn ensure_mpc_order(&mut self) {
+    let stale = match (&self.mpc_order, &self.parsed) {
+        (Some(order), Some(deck)) => order.deck_name != deck.name,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    if stale {
+        self.rebuild_mpc_order();
+    }
+}
+
+fn start_mpc_search(&mut self) {
+    if self.mpc_rx.is_some() {
+        self.status = "MPC Autofill search is already running.".to_string();
+        return;
+    }
+    if !self.rebuild_mpc_order() {
+        return;
+    }
+    let Some(order) = self.mpc_order.as_ref() else { return };
+
+    let queries = order.queries();
+    let config = self.mpc_config.clone();
+    let (tx, rx) = mpsc::channel::<MpcEvent>();
+
+    self.mpc_progress = Some((0, queries.len()));
+    self.mpc_not_found.clear();
+    self.status = format!(
+        "Searching MPC Autofill ({}) for {} card face(s)…",
+        config.backend_url,
+        queries.len()
+    );
+
+    thread::spawn(move || {
+        let progress_tx = tx.clone();
+        let result = MpcClient::new(&config)
+            .and_then(|client| {
+                client.search(&queries, &config, |done, total| {
+                    let _ = progress_tx.send(MpcEvent::Progress(done, total));
+                })
+            })
+            .map_err(|err| format!("{err:#}"));
+        let _ = tx.send(MpcEvent::Finished(result));
+    });
+
+    self.mpc_rx = Some(rx);
+}
+
+fn poll_mpc_events(&mut self) {
+    let mut finished = None;
+
+    if let Some(rx) = &self.mpc_rx {
+        loop {
+            match rx.try_recv() {
+                Ok(MpcEvent::Progress(done, total)) => {
+                    self.mpc_progress = Some((done, total));
+                    self.status = format!("MPC Autofill search {done}/{total}…");
+                }
+                Ok(MpcEvent::Finished(result)) => {
+                    finished = Some(result);
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    finished = Some(Err("MPC search worker stopped unexpectedly.".into()));
+                    break;
+                }
+            }
+        }
+    }
+
+    let Some(result) = finished else { return };
+    self.mpc_rx = None;
+    self.mpc_progress = None;
+
+    match result {
+        Ok(outcome) => {
+            if let Some(order) = self.mpc_order.as_mut() {
+                order.apply_results(&outcome.results);
+                if order.cardback_id.is_empty() {
+                    if let Some(cardback) = outcome.default_cardback.clone() {
+                        order.cardback_id = cardback;
+                    }
+                }
+                let (resolved, total) = order.resolved_faces();
+                self.status = format!(
+                    "MPC Autofill: art found for {resolved}/{total} face(s). [ / ] cycles art, X exports the order.",
+                );
+            }
+            self.mpc_not_found = outcome.not_found;
+            self.mpc_preview_focused();
+        }
+        Err(err) => {
+            self.status = format!(
+                "MPC Autofill search failed: {err}. You can still press X to export the text list for mpcfill.com."
+            );
+        }
+    }
+}
+
+fn mpc_move_focus(&mut self, delta: isize) {
+    self.ensure_mpc_order();
+    let Some(order) = self.mpc_order.as_ref() else { return };
+    if order.cards.is_empty() {
+        return;
+    }
+    let max = order.cards.len() as isize - 1;
+    self.mpc_focus = (self.mpc_focus as isize + delta).clamp(0, max) as usize;
+
+    let visible = self
+        .regions
+        .mpc_rows
+        .len()
+        .max(1);
+    if self.mpc_focus < self.mpc_scroll {
+        self.mpc_scroll = self.mpc_focus;
+    } else if self.mpc_focus >= self.mpc_scroll + visible {
+        self.mpc_scroll = self.mpc_focus + 1 - visible;
+    }
+    self.mpc_preview_focused();
+}
+
+fn mpc_cycle_art(&mut self, forward: bool) {
+    let show_back = self.mpc_show_back;
+    let focus = self.mpc_focus;
+    let Some(card) = self.mpc_order.as_mut().and_then(|o| o.cards.get_mut(focus)) else {
+        return;
+    };
+    let face = match (show_back, card.back.as_mut()) {
+        (true, Some(back)) => back,
+        _ => &mut card.front,
+    };
+    if face.candidates.len() < 2 {
+        self.status = "No alternative MPC art for this card (run SEARCH first).".to_string();
+        return;
+    }
+    face.cycle(forward);
+    let chosen = face.chosen().cloned().unwrap_or_default();
+    self.status = format!(
+        "Art {}/{} • {} • {} DPI",
+        face.selected + 1,
+        face.candidates.len(),
+        if chosen.source_name.is_empty() { "unknown source" } else { &chosen.source_name },
+        chosen.dpi,
+    );
+    self.mpc_preview_focused();
+}
+
+pub fn mpc_preview_focused(&mut self) {
+    let show_back = self.mpc_show_back;
+    let Some(card) = self
+        .mpc_order
+        .as_ref()
+        .and_then(|order| order.cards.get(self.mpc_focus))
+        .cloned()
+    else {
+        return;
+    };
+
+    // Card data panel follows the deck card; the art panel shows the MPC
+    // proxy image that will actually be printed.
+    let face = match (show_back, &card.back) {
+        (true, Some(back)) => back.clone(),
+        _ => card.front.clone(),
+    };
+
+    if let Ok(Some(info)) = self.db.get_card(&card.name) {
+        self.selected_card_info = Some(info);
+    }
+
+    let Some(image) = face.chosen() else {
+        // No MPC art yet: fall back to the Scryfall preview.
+        self.select_card_by_name(&card.name);
+        return;
+    };
+
+    if image.thumbnail_url.is_empty() {
+        self.select_card_by_name(&card.name);
+        return;
+    }
+
+    let safe_id: String = image
+        .identifier
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let cache = PathBuf::from("./data/images/mpc").join(format!("{safe_id}.img"));
+
+    let result = (|| -> Result<()> {
+        if !cache.exists() {
+            download_image(&image.thumbnail_url, &cache)?;
+        }
+        let decoded = ImageReader::open(&cache)?
+            .with_guessed_format()?
+            .decode()
+            .context("Could not decode MPC thumbnail")?;
+        let picker = if self.safe_image_mode {
+            Picker::halfblocks()
+        } else {
+            self.image_picker.clone()
+        };
+        self.card_image = Some(
+            picker
+                .new_protocol(decoded, Size::new(32, 24), Resize::Fit(None))
+                .context("Could not prepare MPC thumbnail")?,
+        );
+        Ok(())
+    })();
+
+    if let Err(err) = result {
+        self.status = format!("MPC thumbnail unavailable: {err}");
+        self.select_card_by_name(&card.name);
+    }
+}
+
+fn mpc_toggle_foil(&mut self) {
+    self.mpc_config.foil = !self.mpc_config.foil;
+    if let Some(order) = self.mpc_order.as_mut() {
+        order.foil = self.mpc_config.foil;
+    }
+    let _ = self.mpc_config.save();
+    self.status = format!("MPC foil: {}", if self.mpc_config.foil { "ON" } else { "OFF" });
+}
+
+fn mpc_cycle_stock(&mut self) {
+    self.mpc_config.cycle_stock();
+    if let Some(order) = self.mpc_order.as_mut() {
+        order.stock = self.mpc_config.stock.clone();
+    }
+    let _ = self.mpc_config.save();
+    self.status = format!("MPC card stock: {}", self.mpc_config.stock);
+}
+
+fn mpc_toggle_sideboard(&mut self) {
+    self.mpc_config.include_sideboard = !self.mpc_config.include_sideboard;
+    let _ = self.mpc_config.save();
+    self.rebuild_mpc_order();
+    self.status = format!(
+        "MPC order {} the sideboard. Run SEARCH for any new cards.",
+        if self.mpc_config.include_sideboard { "now includes" } else { "no longer includes" }
+    );
+}
+
+/// Write the MPC Autofill XML (when every face has art) and always write
+/// the plain text list usable on mpcfill.com.
+fn export_mpc_order(&mut self) {
+    self.ensure_mpc_order();
+    let Some(order) = self.mpc_order.clone() else {
+        self.status = "Analyze a deck before exporting an MPC order.".to_string();
+        return;
+    };
+
+    let base = PathBuf::from("./exports").join(safe_deck_filename(&order.deck_name));
+    if let Err(err) = std::fs::create_dir_all("./exports") {
+        self.status = format!("Could not create ./exports: {err}");
+        return;
+    }
+
+    let text_path = base.with_extension("mpc.txt");
+    let _ = std::fs::write(&text_path, order.to_text());
+
+    match order.to_xml() {
+        Ok(xml) => {
+            let xml_path = base.with_extension("mpc.xml");
+            match std::fs::write(&xml_path, xml) {
+                Ok(_) => {
+                    self.status = format!(
+                        "MPC order saved: {} ({} cards, bracket {}{}). Open it with the MPC Autofill tool or import on mpcfill.com.",
+                        xml_path.display(),
+                        order.total_slots(),
+                        order.bracket(),
+                        if order.cardback_id.is_empty() {
+                            ", no cardback set — choose one in the tool"
+                        } else {
+                            ""
+                        },
+                    );
+                }
+                Err(err) => self.status = format!("Could not write MPC XML: {err}"),
+            }
+        }
+        Err(err) => {
+            self.status = format!(
+                "{err} Text list saved to {} for mpcfill.com.",
+                text_path.display()
+            );
         }
     }
 }

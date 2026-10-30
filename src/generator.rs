@@ -727,7 +727,7 @@ where
         }
     }
 
-    let validated = enforce_generation_bracket(
+    let (integrity_report, validated) = integrity_gate(
         &mut generated.deck,
         target_bracket,
         db,
@@ -736,6 +736,7 @@ where
         &intelligence,
         &generated.plan.combos,
     )?;
+    generated.plan.notes.extend(integrity_report.notes());
 
     generated.plan.notes.push(format!(
         "AI Upgrade targeted Bracket {} and compared the learned shell against '{}'. Retained {} high-support cards from the original list. Displaced flexible alternatives were moved to Sideboard/consideration.",
@@ -1789,7 +1790,13 @@ progress(GenerationProgress::new(
     ),
 ));
 
-let validated_bracket = enforce_generation_bracket(
+progress(GenerationProgress::new(
+    95,
+    "Deck integrity test",
+    "Checking 100-card size, singleton, colour identity, legality, structure and goldfish hands".to_string(),
+));
+
+let (integrity_report, validated_bracket) = integrity_gate(
     &mut deck,
     target_bracket,
     db,
@@ -1854,6 +1861,8 @@ notes.insert(
             intelligence.role_summary(),
         ),
     );
+
+    notes.extend(integrity_report.notes());
 
     if commanders.len() == 2 {
         notes.push(format!(
@@ -1948,6 +1957,54 @@ notes.insert(
             sources,
         },
     })
+}
+
+/// Final integrity gate: audit + repair the finished list, re-lock the
+/// bracket if repairs changed the card pool, then require a clean pass.
+fn integrity_gate(
+    deck: &mut ParsedDeck,
+    target: GenerationBracket,
+    db: &CardDb,
+    pool: &[Card],
+    identity: &str,
+    intelligence: &crate::intelligence::CommanderIntelligence,
+    combos: &[GeneratedCombo],
+) -> Result<(crate::integrity::IntegrityReport, BracketEstimate)> {
+    let mut protected: Vec<String> =
+        deck.commanders.iter().map(|entry| entry.name.clone()).collect();
+    protected.extend(combos.iter().flat_map(|combo| combo.cards.iter().cloned()));
+
+    let combo_lines: Vec<Vec<String>> =
+        combos.iter().map(|combo| combo.cards.clone()).collect();
+
+    let first = crate::integrity::audit_and_repair(
+        deck, db, identity, &protected, &combo_lines,
+    )?;
+
+    let mut estimate =
+        enforce_generation_bracket(deck, target, db, pool, identity, intelligence, combos)?;
+
+    // Bracket re-lock may swap cards; re-run until both contracts hold.
+    let mut report = crate::integrity::require_integrity(
+        deck, db, identity, &protected, &combo_lines,
+    )?;
+
+    if !report.repairs.is_empty() {
+        estimate = enforce_generation_bracket(
+            deck, target, db, pool, identity, intelligence, combos,
+        )?;
+        report = crate::integrity::require_integrity(
+            deck, db, identity, &protected, &combo_lines,
+        )?;
+    }
+
+    // Keep the first pass's repairs visible to the user.
+    let mut merged = report;
+    let mut repairs = first.repairs;
+    repairs.extend(merged.repairs);
+    merged.repairs = repairs;
+
+    Ok((merged, estimate))
 }
 
 fn enforce_generation_bracket(
