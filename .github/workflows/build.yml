@@ -103,22 +103,34 @@ jobs:
 
   android:
     needs: [meta, test]
-    runs-on: ubuntu-latest
+    # Pinned: this image ships the Android SDK + NDK preinstalled.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - name: Install NDK
+      - name: Locate Android SDK / NDK
         run: |
-          sdkmanager --install "ndk;27.2.12479018"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          NDK="${ANDROID_NDK_LATEST_HOME:-}"
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
+            NDK=$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1)
+          fi
+          if [ -z "$NDK" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"
+            NDK="$SDK/ndk/27.2.12479018"
+          fi
+          echo "Using NDK $NDK"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - run: cargo install cargo-ndk --locked
       - name: Build Rust for Android
         run: |
