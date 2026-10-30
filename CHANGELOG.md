@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.0
+
+- New MPC tab: MPC Autofill search, per-card art cycling with live preview, double-faced back slots, foil/stock/sideboard options, XML order + mpcfill.com text export.
+- Moxfield export (`M`) with `(SET) collector#` printings; printings now recorded during Scryfall UPDATE.
+- Deck integrity gate after generation and AI upgrade: size, singleton, identity, legality, commander placement auto-repair; bracket re-lock; land/role/goldfish warnings.
+- Local AI backend is optional at startup (`COMMANDER_LAB_NO_AI=1` to skip).
+- Clipboard falls back cleanly where unavailable (Android, headless Linux).
+- GitHub Actions builds Windows `.exe`, Linux self-installing `.sh` (static musl), and Android `.apk` on every push and publishes a release.
+- Test fixtures are optional so clean checkouts pass `cargo test`.
+
 ## 0.4.0
 
 - Added daily Scryfall price fields and marketplace purchase URIs.

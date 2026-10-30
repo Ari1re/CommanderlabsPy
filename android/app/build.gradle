@@ -1,0 +1,62 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Version comes from CI (Cargo version + run number) when available.
+def ciVersionName = System.getenv('CL_VERSION_NAME') ?: '0.0.0-dev'
+def ciVersionCode = (System.getenv('CL_VERSION_CODE') ?: '1') as Integer
+
+android {
+    namespace 'com.ari1re.commanderlab'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.ari1re.commanderlab'
+        minSdk 24
+        targetSdk 34
+        versionCode ciVersionCode
+        versionName ciVersionName
+    }
+
+    signingConfigs {
+        // Stable key so every CI build can install over the previous one
+        // without wiping decks. Override with repository secrets
+        // (ANDROID_KEYSTORE_*), see README "Android signing".
+        release {
+            def ks = System.getenv('ANDROID_KEYSTORE_PATH')
+            storeFile file(ks ?: '../commanderlab-ci.keystore')
+            storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: 'commanderlab'
+            keyAlias System.getenv('ANDROID_KEY_ALIAS') ?: 'commanderlab'
+            keyPassword System.getenv('ANDROID_KEY_PASSWORD') ?: 'commanderlab'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // The Rust binary ships as lib*.so so Android extracts it into the
+    // executable native-library directory.
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.github.termux.termux-app:terminal-view:v0.118.0'
+    implementation 'com.github.termux.termux-app:terminal-emulator:v0.118.0'
+    implementation 'androidx.annotation:annotation:1.8.0'
+}

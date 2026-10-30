@@ -1,6 +1,82 @@
-# Commander Lab 0.4.0
+# Commander Lab
 
 A local-first, clickable Magic: The Gathering Commander deck workbench written in Rust.
+
+## Download & run
+
+Every push to `main` is built automatically by GitHub Actions and published on the
+[Releases](../../releases) page:
+
+| Platform | File | How to run |
+|---|---|---|
+| Windows | `CommanderLab-windows-x86_64.zip` | Unzip anywhere, double-click `CommanderLab.bat` (or the `.exe`). Decks live next to the exe. |
+| Linux (any distro, NixOS included) | `CommanderLab-linux-x86_64.sh` | `sh CommanderLab-linux-x86_64.sh` — installs to `~/.local/share/commander-lab/app` and starts. Static musl binary, no dependencies. Decks live in `~/.local/share/commander-lab`. |
+| Android 7+ | `CommanderLab-android.apk` | Install the APK. The full app runs in a built-in terminal; decks, card cache and exports stay in the app's private storage. Each build installs over the previous one. |
+
+The local AI backend (llama.cpp / Ollama / API) is optional. If it is not available,
+Commander Lab starts anyway with the deterministic generator, analysis, MPC and
+exports. Set `COMMANDER_LAB_NO_AI=1` to skip it on purpose. Android never starts a
+local model.
+
+### Building from source
+
+```sh
+cargo build --release
+cargo test --release
+```
+
+The workflow lives in `.github/workflows/build.yml`. The Android app is in `android/`;
+it hosts the Rust binary (packaged as `libcommanderlab.so`) in a Termux terminal view.
+
+#### Android signing
+
+APKs are signed with the committed `android/commanderlab-ci.keystore` so updates
+install over each other. To use your own key, add the repository secrets
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
+`ANDROID_KEY_PASSWORD`. (Switching keys once requires uninstalling the old APK.)
+
+## 0.21.0 — MPC Autofill tab, Moxfield export, deck integrity gate, cross-platform builds
+
+### MPC tab (deck dashboard → `MPC`)
+
+Turns the analyzed deck into a MakePlayingCards proxy order using MPC Autofill.
+
+- `F` / Enter / **SEARCH** — searches the MPC Autofill backend for every card face
+  (double-faced cards get a matching back slot). Results are ranked by your
+  preferred sources, then DPI.
+- `[` / `]` — cycle art for the selected card; `V` toggles front/back; the right
+  panel previews the actual MPC image.
+- `T` foil, `O` card stock, `B` include/exclude sideboard.
+- `X` / **EXPORT XML** — writes `exports/<deck>.mpc.xml` (MPC Autofill desktop tool,
+  or import on mpcfill.com) and always writes `exports/<deck>.mpc.txt` for the
+  mpcfill.com text box, even if the backend was unreachable.
+- Settings live in `data/mpc_config.json`: `backend_url`, `cardback_id`,
+  `preferred_sources`, `minimum_dpi`, `stock`, `foil`, `include_sideboard`,
+  `max_candidates`.
+
+### Moxfield export
+
+`M` on any deck tab (or **MOXFIELD** in the MPC tab) writes
+`exports/<deck>.moxfield.txt` and copies it to the clipboard. It uses Moxfield's
+`Commander` / `Deck` / `Sideboard` import format with `(SET) collector#` on each
+line, so Moxfield shows the same printings. Press **UPDATE** once after upgrading
+so the card database records printings.
+
+### Deck integrity gate
+
+Every generated deck and AI upgrade now passes an integrity test before it is
+handed to you:
+
+- **Hard rules, auto-repaired and then re-verified:** exactly 100 cards,
+  singleton (respecting "any number of" cards), colour identity, Commander
+  legality, and commanders not duplicated in the 99. Combo pieces and commanders
+  are never trimmed.
+- **Bracket re-lock:** if repairs changed the list, the requested bracket is
+  enforced again and the integrity test repeats.
+- **Soft checks, reported in the deck notes:** land count, ramp, card draw,
+  interaction and a 400-hand goldfish keepability test.
+
+A list that still fails a hard rule is rejected rather than saved.
 
 ## What 0.4 adds
 

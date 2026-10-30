@@ -1,12 +1,11 @@
 [package]
 name = "commander-lab"
-version = "0.20.8-opti.11"
+version = "0.21.0"
 edition = "2021"
 
 [dependencies]
 chrono = "0.4"
 urlencoding = "2"
-arboard = "3"
 flate2 = "1"
 anyhow = "1"
 crossterm = "0.29"
@@ -21,3 +20,10 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.33"
+
+# arboard has no Android backend; src/clipboard.rs provides a fallback there.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+arboard = "3"
+
+[profile.release]
+strip = true

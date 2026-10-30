@@ -55,6 +55,15 @@ pub struct CardDb {
     conn: Connection,
 }
 
+/// A card's default printing as recorded from Scryfall Oracle bulk data.
+#[derive(Debug, Clone)]
+pub struct PrintingInfo {
+    pub name: String,
+    pub set_code: String,
+    pub collector_number: String,
+    pub double_faced: bool,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct ImageUris {
     small: Option<String>,
@@ -136,6 +145,12 @@ struct ScryfallCard {
 
     #[serde(default)]
     card_faces: Option<Vec<ScryfallFace>>,
+
+    #[serde(default)]
+    set: String,
+
+    #[serde(default)]
+    collector_number: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +222,15 @@ impl CardDb {
 
             CREATE INDEX IF NOT EXISTS idx_alias_lower
                 ON aliases(alias_lower);
+
+            -- Default printing per Oracle card, used for Moxfield export
+            -- and MPC Autofill ordering.
+            CREATE TABLE IF NOT EXISTS printings (
+                oracle_id TEXT PRIMARY KEY,
+                set_code TEXT NOT NULL,
+                collector_number TEXT NOT NULL,
+                double_faced INTEGER NOT NULL DEFAULT 0
+            );
             "#,
         )?;
 
@@ -228,6 +252,7 @@ impl CardDb {
             "ALTER TABLE cards ADD COLUMN cardmarket_uri TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE cards ADD COLUMN cardhoarder_uri TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE cards ADD COLUMN game_changer INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE printings ADD COLUMN double_faced INTEGER NOT NULL DEFAULT 0",
         ] {
             let _ = conn.execute(sql, []);
         }
@@ -364,6 +389,31 @@ impl CardDb {
             .map_err(Into::into)
     }
 
+    /// Default printing for a card name, if the card database has been
+    /// refreshed since printings were recorded.
+    pub fn printing(&self, name: &str) -> Result<Option<PrintingInfo>> {
+        let Some(card) = self.get_card(name)? else {
+            return Ok(None);
+        };
+
+        self.conn
+            .query_row(
+                "SELECT set_code, collector_number, double_faced \
+                 FROM printings WHERE oracle_id = ?1",
+                [&card.oracle_id],
+                |row| {
+                    Ok(PrintingInfo {
+                        name: card.name.clone(),
+                        set_code: row.get(0)?,
+                        collector_number: row.get(1)?,
+                        double_faced: row.get::<_, i64>(2)? != 0,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn top_ranked_cards(&self, limit: usize) -> Result<Vec<Card>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -474,6 +524,7 @@ impl CardDb {
 
         tx.execute("DELETE FROM aliases", [])?;
         tx.execute("DELETE FROM cards", [])?;
+        tx.execute("DELETE FROM printings", [])?;
 
         let inserted = import_jsonl(reader, &tx)?;
 
@@ -710,6 +761,11 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
         "INSERT INTO aliases(alias_lower, oracle_id) VALUES (?1, ?2)",
     )?;
 
+    let mut printing_stmt = tx.prepare(
+        "INSERT OR REPLACE INTO printings(oracle_id, set_code, collector_number, double_faced) \
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+
     let mut inserted = 0usize;
 
     for (line_number, line_result) in reader.lines().enumerate() {
@@ -865,6 +921,19 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
             cardhoarder_uri,
             raw.game_changer.unwrap_or(false) as i32,
         ])?;
+
+        if !raw.set.is_empty() && !raw.collector_number.is_empty() {
+            let double_faced = matches!(
+                raw.layout.to_ascii_lowercase().as_str(),
+                "transform" | "modal_dfc" | "double_faced_token" | "reversible_card"
+            );
+            printing_stmt.execute(params![
+                oracle_id,
+                raw.set.to_ascii_uppercase(),
+                raw.collector_number,
+                double_faced as i32,
+            ])?;
+        }
 
         alias_stmt.execute(params![
             raw.name.to_ascii_lowercase(),
