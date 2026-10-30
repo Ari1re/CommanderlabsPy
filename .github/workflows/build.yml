@@ -119,11 +119,14 @@ jobs:
         run: |
           node -e "const f='desktop/src-tauri/tauri.conf.json';const c=require('./'+f);c.version='${{ needs.meta.outputs.app_version }}';require('fs').writeFileSync(f,JSON.stringify(c,null,2))"
       - run: npm ci
-        working-directory: frontend
+        working-directory: desktop
       - name: Build app
         shell: bash
         working-directory: desktop
-        run: ../frontend/node_modules/.bin/tauri build ${{ runner.os == 'Linux' && '--bundles appimage,deb' || '--bundles nsis' }}
+        run: |
+          set -o pipefail
+          npm run tauri -- build ${{ runner.os == 'Linux' && '--bundles appimage,deb' || '--bundles nsis' }} 2>&1 | tee build.log || {
+            echo "::error title=Desktop build failed::$(grep -iE 'error|failed|cannot|could not' build.log | tail -n 40 | tr '\n' '|' | cut -c1-3500)"; exit 1; }
       - name: Collect
         shell: bash
         run: |
@@ -210,18 +213,21 @@ jobs:
         run: |
           node -e "const f='desktop/src-tauri/tauri.conf.json';const c=require('./'+f);c.version='${{ needs.meta.outputs.app_version }}';require('fs').writeFileSync(f,JSON.stringify(c,null,2))"
       - run: npm ci
-        working-directory: frontend
+        working-directory: desktop
       - name: Generate Android project
         working-directory: desktop
         run: |
-          ../frontend/node_modules/.bin/tauri android init --ci
+          npm run tauri -- android init --ci
           # Camera access for scanning deck QR codes.
           MANIFEST=src-tauri/gen/android/app/src/main/AndroidManifest.xml
           grep -q 'android.permission.CAMERA' "$MANIFEST" || \
             sed -i 's#<application#<uses-permission android:name="android.permission.CAMERA" />\n    <application#' "$MANIFEST"
       - name: Build APK
         working-directory: desktop
-        run: ../frontend/node_modules/.bin/tauri android build --apk --target aarch64 armv7 x86_64 --ci
+        run: |
+          set -o pipefail
+          npm run tauri -- android build --apk --target aarch64 armv7 x86_64 --ci 2>&1 | tee build.log || {
+            echo "::error title=Android build failed::$(grep -iE 'error|failed|cannot|could not|exception' build.log | tail -n 40 | tr '\n' '|' | cut -c1-3500)"; exit 1; }
       - name: Sign APK
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
