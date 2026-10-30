@@ -389,8 +389,7 @@ fn fill_with_basics(deck: &mut ParsedDeck, identity: &str, missing: u32) {
         } else {
             deck.main.push(DeckEntry {
                 quantity: 1,
-                name: name.to_string(),
-            });
+                name: name.to_string(), ..Default::default() });
         }
     }
 }
@@ -402,10 +401,10 @@ mod tests {
     fn deck(commander: &str, main: &[(u32, &str)]) -> ParsedDeck {
         ParsedDeck {
             name: "t".into(),
-            commanders: vec![DeckEntry { quantity: 1, name: commander.into() }],
+            commanders: vec![DeckEntry { quantity: 1, name: commander.into(), ..Default::default() }],
             main: main
                 .iter()
-                .map(|(q, n)| DeckEntry { quantity: *q, name: (*n).into() })
+                .map(|(q, n)| DeckEntry { quantity: *q, name: (*n).into(), ..Default::default() })
                 .collect(),
             sideboard: vec![],
         }

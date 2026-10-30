@@ -1,4 +1,4 @@
-import type { CardView } from './types';
+import type { CardView, Entry } from './types';
 
 export const MANA = ['W', 'U', 'B', 'R', 'G'] as const;
 export const MANA_NAME: Record<string, string> = {
@@ -78,3 +78,14 @@ export const BRACKETS: { n: number; name: string; blurb: string }[] = [
   { n: 4, name: 'Optimized', blurb: 'High power. Fast mana, tutors and combos allowed.' },
   { n: 5, name: 'cEDH', blurb: 'Competitive. The fastest, most consistent lists.' },
 ];
+
+/** Image for a specific printing (Scryfall redirects to the image). */
+export function printingImage(set: string, number: string): string {
+  return `https://api.scryfall.com/cards/${set.toLowerCase()}/${encodeURIComponent(number)}?format=image&version=normal`;
+}
+
+/** The image to show for a deck entry: its chosen printing, else the default. */
+export function entryImage(e: Entry): string {
+  if (e.set_code && e.collector_number) return printingImage(e.set_code, e.collector_number);
+  return e.card?.image_uri ?? '';
+}

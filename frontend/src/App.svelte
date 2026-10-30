@@ -110,7 +110,7 @@
 </div>
 
 {#if app.inspect}
-  <CardSheet card={app.inspect} onclose={() => (app.inspect = null)} />
+  <CardSheet card={app.inspect} onclose={() => app.close()} />
 {/if}
 
 <div class="toasts" role="status" aria-live="polite">

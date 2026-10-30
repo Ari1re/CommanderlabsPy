@@ -873,8 +873,7 @@ fn analyze_reference_combos(
             .iter()
             .map(|name| DeckEntry {
                 quantity: 1,
-                name: name.clone(),
-            })
+                name: name.clone(), ..Default::default() })
             .collect::<Vec<_>>();
 
         let commander_set = commander_names
@@ -890,8 +889,7 @@ fn analyze_reference_combos(
             })
             .map(|name| DeckEntry {
                 quantity: 1,
-                name: name.clone(),
-            })
+                name: name.clone(), ..Default::default() })
             .collect::<Vec<_>>();
 
         let parsed = ParsedDeck {

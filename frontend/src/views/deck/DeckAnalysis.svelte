@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { api } from '../../lib/api';
+  import { api, runJob } from '../../lib/api';
+  import { go } from '../../lib/store.svelte';
   import { app } from '../../lib/store.svelte';
   import type { Analysis, CardView, Deck, Simulation } from '../../lib/types';
-  import { MANA, MANA_NAME } from '../../lib/util';
+  import { BRACKETS, MANA, MANA_NAME } from '../../lib/util';
   import Icon from '../../components/Icon.svelte';
 
   let {
@@ -25,6 +26,35 @@
     }
   }
 
+  let speed = $state<any>(null);
+  let speedBusy = $state('');
+  let upTarget = $state(4);
+  let upgrading = $state<{ percent: number; step: string } | null>(null);
+
+  async function winSpeed() {
+    speedBusy = 'Starting';
+    try {
+      speed = await runJob('win_speed', { name }, (j) => (speedBusy = j.detail || j.step), 800);
+    } catch (err) {
+      app.error(err);
+    } finally {
+      speedBusy = '';
+    }
+  }
+
+  async function upgrade() {
+    upgrading = { percent: 0, step: 'Starting' };
+    try {
+      const res = await runJob<{ name: string }>('upgrade', { name, bracket: upTarget }, (j) => (upgrading = { percent: j.percent, step: j.step }), 800);
+      app.toast(`Saved ${res.name}.`, 'success');
+      go({ page: 'deck', name: res.name, tab: 'cards' });
+    } catch (err) {
+      app.error(err);
+    } finally {
+      upgrading = null;
+    }
+  }
+
   async function apply(args: { cut?: string; add?: string }, message: string) {
     try {
       onchange(await api<Deck>('apply_suggestion', { name, ...args }));
@@ -36,7 +66,7 @@
 
   async function inspect(card: string) {
     try {
-      app.inspect = await api<CardView>('card', { name: card });
+      app.open(await api<CardView>('card', { name: card }));
     } catch (err) {
       app.error(err);
     }
@@ -220,6 +250,44 @@
       </div>
     {:else}
       <p class="small muted">Draws thousands of opening hands to show how consistent your mana is.</p>
+    {/if}
+  </section>
+
+  <section class="panel box">
+    <div class="row">
+      <h3>How fast does it win?</h3>
+      <span class="spacer"></span>
+      <button class="btn" onclick={winSpeed} disabled={!!speedBusy}><Icon name="play" size={15} /> {speedBusy ? 'Testing…' : speed ? 'Test again' : 'Goldfish test'}</button>
+    </div>
+    {#if speedBusy}<p class="small dim">{speedBusy}</p>{/if}
+    {#if speed?.goldfish}
+      {@const g = speed.goldfish}
+      <div class="summary inner">
+        <div><b class="num">{g.most_likely_combo_turn ? `T${g.most_likely_combo_turn}` : '—'}</b><span>Most likely win turn</span></div>
+        <div><b class="num">{g.median_combo_turn ? `T${g.median_combo_turn}` : '—'}</b><span>Median win turn</span></div>
+        <div><b class="num">{g.earliest_combo_turn ? `T${g.earliest_combo_turn}` : '—'}</b><span>Fastest win seen</span></div>
+        <div><b class="num">{Math.round(g.keepable_pct)}%</b><span>Keepable hands</span></div>
+        <div><b class="num">{g.runs.toLocaleString()}</b><span>Games played</span></div>
+      </div>
+      <p class="small muted">{g.caveat}</p>
+    {:else if !speedBusy}
+      <p class="small muted">Plays thousands of solo games with your combo lines to estimate how quickly the deck can win.</p>
+    {/if}
+  </section>
+
+  <section class="panel box">
+    <h3>Rebuild at another bracket</h3>
+    <p class="small dim">Keeps the cards that matter to your plan and rebuilds the rest to hit the bracket. Saved as a new deck; this one isn't changed.</p>
+    {#if upgrading}
+      <div class="progress"><i style:width="{upgrading.percent}%"></i></div>
+      <p class="small dim">{upgrading.step}</p>
+    {:else}
+      <div class="row">
+        <select class="input up" bind:value={upTarget}>
+          {#each BRACKETS as b (b.n)}<option value={b.n}>Bracket {b.n} · {b.name}</option>{/each}
+        </select>
+        <button class="btn" onclick={upgrade}><Icon name="build" size={15} /> Rebuild</button>
+      </div>
     {/if}
   </section>
 {/if}
@@ -425,6 +493,15 @@
   .link:hover {
     color: var(--brass-strong);
     text-decoration: underline;
+  }
+  .summary.inner {
+    margin: 0;
+  }
+  .up {
+    width: auto;
+  }
+  .box + .box {
+    margin-top: 1.25rem;
   }
   .two {
     grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));

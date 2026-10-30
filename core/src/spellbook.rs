@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 const URL: &str = "https://backend.commanderspellbook.com/find-my-combos";
 
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ComboLine {
     pub id: String,
     pub cards: Vec<String>,
@@ -18,7 +18,7 @@ pub struct ComboLine {
     pub almost: bool,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ComboReport {
     pub included: usize,
     pub almost_included: usize,

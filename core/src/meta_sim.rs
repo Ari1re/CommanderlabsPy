@@ -51,8 +51,7 @@ fn reference_as_deck(reference: &ReferenceDeck) -> ParsedDeck {
         .into_values()
         .map(|(name, quantity)| DeckEntry {
             quantity,
-            name,
-        })
+            name, ..Default::default() })
         .collect::<Vec<_>>();
 
     main.sort_by(|a, b| a.name.cmp(&b.name));

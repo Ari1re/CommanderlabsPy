@@ -558,8 +558,7 @@ where
 
         generated.deck.main[index] = DeckEntry {
             quantity: 1,
-            name: candidate.name.clone(),
-        };
+            name: candidate.name.clone(), ..Default::default() };
 
         retained += 1;
     }
@@ -671,8 +670,7 @@ where
 
         generated.deck.main[index] = DeckEntry {
             quantity: 1,
-            name: candidate.name.clone(),
-        };
+            name: candidate.name.clone(), ..Default::default() };
 
         displaced.push(removed.clone());
         protected.insert(
@@ -824,8 +822,7 @@ where
         .iter()
         .map(|card| DeckEntry {
             quantity: 1,
-            name: card.name.clone(),
-        })
+            name: card.name.clone(), ..Default::default() })
         .collect::<Vec<_>>();
 
     let generated_name = commanders
@@ -1150,8 +1147,7 @@ where
 
             main.push(DeckEntry {
                 quantity: 1,
-                name: card.name.clone(),
-            });
+                name: card.name.clone(), ..Default::default() });
         }
 
         seeded_combos.push(GeneratedCombo {
@@ -1245,8 +1241,7 @@ for template in relevant_templates
 
         main.push(DeckEntry {
             quantity: 1,
-            name: card.name.clone(),
-        });
+            name: card.name.clone(), ..Default::default() });
     }
 
     seeded_combos.push(GeneratedCombo {
@@ -1413,8 +1408,7 @@ for template in relevant_templates
 
         main.push(DeckEntry {
             quantity: 1,
-            name: card.name.clone(),
-        });
+            name: card.name.clone(), ..Default::default() });
     }
 
     progress(GenerationProgress::new(
@@ -1491,8 +1485,7 @@ for template in relevant_templates
         used.insert(card.name.to_ascii_lowercase());
         main.push(DeckEntry {
             quantity: 1,
-            name: card.name.clone(),
-        });
+            name: card.name.clone(), ..Default::default() });
     }
 
     let current_lands = main
@@ -1579,8 +1572,7 @@ for template in relevant_templates
 
             main.push(DeckEntry {
                 quantity: 1,
-                name: card.name.clone(),
-            });
+                name: card.name.clone(), ..Default::default() });
 
             if direct_theme {
                 theme_cards += 1;
@@ -2308,8 +2300,7 @@ fn power_up_to_target(
 
         deck.main[victim_index] = DeckEntry {
             quantity: 1,
-            name: candidate.name.clone(),
-        };
+            name: candidate.name.clone(), ..Default::default() };
     }
 
     Ok(())
@@ -2459,8 +2450,7 @@ fn power_down_to_target(
 
         deck.main[victim_index] = DeckEntry {
             quantity: 1,
-            name: replacement.name.clone(),
-        };
+            name: replacement.name.clone(), ..Default::default() };
     }
 
     Ok(())
@@ -2747,8 +2737,7 @@ fn replace_low_plan_card(
 
     deck.main[index] = DeckEntry {
         quantity: 1,
-        name: new_card.name.clone(),
-    };
+        name: new_card.name.clone(), ..Default::default() };
 
     Ok(true)
 }
@@ -3151,8 +3140,7 @@ fn add_basics(main: &mut Vec<DeckEntry>, identity: &str, total: usize) {
     if basics.is_empty() {
         main.push(DeckEntry {
             quantity: total as u32,
-            name: "Wastes".to_string(),
-        });
+            name: "Wastes".to_string(), ..Default::default() });
         return;
     }
 
@@ -3165,8 +3153,7 @@ fn add_basics(main: &mut Vec<DeckEntry>, identity: &str, total: usize) {
         if quantity > 0 {
             main.push(DeckEntry {
                 quantity: quantity as u32,
-                name: (*basic).to_string(),
-            });
+                name: (*basic).to_string(), ..Default::default() });
         }
     }
 }
