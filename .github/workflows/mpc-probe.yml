@@ -1,0 +1,27 @@
+name: MPC probe
+on:
+  push:
+    branches: [probe/mpc]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe MPC Autofill API
+        run: |
+          set +e
+          out() { echo "::warning title=$1::$(echo "$2" | tr '\n' ' ' | cut -c1-1800)"; }
+          out "redirect-old" "$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' -X POST https://mpcautofill.com/2/editorSearch/)"
+          out "redirect-new" "$(curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}' -X POST https://mpcfill.com/2/editorSearch/)"
+          SRC=$(curl -s https://mpcfill.com/2/sources/)
+          out "sources" "$(echo "$SRC" | head -c 1500)"
+          PKS=$(echo "$SRC" | python3 -c "import sys,json;d=json.load(sys.stdin)['results'];vals=d.values() if isinstance(d,dict) else d;print(json.dumps([[v['pk'],True] for v in vals]))")
+          BODY=$(python3 -c "import json,sys;print(json.dumps({'searchSettings':{'searchTypeSettings':{'fuzzySearch':False,'filterCardbacks':False},'sourceSettings':{'sources':json.loads(sys.argv[1])},'filterSettings':{'minimumDPI':0,'maximumDPI':1500,'maximumSize':30,'languages':[],'includesTags':[],'excludesTags':['NSFW']}},'queries':[{'query':'sol ring','cardType':'CARD'},{'query':'delver of secrets','cardType':'CARD'}]}))" "$PKS")
+          R2=$(curl -s -w ' [%{http_code}]' -X POST https://mpcfill.com/2/editorSearch/ -H 'content-type: application/json' -d "$BODY")
+          out "editorSearch-v2" "$(echo "$R2" | head -c 1500)"
+          R3=$(curl -s -w ' [%{http_code}]' -X POST https://mpcfill.com/3/editorSearch/ -H 'content-type: application/json' -d "$BODY")
+          out "editorSearch-v3" "$(echo "$R3" | head -c 1500)"
+          IDS=$(echo "$R2" | sed 's/ \[[0-9]*\]$//' | python3 -c "import sys,json;d=json.load(sys.stdin)['results'];print(json.dumps(d['sol ring']['CARD'][:2]))")
+          C=$(curl -s -w ' [%{http_code}]' -X POST https://mpcfill.com/2/cards/ -H 'content-type: application/json' -d "{\"cardIdentifiers\": $IDS}")
+          out "cards" "$(echo "$C" | head -c 1700)"
+          CB1=$(curl -s -w ' [%{http_code}]' -X POST https://mpcfill.com/2/cardbacks/ -H 'content-type: application/json' -d "{\"searchSettings\": $(echo "$BODY" | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["searchSettings"]))')}")
+          out "cardbacks" "$(echo "$CB1" | head -c 600)"
