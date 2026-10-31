@@ -40,7 +40,19 @@ export interface Player {
   clockMs?: number;
   /** Player conceded or was knocked out manually. */
   conceded?: boolean;
+  /** Panel rotation chosen by this player (degrees); unset = follow the layout. */
+  rotation?: Rotation | null;
 }
+
+export type Rotation = 0 | 90 | 180 | 270;
+/** How panels face: `table` = top row faces across, `sides` = outer columns face
+ *  the long edges, `facing` = everything faces the phone's owner. */
+export type Layout = 'table' | 'sides' | 'facing';
+export const LAYOUTS: { id: Layout; label: string; hint: string }[] = [
+  { id: 'table', label: 'Across', hint: 'Top row faces the players across the table' },
+  { id: 'sides', label: 'Sides', hint: 'Left and right columns face the long edges, like Mythic Tools' },
+  { id: 'facing', label: 'All me', hint: 'Every panel faces you' },
+];
 
 export interface LogEntry {
   at: number;
@@ -58,6 +70,8 @@ export interface GameState {
   blessing: number[];
   dayNight: 'day' | 'night' | null;
   tableMode: boolean;
+  /** Panel orientation preset; older saves fall back to tableMode. */
+  layout?: Layout;
   cmdLowersLife: boolean;
   lowLifeFx: boolean;
   firstPlayer: number | null;
@@ -123,12 +137,37 @@ export function seatOrder(players: Player[]): number[] {
   return [...players.slice(0, top), ...players.slice(top).reverse()].map((p) => p.id);
 }
 
+export function layoutOf(s: Pick<GameState, 'layout' | 'tableMode'>): Layout {
+  return s.layout ?? (s.tableMode ? 'table' : 'facing');
+}
+
+/** Rotation the layout gives the player at `index` (players fill the top row first). */
+export function layoutRotation(layout: Layout, index: number, count: number): Rotation {
+  if (layout === 'facing' || count < 2) return 0;
+  const top = Math.floor(count / 2);
+  const inTop = index < top;
+  if (layout === 'table') return inTop ? 180 : 0;
+  const rowLen = inTop ? top : count - top;
+  const col = inTop ? index : index - top;
+  if (rowLen >= 2 && col === 0) return 90;
+  if (rowLen >= 2 && col === rowLen - 1) return 270;
+  return inTop ? 180 : 0;
+}
+
+/** The rotation a player's panel is drawn at: their own choice, else the layout's. */
+export function panelRotation(s: GameState, id: number): Rotation {
+  const i = s.players.findIndex((p) => p.id === id);
+  const p = s.players[i];
+  if (!p) return 0;
+  return p.rotation ?? layoutRotation(layoutOf(s), i, s.players.length);
+}
+
 export function fmtClock(ms: number) {
   const s = Math.max(0, Math.ceil(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-type Setup = Pick<GameState, 'players' | 'startLife' | 'tableMode' | 'cmdLowersLife' | 'lowLifeFx' | 'turns' | 'clockMinutes'>;
+type Setup = Pick<GameState, 'players' | 'startLife' | 'tableMode' | 'layout' | 'cmdLowersLife' | 'lowLifeFx' | 'turns' | 'clockMinutes'>;
 
 class GameStore {
   state = $state<GameState | null>(load());
@@ -489,6 +528,36 @@ class GameStore {
     if (!this.state) return;
     this.state.mana = {};
     this.save();
+  }
+
+  setLayout(layout: Layout) {
+    if (!this.state) return;
+    this.state.layout = layout;
+    this.state.tableMode = layout !== 'facing';
+    // A new layout is a fresh start for everyone's orientation.
+    for (const p of this.state.players) p.rotation = null;
+    this.save();
+  }
+
+  /** Turn one player's panel a quarter turn clockwise (or back to the layout with null). */
+  rotatePlayer(id: number, rotation?: Rotation | null) {
+    const s = this.state;
+    const p = this.player(id);
+    if (!s || !p) return;
+    p.rotation = rotation === undefined ? (((panelRotation(s, id) + 90) % 360) as Rotation) : rotation;
+    this.save();
+  }
+
+  /** Set a counter to an exact value (from the quick editor). */
+  setCounter(id: number, counter: string, value: number) {
+    const p = this.player(id);
+    if (!p) return;
+    this.changeCounter(id, counter, Math.max(0, value) - (p.counters[counter] ?? 0));
+  }
+
+  setCustom(id: number, index: number, value: number) {
+    const c = this.player(id)?.custom[index];
+    if (c) this.changeCustom(id, index, Math.max(0, value) - c.value);
   }
 
   setOption<K extends 'tableMode' | 'cmdLowersLife' | 'lowLifeFx' | 'turns'>(key: K, value: boolean) {

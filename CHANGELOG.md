@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.26.0
+
+- Game: choose which way the life panels face — **Across** (top row faces the players opposite), **Sides** (the left and right columns face the long edges, like Mythic Tools) or **All me**. Pick it before the game or change it from the game menu. Each player can also turn their own panel a quarter turn from their menu, and the menu, set-life box and swipes follow that panel's direction.
+- Game: tap a counter on a player's panel (poison, tax, energy, custom counters, or the ⚔ commander-damage chip) to edit it right there with − / +, Clear and Done, turned to face that player.
+- Game: tap the ♛ Monarch or ⚔ Initiative token to choose who gets it (or nobody). Dragging it still works.
+- Game: 6-player panels turned sideways keep a big life total; the name, tokens and counters float along the edges.
+
 ## 0.25.0
 
 - Sharing: the QR now holds only what rebuilds the deck (commander, cards and counts) in a denser QR-native encoding. A typical 100-card deck went from QR size 31 to 22, much easier to scan. "Include printings and sideboard" adds them back. Older share codes still import.

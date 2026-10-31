@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { api } from '../lib/api';
   import { app } from '../lib/store.svelte';
-  import { fmtClock, game, isOut, MANA_COLORS, newPlayer, PLAYER_COLORS, type GameRecord, type Player } from '../lib/game.svelte';
+  import { fmtClock, game, isOut, LAYOUTS, layoutOf, MANA_COLORS, newPlayer, panelRotation, PLAYER_COLORS, type GameRecord, type Layout, type Player } from '../lib/game.svelte';
   import type { CardView, DeckSummary } from '../lib/types';
   import { symbolUrl } from '../lib/util';
   import Icon from '../components/Icon.svelte';
@@ -14,7 +14,7 @@
   let count = $state(saved?.players.length ?? 4);
   let startLife = $state(saved?.startLife ?? 40);
   let customLife = $state('');
-  let tableMode = $state(saved?.tableMode ?? true);
+  let layout = $state<Layout>(saved ? layoutOf(saved) : 'table');
   let cmdLowersLife = $state(saved?.cmdLowersLife ?? true);
   let lowLifeFx = $state(saved?.lowLifeFx ?? true);
   let turns = $state(saved?.turns ?? true);
@@ -58,7 +58,8 @@
     game.start({
       players: players.slice(0, count).map((p, i) => ({ ...p, id: i, name: p.name.trim() || `Player ${i + 1}` })),
       startLife: life,
-      tableMode,
+      tableMode: layout !== 'facing',
+      layout,
       cmdLowersLife,
       lowLifeFx,
       turns,
@@ -133,7 +134,7 @@
     const top = Math.floor(ps.length / 2);
     return ps.length === 1 ? [ps] : [ps.slice(0, top), ps.slice(top)];
   });
-  let flippedIds = $derived(new Set(s && s.tableMode && rows.length > 1 ? rows[0].map((p) => p.id) : []));
+  const rot = (id: number) => (s ? panelRotation(s, id) : 0);
   let activePlayer = $derived(s?.active != null ? s.players.find((p) => p.id === s!.active) : null);
 
   function openEdit(id: number) {
@@ -218,12 +219,14 @@
     {#each rows as row, r (r)}
       <div class="trow" style:--cols={row.length}>
         {#each row as p (p.id)}
-          <PlayerPanel
-            player={p}
-            flipped={flippedIds.has(p.id)}
-            compact={row.length >= 3}
-            onopen={() => (countersFor = p.id)}
-          />
+          <div class="cell">
+            <PlayerPanel
+              player={p}
+              rotation={rot(p.id)}
+              compact={row.length >= 3}
+              onopen={() => (countersFor = p.id)}
+            />
+          </div>
         {/each}
       </div>
     {/each}
@@ -272,13 +275,13 @@
 
   {#if countersFor !== null}
     {@const cp = s.players.find((p) => p.id === countersFor)}
-    {#if cp}<CountersSheet player={cp} flipped={flippedIds.has(cp.id)} onclose={() => (countersFor = null)} onedit={() => openEdit(countersFor ?? -1)} />{/if}
+    {#if cp}<CountersSheet player={cp} rotation={rot(cp.id)} onclose={() => (countersFor = null)} onedit={() => openEdit(countersFor ?? -1)} />{/if}
   {/if}
 
   {#if editing !== null}
     {@const ep = s.players.find((p) => p.id === editing)}
     <div class="scrim" onclick={() => (editing = null)} role="presentation"></div>
-    <form class="dialog edit" class:flipped={ep && flippedIds.has(ep.id)} onsubmit={(e) => { e.preventDefault(); saveEdit(); }} aria-label="Set life">
+    <form class="dialog edit rot{ep ? rot(ep.id) : 0}" onsubmit={(e) => { e.preventDefault(); saveEdit(); }} aria-label="Set life">
       <h2>{ep?.name}'s life</h2>
       <input class="input life-entry num" type="number" inputmode="numeric" bind:value={editValue} aria-label="Life total" />
       <div class="nudges">
@@ -338,9 +341,18 @@
             </div>
           </div>
 
+          <div class="layout-pick">
+            <span class="lbl">Panels face</span>
+            <div class="segmented" role="group" aria-label="Life counter layout">
+              {#each LAYOUTS as l (l.id)}
+                <button aria-pressed={layoutOf(s) === l.id} title={l.hint} onclick={() => game.setLayout(l.id)}>{l.label}</button>
+              {/each}
+            </div>
+            <p class="small dim">{LAYOUTS.find((l) => l.id === layoutOf(s!))?.hint}. Anyone can turn their own panel from their menu.</p>
+          </div>
+
           <div class="opts">
             <label><input type="checkbox" checked={s.turns} onchange={(e) => game.setOption('turns', (e.target as HTMLInputElement).checked)} /> Track turns{clockOn ? ' and chess clock' : ''}</label>
-            <label><input type="checkbox" checked={s.tableMode} onchange={(e) => game.setOption('tableMode', (e.target as HTMLInputElement).checked)} /> Turn the top row to face players across the table</label>
             <label><input type="checkbox" checked={s.cmdLowersLife} onchange={(e) => game.setOption('cmdLowersLife', (e.target as HTMLInputElement).checked)} /> Commander damage also lowers life</label>
             <label><input type="checkbox" checked={s.lowLifeFx} onchange={(e) => game.setOption('lowLifeFx', (e.target as HTMLInputElement).checked)} /> Pulse when a player is at 10 life or less</label>
           </div>
@@ -445,6 +457,16 @@
       </div>
     </div>
 
+    <div class="field-row">
+      <span class="lbl">Panels face</span>
+      <div class="segmented" role="group" aria-label="Life counter layout">
+        {#each LAYOUTS as l (l.id)}
+          <button aria-pressed={layout === l.id} onclick={() => (layout = l.id)}>{l.label}</button>
+        {/each}
+      </div>
+      <span class="small dim layout-hint">{LAYOUTS.find((l) => l.id === layout)?.hint}</span>
+    </div>
+
     <ol class="players">
       {#each players.slice(0, count) as p, i (i)}
         <li class="player panel" style:--pc={p.color}>
@@ -470,7 +492,6 @@
 
     <div class="opts">
       <label><input type="checkbox" bind:checked={turns} /> Track turns (whose turn it is, turn count)</label>
-      <label><input type="checkbox" bind:checked={tableMode} /> Turn the top row to face players across the table</label>
       <label><input type="checkbox" bind:checked={cmdLowersLife} /> Commander damage also lowers life</label>
       <label><input type="checkbox" bind:checked={lowLifeFx} /> Pulse when a player is at 10 life or less</label>
     </div>
@@ -709,6 +730,14 @@
     gap: 6px;
     min-height: 0;
   }
+  /* Each panel sits in a cell it can measure, so sideways panels can swap
+     their width and height. */
+  .cell {
+    position: relative;
+    container-type: size;
+    min-width: 0;
+    min-height: 0;
+  }
   @media (orientation: landscape) {
     .table.wide {
       grid-auto-flow: column;
@@ -849,8 +878,28 @@
     border-radius: var(--r-md);
     box-shadow: var(--shadow);
   }
-  .dialog.flipped {
+  .dialog.rot180 {
     transform: translate(-50%, -50%) rotate(180deg);
+  }
+  .dialog.rot90,
+  .dialog.rot270 {
+    width: min(460px, calc(100dvh - 1.5rem));
+    max-height: calc(100dvw - 1.5rem);
+  }
+  .dialog.rot90 {
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+  .dialog.rot270 {
+    transform: translate(-50%, -50%) rotate(270deg);
+  }
+  .layout-pick {
+    display: grid;
+    gap: 0.35rem;
+    margin-bottom: 0.6rem;
+  }
+  .layout-pick p,
+  .layout-hint {
+    margin: 0;
   }
   .edit {
     display: grid;
