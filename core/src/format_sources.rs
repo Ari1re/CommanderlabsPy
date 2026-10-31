@@ -271,6 +271,9 @@ pub struct HighlanderDeck {
 #[derive(Debug, Clone, Default)]
 pub struct HighlanderEvidence {
     pub decks: Vec<HighlanderDeck>,
+    /// Total weight behind the play rates: exact color matches count 1,
+    /// looser ones less. Tells how far to trust the numbers.
+    pub strength: f64,
     /// Share of matching decks that play each card (lowercase name), weighted
     /// toward decks that fit the requested play styles.
     pub share: HashMap<String, f64>,
@@ -544,8 +547,15 @@ pub fn highlander_evidence(colors: &str, themes: &[String], db: &CardDb, budget:
     let words = theme_words(themes);
     let mut weight_total = 0.0;
     let mut share: HashMap<String, f64> = HashMap::new();
+    // Lists in fewer colors (mono-red Goblins for an Izzet request) are only
+    // loosely related; they count for much less than exact color matches.
     for d in &decks {
-        let mut w = if d.colors == colors { 1.0 } else { 0.6 };
+        let missing = colors.len().saturating_sub(d.colors.len());
+        let mut w = match missing {
+            0 => 1.0,
+            1 if d.colors.len() >= 2 => 0.35,
+            _ => 0.1,
+        };
         let label = format!("{} {}", d.archetype, d.title).to_ascii_lowercase();
         if words.iter().any(|t| label.contains(t.as_str())) {
             w *= 1.8;
@@ -564,7 +574,7 @@ pub fn highlander_evidence(colors: &str, themes: &[String], db: &CardDb, budget:
         "HIGHLANDER",
         format!("colors={colors} • decks={} • new downloads={fetched}", decks.len()),
     );
-    HighlanderEvidence { decks, share }
+    HighlanderEvidence { decks, share, strength: weight_total }
 }
 
 #[cfg(test)]

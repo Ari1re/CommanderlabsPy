@@ -823,12 +823,21 @@ where
 pub fn resolve_pdh_commanders(spec: &str, db: &CardDb) -> Result<Vec<Card>> {
     let mut out = Vec::new();
     for (i, name) in spec.split(" + ").map(str::trim).filter(|n| !n.is_empty()).enumerate() {
-        let card = db
+        let mut card = db
             .get_card(name)?
             .ok_or_else(|| anyhow!("Couldn't find a card named \"{name}\"."))?;
-        Format::Pdh
-            .commander_allowed(&card, i > 0)
-            .map_err(|why| anyhow!("{} can't lead a Pauper Commander deck: {why}.", card.name))?;
+        if let Err(why) = Format::Pdh.commander_allowed(&card, i > 0) {
+            // The uncommon-printing flag comes from a Scryfall refresh that
+            // may not have run on this device: confirm it online first.
+            let rarity_rule = why.contains("uncommon");
+            if !(rarity_rule && crate::data::CardDb::open(crate::api::DB_PATH).map(|mut d| d.confirm_pdh_commander(&card.name)).unwrap_or(false)) {
+                return Err(anyhow!("{} can't lead a Pauper Commander deck: {why}.", card.name));
+            }
+            card.pdh_commander = true;
+            Format::Pdh
+                .commander_allowed(&card, i > 0)
+                .map_err(|why| anyhow!("{} can't lead a Pauper Commander deck: {why}.", card.name))?;
+        }
         out.push(card);
     }
     if out.len() == 2 {

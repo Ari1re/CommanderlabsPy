@@ -247,11 +247,11 @@ where
     });
     // How strongly decklist play rate counts. With few decks it's a nudge;
     // with a real sample it leads.
-    let ref_weight = match evidence.decks.len() {
-        0 => 0.0,
-        1..=4 => 120.0,
-        5..=14 => 200.0,
-        _ => 260.0,
+    let ref_weight = match evidence.strength {
+        s if s < 0.5 => 0.0,
+        s if s < 3.0 => 90.0,
+        s if s < 8.0 => 170.0,
+        _ => 250.0,
     };
     let ref_bonus = |name: &str| {
         let share = evidence.share_of(name);
@@ -482,7 +482,7 @@ where
             )
         },
         format!(
-            "Built as {} with {} lands, {} creatures, {} interaction spells, {} card-draw spells and {} on-theme cards.",
+            "Built as {} with {} lands, {} creatures, {} interaction spells, {} card-draw spells{}.",
             match style {
                 Style::Aggro => "an aggressive deck",
                 Style::Control => "a control deck",
@@ -494,13 +494,14 @@ where
             have.creatures,
             have.interaction,
             have.draw,
-            have.theme,
+            if card_themes.is_empty() { String::new() } else { format!(" and {} cards for {}", have.theme, card_themes.join(" / ")) },
         ),
         if evidence.decks.is_empty() {
             "No Canadian Highlander decklists could be read this time (MTGTop8 and Moxfield unreachable?), so cards were chosen from their rules text, mana value and how widely they're played overall.".to_string()
         } else {
             let mtgtop8 = evidence.decks.iter().filter(|d| d.source == "MTGTop8").count();
             let moxfield = evidence.decks.len() - mtgtop8;
+            let exact = evidence.decks.iter().filter(|d| d.colors == colors).count();
             let mut top: Vec<(&String, &f64)> = evidence.share.iter().collect();
             top.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
             let top: Vec<String> = top
@@ -509,9 +510,10 @@ where
                 .take(10)
                 .collect();
             format!(
-                "Built from Canadian Highlander decklists in these colors: {mtgtop8} tournament list(s) from MTGTop8 and {moxfield} popular Moxfield list(s), weighted toward {}. Most played there: {}.",
+                "Built from Canadian Highlander decklists: {mtgtop8} tournament list(s) from MTGTop8 and {moxfield} popular Moxfield list(s) within these colors ({exact} in exactly these colors), weighted toward {}. Most played there: {}.{}",
                 if themes.is_empty() { "exact color matches".to_string() } else { format!("{} decks", themes.join(" / ")) },
-                top.join(", ")
+                top.join(", "),
+                if exact < 3 { " Few lists use exactly these colors, so card quality and the deck's needs carried more of the choice." } else { "" }
             )
         },
     ];

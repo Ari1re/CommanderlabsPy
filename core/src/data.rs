@@ -665,6 +665,41 @@ impl CardDb {
         Ok(names.len())
     }
 
+    /// Ask Scryfall whether one card was printed at uncommon in paper or on
+    /// MTGO (the PDH commander rule), for when the bulk refresh didn't run.
+    /// Remembers a yes in the database.
+    pub fn confirm_pdh_commander(&mut self, name: &str) -> bool {
+        let query = format!(
+            "!\"{}\" r:u (t:creature or t:vehicle or t:spacecraft or t:background) -t:land (game:paper or game:mtgo)",
+            name.split(" // ").next().unwrap_or(name)
+        );
+        let Ok(url) = reqwest::Url::parse_with_params("https://api.scryfall.com/cards/search", &[("q", query.as_str())]) else {
+            return false;
+        };
+        let found = Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .ok()
+            .and_then(|c| c.get(url).header(USER_AGENT, USER_AGENT_VALUE).header(ACCEPT, "application/json").send().ok())
+            .and_then(|r| r.json::<Value>().ok())
+            .and_then(|v| v.get("total_cards").and_then(Value::as_u64))
+            .unwrap_or(0)
+            > 0;
+        if found {
+            let _ = self.conn.execute("UPDATE cards SET pdh_commander = 1 WHERE name_lower = ?1", [name.to_ascii_lowercase()]);
+        }
+        found
+    }
+
+    /// How many cards are marked as PDH commanders (thousands once the
+    /// Scryfall refresh has run).
+    pub fn pdh_commander_count(&self) -> u64 {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM cards WHERE pdh_commander = 1", [], |r| r.get::<_, i64>(0))
+            .map(|n| n.max(0) as u64)
+            .unwrap_or(0)
+    }
+
     /// Visit every playable card (optionally only those inside a color
     /// identity). Used by deep card search, which reads Oracle text across the
     /// whole database rather than only popular cards.
@@ -680,8 +715,18 @@ impl CardDb {
 
     /// Cards that may lead a Pauper Commander deck, most played first.
     pub fn search_pdh_commanders(&self, query: &str, limit: usize) -> Result<Vec<Card>> {
+        // If the Scryfall refresh never ran, the flag only reflects each
+        // card's default printing; offer every creature-type card that's
+        // legal in PDH and let picking it confirm the rule online.
+        let filter = if self.pdh_commander_count() >= 1000 {
+            "pdh_commander = 1"
+        } else {
+            "(pdh_commander = 1 OR (pdh_legal IN ('legal', 'not_legal') AND vintage_legal <> 'not_legal' \
+             AND (lower(type_line) LIKE '%creature%' OR lower(type_line) LIKE '%vehicle%' OR lower(type_line) LIKE '%background%') \
+             AND lower(type_line) NOT LIKE '%land%' AND rarity IN ('common', 'uncommon')))"
+        };
         let sql = format!(
-            "SELECT {CARD_COLUMNS} FROM cards WHERE pdh_commander = 1 AND name_lower LIKE ?1 \
+            "SELECT {CARD_COLUMNS} FROM cards WHERE {filter} AND name_lower LIKE ?1 \
              ORDER BY CASE WHEN name_lower = ?2 THEN 0 ELSE 1 END, edhrec_rank IS NULL, edhrec_rank, name LIMIT ?3"
         );
         let needle = query.trim().to_ascii_lowercase();
