@@ -168,6 +168,18 @@ The **Cards** tab groups the deck by type, like Moxfield.
 - Click any card to see it full size. Choose **Change printing** to pick from every printing, with art and prices, and toggle **Foil**.
 - Switch between **List** and **Images**, and sort by mana value or name.
 - **⋯ → Edit as text** edits the whole list at once.
+- Cards you're thinking about go in **Considering** (a maybeboard). It isn't counted in the deck, its price or legality. Use **⋯ → Move to Considering** or **Move to deck**. A "Maybeboard" section in an imported list lands here.
+
+### Search cards (Scryfall syntax)
+
+The **Search** tab works like Moxfield's card search, using Scryfall's search syntax: `t:creature o:flying mv<=2`, `otag:ramp`, `usd<1`, `is:commander`, and so on.
+
+- **Only cards that fit this deck** adds the deck's color identity and format legality to your search for you.
+- Sort by popularity, name, mana value, price, release date, rarity, color or power, in either direction.
+- Show one result per card, per art or every printing. Adding from **Every printing** adds that exact printing.
+- Quick filters cover common searches: creatures, instants, ramp, card draw, removal, board wipes, tutors, counterspells, cheap cards.
+- Each result has **Deck**, **Side** and **Consider** buttons and a badge showing how many you already have. Tap the image to see it full size.
+- If the search has a mistake, Scryfall's explanation is shown. **Syntax guide** opens Scryfall's reference.
 
 ### See cards you could add
 
@@ -200,7 +212,7 @@ You can also run a **50,000-game opening-hand simulation**, run a **goldfish tes
 
 ### Combos
 
-The **Combos** tab checks Commander Spellbook for combos already in your deck and combos you're one card away from, with step-by-step instructions. The result also refines the bracket estimate.
+The **Combos** tab checks Commander Spellbook for combos already in your deck and combos you're one card away from, with step-by-step instructions. Each combo shows images of its cards. A card you're missing is outlined and marked **Add this**; tap any card to see it full size and add it. The result also refines the bracket estimate.
 
 ### Learn how to play it
 

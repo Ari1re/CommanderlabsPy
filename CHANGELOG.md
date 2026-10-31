@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.30.0
+
+- **Search tab: find cards with Scryfall syntax and add them, like Moxfield.**
+  - Type any Scryfall search (`t:creature o:flying mv<=2`, `otag:removal`, `usd<1`). **Only cards that fit this deck** adds your colors and format for you.
+  - Sort by popularity, name, mana value, price, release date, rarity, color or power. Show one result per card, per art or every printing.
+  - Quick filters for creatures, instants, ramp, card draw, removal, board wipes, tutors, counterspells and cheap cards.
+  - Add each result to the **Deck**, the **Sideboard** or **Considering** with one tap. A badge shows how many you already have. Adding from **Every printing** adds that printing.
+  - When a search has a mistake, Scryfall's explanation is shown.
+- **Considering (maybeboard).** A new section for cards you're thinking about. It's kept with the deck but isn't counted in its size, price or legality. Move cards between the deck, sideboard and Considering from the card menu. Imported "Maybeboard" sections land here.
+- **Combos show card images.** Each combo shows its cards. Missing pieces are outlined and marked **Add this**; tap a card to see it and add it.
+
 ## 0.29.0
 
 - **Pauper Commander uses Pauper Commander sources.** Card choices come from **PDHREC** (pdhrec.com), the PDH counterpart of EDHREC: how often each card shows up across a commander's decks, and its synergy. Public **Archidekt decks in the Pauper EDH format** feed the reference decklists. EDHREC and Commander decklists are no longer used for PDH, and the Suggestions tab reads PDHREC for PDH decks too.

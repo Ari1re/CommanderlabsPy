@@ -47,6 +47,7 @@ pub fn import_moxfield(url: &str) -> Result<ParsedDeck> {
                         main,
                         sideboard,
                         format: Default::default(),
+                        considering: Vec::new(),
                     });
                 }
 

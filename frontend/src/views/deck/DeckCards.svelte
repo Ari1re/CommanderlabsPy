@@ -86,11 +86,12 @@
   let groups = $derived.by<Group[]>(() => {
     const byKind = new Map<string, Entry[]>();
     for (const e of deck.entries) {
-      const key = e.zone === 'commander' ? 'Commander' : e.zone === 'sideboard' ? 'Sideboard' : (e.card?.kind ?? 'Other');
+      const key =
+        e.zone === 'commander' ? 'Commander' : e.zone === 'sideboard' ? 'Sideboard' : e.zone === 'considering' ? 'Considering' : (e.card?.kind ?? 'Other');
       if (!byKind.has(key)) byKind.set(key, []);
       byKind.get(key)!.push(e);
     }
-    const order = [...KIND_ORDER, 'Sideboard'];
+    const order = [...KIND_ORDER, 'Sideboard', 'Considering'];
     return order
       .filter((k) => byKind.has(k))
       .map((k) => {
@@ -173,11 +174,16 @@
                       <div class="menu" role="menu">
                         {#if e.zone === 'main'}
                           <button role="menuitem" onclick={() => edit({ action: 'move', card: e.name, zone: 'main', to: 'sideboard' }, `Moved ${e.name} to the sideboard.`)}>Move to sideboard</button>
+                          <button role="menuitem" onclick={() => edit({ action: 'move', card: e.name, zone: 'main', to: 'considering' }, `Moved ${e.name} to Considering.`)}>Move to Considering</button>
                           {#if e.card?.commander_eligible}
                             <button role="menuitem" onclick={() => edit({ action: 'move', card: e.name, zone: 'main', to: 'commander', qty: 1 }, `${e.name} is now a commander.`)}>Make commander</button>
                           {/if}
                         {:else if e.zone === 'sideboard'}
                           <button role="menuitem" onclick={() => edit({ action: 'move', card: e.name, zone: 'sideboard', to: 'main' }, `Moved ${e.name} to the deck.`)}>Move to deck</button>
+                          <button role="menuitem" onclick={() => edit({ action: 'move', card: e.name, zone: 'sideboard', to: 'considering' }, `Moved ${e.name} to Considering.`)}>Move to Considering</button>
+                        {:else if e.zone === 'considering'}
+                          <button role="menuitem" onclick={() => edit({ action: 'move', card: e.name, zone: 'considering', to: 'main' }, `Moved ${e.name} to the deck.`)}>Move to deck</button>
+                          <button role="menuitem" onclick={() => edit({ action: 'move', card: e.name, zone: 'considering', to: 'sideboard' }, `Moved ${e.name} to the sideboard.`)}>Move to sideboard</button>
                         {:else}
                           <button role="menuitem" onclick={() => edit({ action: 'move', card: e.name, zone: 'commander', to: 'main' })}>Move to the 99</button>
                         {/if}

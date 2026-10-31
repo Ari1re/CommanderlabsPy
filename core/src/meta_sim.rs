@@ -62,6 +62,7 @@ fn reference_as_deck(reference: &ReferenceDeck) -> ParsedDeck {
         main,
         sideboard: Vec::new(),
         format: Default::default(),
+        considering: Vec::new(),
     }
 }
 

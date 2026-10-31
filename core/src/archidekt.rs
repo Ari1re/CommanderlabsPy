@@ -165,6 +165,7 @@ pub fn parse_archidekt_payload(
         main: map_entries(main),
         sideboard: map_entries(sideboard),
         format: Default::default(),
+        considering: Vec::new(),
     })
 }
 

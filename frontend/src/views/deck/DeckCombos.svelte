@@ -12,7 +12,15 @@
     variants: ComboLine[];
   }
 
+  interface ComboCard {
+    name: string;
+    image: string;
+    in_deck: boolean;
+    type_line: string;
+  }
+
   let report = $state<Report | null>(null);
+  let cards = $state<Record<string, ComboCard>>({});
   let bracket = $state<Bracket | null>(null);
   let busy = $state(false);
   let error = $state<string | null>(null);
@@ -23,9 +31,10 @@
     busy = true;
     error = null;
     try {
-      const res = await runJob<{ report: Report; bracket: Bracket }>('combos', { name });
+      const res = await runJob<{ report: Report; bracket: Bracket; cards?: Record<string, ComboCard> }>('combos', { name });
       report = res.report;
       bracket = res.bracket;
+      cards = res.cards ?? {};
     } catch (err) {
       error = (err as Error).message;
     } finally {
@@ -83,6 +92,20 @@
           <span class="cards">{v.cards.join(' + ')}</span>
           {#if v.bracket}<span class="small muted">B{v.bracket}</span>{/if}
         </button>
+        <div class="pieces" role="group" aria-label="Cards in this combo">
+          {#each v.cards as c, i (c)}
+            {@const info = cards[c]}
+            {#if i > 0}<span class="plus" aria-hidden="true">+</span>{/if}
+            <button class="piece" class:missing={info && !info.in_deck} onclick={() => inspect(c)} aria-label="{c}{info && !info.in_deck ? ' (not in your deck)' : ''}">
+              {#if info?.image}
+                <img class="card-img" src={info.image} alt={c} loading="lazy" />
+              {:else}
+                <span class="card-img placeholder">{c}</span>
+              {/if}
+              {#if info && !info.in_deck}<span class="need">Add this</span>{/if}
+            </button>
+          {/each}
+        </div>
         <p class="result dim">{v.result}</p>
         {#if open === v.id}
           <div class="detail">
@@ -146,6 +169,52 @@
   .result {
     font-size: 0.9rem;
     white-space: pre-line;
+  }
+  .pieces {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.3rem 0;
+  }
+  .piece {
+    position: relative;
+    width: clamp(84px, 22vw, 132px);
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: zoom-in;
+  }
+  .piece.missing .card-img {
+    opacity: 0.55;
+    outline: 2px dashed var(--brass);
+    outline-offset: 2px;
+  }
+  .need {
+    position: absolute;
+    left: 50%;
+    bottom: 8%;
+    transform: translateX(-50%);
+    padding: 0.1rem 0.5rem;
+    border-radius: 99px;
+    background: var(--brass);
+    color: var(--brass-ink);
+    font-size: 0.72rem;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .plus {
+    font-family: var(--display);
+    font-size: 1.4rem;
+    color: var(--muted);
+  }
+  .placeholder {
+    display: grid;
+    place-items: center;
+    padding: 0.4rem;
+    font-size: 0.75rem;
+    text-align: center;
+    color: var(--muted);
   }
   .detail {
     display: grid;

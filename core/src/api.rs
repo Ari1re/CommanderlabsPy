@@ -226,6 +226,7 @@ impl Engine {
             }
             "card" => self.card(&arg::<String>(a, "name")?),
             "search_cards" => self.search_cards(&arg::<String>(a, "query")?, opt(a, "limit").unwrap_or(20)),
+            "scryfall_search" => self.scryfall_search(a),
             "commander_suggestions" => self.commander_suggestions(&arg::<String>(a, "query")?, &opt::<String>(a, "format").unwrap_or_default()),
             "deep_search" => self.deep_search_cards(a),
             "formats" => Ok(formats_json()),
@@ -420,6 +421,85 @@ impl Engine {
         let db = self.db.lock().unwrap();
         let cards = db.search_cards(query, limit.clamp(1, 60))?;
         to_value(cards.into_iter().map(|c| self.card_view(&db, c)).collect::<Vec<_>>())
+    }
+
+    /// Search Scryfall with its own syntax (what the Scryfall and Moxfield
+    /// search boxes accept). Results carry the local card data when we have it.
+    fn scryfall_search(&self, a: &Value) -> Result<Value> {
+        let q: String = arg(a, "q")?;
+        if q.trim().is_empty() {
+            bail!("Type a search, for example t:creature o:\"draw a card\" mv<=3");
+        }
+        let order: String = opt(a, "order").unwrap_or_else(|| "name".into());
+        let dir: String = opt(a, "dir").unwrap_or_else(|| "auto".into());
+        let unique: String = opt(a, "unique").unwrap_or_else(|| "cards".into());
+        let page: u32 = opt(a, "page").unwrap_or(1).max(1);
+        let url = reqwest::Url::parse_with_params(
+            "https://api.scryfall.com/cards/search",
+            &[("q", q.as_str()), ("order", order.as_str()), ("dir", dir.as_str()), ("unique", unique.as_str()), ("page", &page.to_string())],
+        )?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .user_agent(concat!("CommanderLab/", env!("CARGO_PKG_VERSION")))
+            .build()?;
+        let mut body: Value = Value::Null;
+        for attempt in 0..3 {
+            let response = client.get(url.clone()).header("Accept", "application/json").send().context("Couldn't reach Scryfall")?;
+            let status = response.status().as_u16();
+            if status == 429 {
+                std::thread::sleep(std::time::Duration::from_millis(800 * (attempt + 1)));
+                continue;
+            }
+            body = response.json().context("Scryfall sent an unreadable answer")?;
+            if status == 404 {
+                return Ok(json!({ "total": 0, "has_more": false, "cards": [], "warnings": [] }));
+            }
+            if status >= 400 {
+                bail!("{}", body.get("details").and_then(Value::as_str).unwrap_or("Scryfall couldn't run that search."));
+            }
+            break;
+        }
+        let db = self.db.lock().unwrap();
+        let face_image = |c: &Value| -> String {
+            c.get("image_uris")
+                .and_then(|u| u.get("normal"))
+                .or_else(|| c.get("card_faces").and_then(|f| f.get(0)).and_then(|f| f.get("image_uris")).and_then(|u| u.get("normal")))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let cards: Vec<Value> = body
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|c| {
+                let name = c.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                let local = db.get_card(&name).ok().flatten().map(|card| self.card_view(&db, card));
+                let s = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+                json!({
+                    "name": name,
+                    "image": face_image(c),
+                    "mana_cost": if s("mana_cost").is_empty() {
+                        c.get("card_faces").and_then(|f| f.get(0)).and_then(|f| f.get("mana_cost")).and_then(Value::as_str).unwrap_or_default().to_string()
+                    } else { s("mana_cost") },
+                    "type_line": s("type_line"),
+                    "set": s("set").to_ascii_uppercase(),
+                    "set_name": s("set_name"),
+                    "collector_number": s("collector_number"),
+                    "rarity": s("rarity"),
+                    "price_usd": c.get("prices").and_then(|p| p.get("usd")).and_then(Value::as_str),
+                    "card": local,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "total": body.get("total_cards").and_then(Value::as_u64).unwrap_or(cards.len() as u64),
+            "has_more": body.get("has_more").and_then(Value::as_bool).unwrap_or(false),
+            "warnings": body.get("warnings").cloned().unwrap_or(json!([])),
+            "cards": cards,
+        }))
     }
 
     fn commander_suggestions(&self, query: &str, format: &str) -> Result<Value> {
@@ -649,7 +729,7 @@ impl Engine {
         let db = self.db.lock().unwrap();
 
         let mut entries = Vec::new();
-        for (zone, list) in [("commander", &deck.commanders), ("main", &deck.main), ("sideboard", &deck.sideboard)] {
+        for (zone, list) in [("commander", &deck.commanders), ("main", &deck.main), ("sideboard", &deck.sideboard), ("considering", &deck.considering)] {
             for entry in list {
                 let card = db.get_card(&entry.name).ok().flatten().map(|c| self.card_view(&db, c));
                 entries.push(EntryView {
@@ -788,6 +868,7 @@ impl Engine {
             "commander" => &mut deck.commanders,
             "main" => &mut deck.main,
             "sideboard" => &mut deck.sideboard,
+            "considering" => &mut deck.considering,
             other => bail!("Unknown zone '{other}'"),
         })
     }
@@ -838,6 +919,7 @@ impl Engine {
         let zone_label = |z: &str| match z {
             "commander" => "the command zone",
             "sideboard" => "the sideboard",
+            "considering" => "Considering",
             _ => "the deck",
         };
         let message = match action.as_str() {
@@ -942,7 +1024,8 @@ impl Engine {
             let db = CardDb::open(DB_PATH)?;
             let mut analysis = analyze_deck(&deck, &db)?;
             refine_with_combo_report(&mut analysis.bracket, &report);
-            Ok(json!({ "report": report, "bracket": analysis.bracket }))
+            let cards = combo_card_images(&report, &deck, &db);
+            Ok(json!({ "report": report, "bracket": analysis.bracket, "cards": cards }))
         })
     }
 
@@ -1979,6 +2062,45 @@ impl Engine {
 }
 
 /// Finished games from the Game tab, newest first.
+/// Image and deck status for every card named in a combo report, keyed by
+/// the name Commander Spellbook used. Cards in the deck show the printing
+/// chosen for them.
+fn combo_card_images(report: &ComboReport, deck: &ParsedDeck, db: &CardDb) -> Value {
+    let mut out = Map::new();
+    for line in &report.variants {
+        for name in &line.cards {
+            if out.contains_key(name) {
+                continue;
+            }
+            let card = db.get_card(name).ok().flatten();
+            let canonical = card.as_ref().map(|c| c.name.to_ascii_lowercase()).unwrap_or_else(|| name.to_ascii_lowercase());
+            let entry = deck
+                .commanders
+                .iter()
+                .chain(deck.main.iter())
+                .find(|e| e.name.eq_ignore_ascii_case(&canonical) || e.name.eq_ignore_ascii_case(name));
+            let image = match entry.and_then(|e| e.set_code.as_ref().zip(e.collector_number.as_ref())) {
+                Some((set, num)) => format!(
+                    "https://api.scryfall.com/cards/{}/{}?format=image&version=normal",
+                    set.to_ascii_lowercase(),
+                    urlencoding::encode(num)
+                ),
+                None => card.as_ref().map(|c| c.image_uri.clone()).unwrap_or_default(),
+            };
+            out.insert(
+                name.clone(),
+                json!({
+                    "name": card.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| name.clone()),
+                    "image": image,
+                    "in_deck": entry.is_some(),
+                    "type_line": card.as_ref().map(|c| c.type_line.clone()).unwrap_or_default(),
+                }),
+            );
+        }
+    }
+    Value::Object(out)
+}
+
 /// Formats the app builds, with their rules, for the Build screen.
 fn formats_json() -> Value {
     let points: Vec<Value> = CANLANDER_POINTS.iter().map(|(n, p)| json!({ "name": n, "points": p })).collect();

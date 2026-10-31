@@ -408,6 +408,7 @@ mod tests {
                 .collect(),
             sideboard: vec![],
             format: Default::default(),
+            considering: vec![],
         }
     }
 

@@ -931,6 +931,7 @@ fn analyze_reference_combos(
             main,
             sideboard: Vec::new(),
             format: Default::default(),
+            considering: Vec::new(),
         };
 
         match find_my_combos(&parsed) {

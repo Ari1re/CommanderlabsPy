@@ -925,6 +925,7 @@ where
         main: Vec::new(),
         sideboard: Vec::new(),
         format: Default::default(),
+        considering: Vec::new(),
     };
 
     progress(GenerationProgress::new(
@@ -1798,6 +1799,7 @@ for template in relevant_templates
         main,
         sideboard: Vec::new(),
         format,
+        considering: Vec::new(),
     };
 
     let mut notes = Vec::new();

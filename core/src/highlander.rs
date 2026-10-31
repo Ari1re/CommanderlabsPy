@@ -543,6 +543,7 @@ where
             main,
             sideboard: Vec::new(),
             format: Format::Canlander,
+            considering: Vec::new(),
         },
         plan: GamePlan {
             commanders: Vec::new(),
