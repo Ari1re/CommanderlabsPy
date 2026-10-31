@@ -173,6 +173,7 @@ mod tests {
             main: main.iter().map(|(q, n)| DeckEntry::new(*q, *n)).collect(),
             sideboard: vec![],
             format: Default::default(),
+            considering: vec![],
         }
     }
 

@@ -54,6 +54,10 @@ pub struct ParsedDeck {
     /// `// Format: …` comment line; missing means Commander.
     #[serde(default, skip_serializing_if = "is_commander_format")]
     pub format: crate::format::Format,
+    /// Cards you're thinking about (Moxfield's "Considering" / maybeboard):
+    /// kept with the deck but not part of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub considering: Vec<DeckEntry>,
 }
 
 fn is_commander_format(f: &crate::format::Format) -> bool {
@@ -65,6 +69,7 @@ enum Section {
     Main,
     Commander,
     Sideboard,
+    Considering,
     Ignore,
 }
 
@@ -185,11 +190,14 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
     }
 
     let mut sideboard = Vec::new();
+    let mut considering = Vec::new();
     let mut included = Vec::new();
 
     for line in parsed {
         if line.section == Section::Sideboard {
             sideboard.push(line.entry);
+        } else if line.section == Section::Considering {
+            considering.push(line.entry);
         } else {
             included.push(line);
         }
@@ -217,6 +225,7 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
             main,
             sideboard,
             format: format,
+            considering: considering.clone(),
         });
     }
 
@@ -250,6 +259,7 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
             main,
             sideboard,
             format: format,
+            considering: considering.clone(),
         });
     }
 
@@ -297,6 +307,7 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
                 main,
                 sideboard,
                 format: format,
+                considering: considering.clone(),
             });
         }
     }
@@ -313,6 +324,7 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
         main,
         sideboard,
         format,
+        considering: considering.clone(),
     })
 }
 
@@ -345,6 +357,15 @@ pub fn deck_to_text(deck: &ParsedDeck) -> String {
         out.push_str("\nSideboard\n");
 
         for entry in &deck.sideboard {
+            out.push_str(&entry.line());
+            out.push('\n');
+        }
+    }
+
+    if !deck.considering.is_empty() {
+        out.push_str("\nConsidering\n");
+
+        for entry in &deck.considering {
             out.push_str(&entry.line());
             out.push('\n');
         }
@@ -474,9 +495,11 @@ fn detect_section_header(line: &str) -> Option<Section> {
 
         "maybeboard"
         | "maybe board"
+        | "maybe"
         | "considering"
-        | "consider"
-        | "companion"
+        | "consider" => Some(Section::Considering),
+
+        "companion"
         | "companions"
         | "tokens"
         | "token"
@@ -807,5 +830,22 @@ mod tests {
                 .iter()
                 .any(|entry| entry.name == "Bala Ged Recovery // Bala Ged Sanctuary")
         );
+    }
+}
+
+#[cfg(test)]
+mod considering_tests {
+    use super::*;
+
+    #[test]
+    fn considering_round_trips() {
+        let deck = parse_deck_text("D", "Commander\n1 Kefka, Court Mage\n\nDeck\n1 Sol Ring\n\nSideboard\n1 Duress\n\nMaybeboard\n1 Ponder\n").unwrap();
+        assert_eq!(deck.considering.len(), 1);
+        assert_eq!(deck.main.len(), 1);
+        let text = deck_to_text(&deck);
+        assert!(text.contains("Considering\n1 Ponder"));
+        let back = parse_deck_text("D", &text).unwrap();
+        assert_eq!(back.considering[0].name, "Ponder");
+        assert_eq!(back.sideboard[0].name, "Duress");
     }
 }

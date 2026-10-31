@@ -14,6 +14,7 @@
   import DeckSources from './deck/DeckSources.svelte';
   import DeckAgent from './deck/DeckAgent.svelte';
   import DeckSuggestions from './deck/DeckSuggestions.svelte';
+  import DeckSearch from './deck/DeckSearch.svelte';
   import DeckGuide from './deck/DeckGuide.svelte';
   import DeckHistory from './deck/DeckHistory.svelte';
   import ShareDialog from '../components/ShareDialog.svelte';
@@ -59,6 +60,7 @@
 
   const tabs = [
     { id: 'cards', label: 'Cards', icon: 'cards' },
+    { id: 'search', label: 'Search', icon: 'search' },
     { id: 'suggestions', label: 'Suggestions', icon: 'plus' },
     { id: 'analysis', label: 'Analysis', icon: 'chart' },
     { id: 'combos', label: 'Combos', icon: 'combo' },
@@ -125,11 +127,11 @@
     }
   }
   let count = $derived(
-    deck?.entries.filter((e) => e.zone !== 'sideboard').reduce((n, e) => n + e.quantity, 0) ?? 0,
+    deck?.entries.filter((e) => (e.zone === 'main' || e.zone === 'commander')).reduce((n, e) => n + e.quantity, 0) ?? 0,
   );
   let total = $derived(
     deck?.entries
-      .filter((e) => e.zone !== 'sideboard')
+      .filter((e) => (e.zone === 'main' || e.zone === 'commander'))
       .reduce((sum, e) => sum + (price(e.card, app.currency) ?? 0) * e.quantity, 0) ?? 0,
   );
   let identity = $derived.by(() => {
@@ -264,6 +266,8 @@
   <section class="tab-body">
     {#if tab === 'cards'}
       <DeckCards {deck} onchange={updated} />
+    {:else if tab === 'search'}
+      <DeckSearch {deck} onchange={updated} />
     {:else if tab === 'suggestions'}
       <DeckSuggestions {deck} onchange={updated} />
     {:else if tab === 'analysis'}

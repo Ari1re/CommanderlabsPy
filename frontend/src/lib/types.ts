@@ -37,7 +37,7 @@ export interface CardView {
   double_faced: boolean;
 }
 
-export type Zone = 'commander' | 'main' | 'sideboard';
+export type Zone = 'commander' | 'main' | 'sideboard' | 'considering';
 
 export interface Entry {
   quantity: number;

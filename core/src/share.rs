@@ -52,6 +52,7 @@ pub fn essentials(deck: &ParsedDeck, extras: bool) -> ParsedDeck {
         main: strip(&deck.main),
         sideboard: if extras { strip(&deck.sideboard) } else { Vec::new() },
         format: deck.format,
+        considering: if extras { strip(&deck.considering) } else { Vec::new() },
     }
 }
 

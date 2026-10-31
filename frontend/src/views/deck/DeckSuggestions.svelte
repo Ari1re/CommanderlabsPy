@@ -141,7 +141,7 @@
     return (c.roles as any)[role];
   }
 
-  let inDeck = $derived(new Set(deck.entries.filter((e) => e.zone !== 'sideboard').map((e) => e.name.toLowerCase())));
+  let inDeck = $derived(new Set(deck.entries.filter((e) => (e.zone === 'main' || e.zone === 'commander')).map((e) => e.name.toLowerCase())));
 
   async function add(s: Suggestion) {
     try {
@@ -154,10 +154,10 @@
   }
 
   function countAfter() {
-    return deck.entries.filter((e) => e.zone !== 'sideboard').reduce((n, e) => n + e.quantity, 0) + 1;
+    return deck.entries.filter((e) => (e.zone === 'main' || e.zone === 'commander')).reduce((n, e) => n + e.quantity, 0) + 1;
   }
 
-  let count = $derived(deck.entries.filter((e) => e.zone !== 'sideboard').reduce((n, e) => n + e.quantity, 0));
+  let count = $derived(deck.entries.filter((e) => (e.zone === 'main' || e.zone === 'commander')).reduce((n, e) => n + e.quantity, 0));
 </script>
 
 <div class="head">
