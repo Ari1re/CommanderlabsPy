@@ -564,18 +564,19 @@ dependencies = [
 
 [[package]]
 name = "commander-lab"
-version = "0.30.2"
+version = "0.31.0"
 dependencies = [
  "commander-lab-core",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tauri-plugin-apk-installer",
  "tauri-plugin-opener",
 ]
 
 [[package]]
 name = "commander-lab-core"
-version = "0.30.2"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -593,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "commander-lab-web"
-version = "0.30.2"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4073,6 +4074,15 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-apk-installer"
+version = "0.31.0"
+dependencies = [
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

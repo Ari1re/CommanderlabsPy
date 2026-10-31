@@ -295,12 +295,13 @@ The **Game** tab turns your phone into a life counter for 2–6 players.
 
 ### Updates
 
-When a new build is published, Commander Lab shows an **Update** button (in the sidebar on desktop, plus a banner and a dot on Settings). **Settings → Updates** checks any time.
+When a new build is published, Commander Lab shows an **Update** button (in the sidebar on desktop, plus a banner and a dot on Settings). Opening **Settings → Updates** checks right away, and **Check for updates** checks again any time. Every kind of copy updates itself from there:
 
 - **Windows** installer: downloads and installs the update, then reopens the app. The portable exe swaps itself for the new one and restarts.
-- **Linux** (installed with the `.sh`, NixOS included, or an AppImage): installs the update and restarts.
-- **Android**: downloads the new APK; tap it and Android installs it over the current app, keeping your decks.
-- The `.deb` and copies built from source don't replace themselves. For source builds, run `./run-linux.sh --update`.
+- **Linux** `.sh` install (NixOS included), AppImage, or the browser-edition binary: replaces itself and restarts.
+- **Linux `.deb`**: downloads the new package and installs it (your system asks for your password), then restarts.
+- **Built from source** with `./run-linux.sh`: compares your checkout with GitHub, then **Update and rebuild** pulls the new code, rebuilds (a few minutes, with progress shown) and restarts.
+- **Android**: downloads the new APK inside the app and opens Android's installer. Tap **Install**; Android updates the app in place and keeps your decks. The first time, Android asks you to allow Commander Lab to install apps; turn it on and come back, and the installer opens.
 
 ### Settings
 

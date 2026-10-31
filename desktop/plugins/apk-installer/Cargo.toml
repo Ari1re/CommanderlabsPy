@@ -1,0 +1,13 @@
+[package]
+name = "tauri-plugin-apk-installer"
+version.workspace = true
+edition = "2021"
+description = "Hands a downloaded APK to Android's package installer (Commander Lab updates)."
+links = "tauri-plugin-apk-installer"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

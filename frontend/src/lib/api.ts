@@ -38,6 +38,17 @@ export async function openExternal(url: string) {
   window.open(url, '_blank', 'noopener');
 }
 
+/** Call one of the native app's own commands (desktop/Android app only). */
+export async function invokeNative<T = any>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+  const invoke = await getInvoke();
+  if (!invoke) throw new ApiError('This only works in the Commander Lab app.');
+  try {
+    return (await invoke(cmd, args)) as T;
+  } catch (err) {
+    throw new ApiError(typeof err === 'string' ? err : (err as Error)?.message ?? String(err));
+  }
+}
+
 export async function api<T = any>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   const invoke = await getInvoke();
   if (invoke) {

@@ -288,6 +288,8 @@ export interface UpdateInfo {
   page_url: string;
   download_url: string | null;
   install: 'auto' | 'download' | 'none';
+  /** windows-installer, windows-portable, linux-script, appimage, linux-binary, deb, android, source, manual */
+  kind: string;
   how: string;
   checked_at: number;
 }

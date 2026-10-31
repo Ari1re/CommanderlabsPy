@@ -208,9 +208,9 @@ impl Engine {
             "update_install" => {
                 let platform = self.platform.clone();
                 Ok(json!({ "job": self.jobs.spawn("update_install", "", move |job| {
-                    job.progress(1, "Downloading the update", "");
-                    let message = crate::updater::install(&platform, |pct, detail| job.progress(pct, "Downloading the update", detail))?;
-                    Ok(json!({ "message": message }))
+                    job.progress(1, "Updating", "");
+                    let outcome = crate::updater::install(&platform, |pct, detail| job.progress(pct, "Updating", detail))?;
+                    to_value(outcome)
                 }) }))
             }
             "import_cards_file" => {
