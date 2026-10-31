@@ -14,6 +14,8 @@ use crate::{
     },
     spellbook::find_my_combos,
     sources::DeckSource,
+    format::Format,
+    oracle_search::{deep_search, DeepFind, ThemeMatcher},
 };
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
@@ -59,6 +61,10 @@ pub struct GenerationProgress {
 }
 
 impl GenerationProgress {
+    pub fn new_pub(percent: u16, step: &str, detail: impl Into<String>) -> Self {
+        Self::new(percent, step, detail)
+    }
+
     fn new(percent: u16, step: &str, detail: impl Into<String>) -> Self {
         Self {
             percent: percent.min(100),
@@ -782,24 +788,97 @@ where
     Ok(generated)
 }
 
+/// Extra choices for a generation run.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GenerationOptions {
+    /// Commander or Pauper Commander (Canadian Highlander has its own builder).
+    pub format: Format,
+    /// Read every card's Oracle text for cards that fit the chosen play
+    /// styles, including old cards no decklist runs.
+    pub deep_search: bool,
+}
+
 pub fn generate_optimized_deck<F>(
     commander_specification: &str,
     selected_theme: &str,
     target_bracket: GenerationBracket,
+    db: &CardDb,
+    progress: F,
+) -> Result<GeneratedDeck>
+where
+    F: FnMut(GenerationProgress),
+{
+    generate_deck_with_options(
+        commander_specification,
+        selected_theme,
+        target_bracket,
+        GenerationOptions::default(),
+        db,
+        progress,
+    )
+}
+
+/// Look up PDH commanders ("A" or "A + B") and check them against the PDH
+/// commander rules.
+pub fn resolve_pdh_commanders(spec: &str, db: &CardDb) -> Result<Vec<Card>> {
+    let mut out = Vec::new();
+    for (i, name) in spec.split(" + ").map(str::trim).filter(|n| !n.is_empty()).enumerate() {
+        let card = db
+            .get_card(name)?
+            .ok_or_else(|| anyhow!("Couldn't find a card named \"{name}\"."))?;
+        Format::Pdh
+            .commander_allowed(&card, i > 0)
+            .map_err(|why| anyhow!("{} can't lead a Pauper Commander deck: {why}.", card.name))?;
+        out.push(card);
+    }
+    if out.len() == 2 {
+        let a = out[0].oracle_text.to_ascii_lowercase();
+        let b = out[1].oracle_text.to_ascii_lowercase();
+        let bg = out[1].type_line.to_ascii_lowercase().contains("background");
+        let ok = (a.contains("partner") && b.contains("partner"))
+            || (a.contains("choose a background") && bg)
+            || (a.contains("friends forever") && b.contains("friends forever"));
+        if !ok {
+            return Err(anyhow!("{} and {} can't be paired as commanders.", out[0].name, out[1].name));
+        }
+    }
+    Ok(out)
+}
+
+pub fn generate_deck_with_options<F>(
+    commander_specification: &str,
+    selected_theme: &str,
+    target_bracket: GenerationBracket,
+    options: GenerationOptions,
     db: &CardDb,
     mut progress: F,
 ) -> Result<GeneratedDeck>
 where
     F: FnMut(GenerationProgress),
 {
+    let format = options.format;
+    if format == Format::Canlander {
+        return Err(anyhow!("Canadian Highlander decks are built without a commander."));
+    }
+    if format.needs_format_data() && !db.has_format_data() {
+        return Err(anyhow!(
+            "Update card data (Settings → Update card data) to build {} decks; the format rules need the newer card data.",
+            format.label()
+        ));
+    }
+    let allowed = |card: &Card| format.card_allowed(card).is_ok();
+
     progress(GenerationProgress::new(
         4,
         "Resolving commander",
         commander_specification,
     ));
 
-    let commanders =
-        resolve_generation_commanders(commander_specification, db)?;
+    let commanders = if format == Format::Pdh {
+        resolve_pdh_commanders(commander_specification, db)?
+    } else {
+        resolve_generation_commanders(commander_specification, db)?
+    };
 
     progress(GenerationProgress::new(
         10,
@@ -836,6 +915,7 @@ where
         commanders: commander_entries.clone(),
         main: Vec::new(),
         sideboard: Vec::new(),
+        format: Default::default(),
     };
 
     progress(GenerationProgress::new(
@@ -991,6 +1071,50 @@ where
         }
     }
 
+    // Pauper Commander: every legal common in the commander's colors is a
+    // candidate, not just the globally popular ones.
+    if format == Format::Pdh {
+        let mut seen: HashSet<String> = pool.iter().map(|c| c.name.to_ascii_lowercase()).collect();
+        db.scan_cards(|card| {
+            if allowed(&card)
+                && identity_subset(&card.color_identity, &identity)
+                && seen.insert(card.name.to_ascii_lowercase())
+            {
+                pool.push(card);
+            }
+        })?;
+    }
+    pool.retain(|card| allowed(card));
+
+    // Deep card search: Oracle-text matches for the chosen play styles.
+    let mut deep_finds: HashMap<String, DeepFind> = HashMap::new();
+    if options.deep_search {
+        let mut themes = theme_list(selected_theme);
+        if themes.is_empty() {
+            themes = primary_tags.clone();
+        }
+        progress(GenerationProgress::new(
+            31,
+            "Deep card search",
+            format!("Reading every card's rules text for {}", themes.join(", ")),
+        ));
+        let finds = deep_search(db, &themes, Some(&identity), format, 120)?;
+        for find in finds {
+            let key = find.name.to_ascii_lowercase();
+            if !pool.iter().any(|c| c.name.eq_ignore_ascii_case(&find.name)) {
+                if let Some(card) = db.get_card(&find.name)? {
+                    pool.push(card);
+                }
+            }
+            deep_finds.insert(key, find);
+        }
+        progress(GenerationProgress::new(
+            31,
+            "Deep card search",
+            format!("{} matching cards found by rules text", deep_finds.len()),
+        ));
+    }
+
     progress(GenerationProgress::new(
         32,
         "Candidate pool ready",
@@ -1004,7 +1128,14 @@ where
     ));
 
     let library_target = 100usize.saturating_sub(commanders.len());
-    let land_target = if identity.len() >= 4 { 35 } else { 34 };
+    // PDH has little mana-rock ramp (no Sol Ring, few signets at common), so
+    // it runs a couple more lands.
+    let land_target = match (format, identity.len() >= 4) {
+        (Format::Pdh, true) => 37,
+        (Format::Pdh, false) => 36,
+        (_, true) => 35,
+        (_, false) => 34,
+    };
     let spell_target = library_target.saturating_sub(land_target);
 
     let mut used = commanders
@@ -1113,7 +1244,7 @@ where
                 break;
             };
 
-            if !card.commander_legal
+            if !allowed(&card)
                 || !identity_subset(&card.color_identity, &identity)
             {
                 legal = false;
@@ -1212,7 +1343,7 @@ for template in relevant_templates
         break;
     }
 
-    let Some(cards) = resolve_combo_template(template, &identity, db)? else {
+    let Some(cards) = resolve_combo_template(template, &identity, format, db)? else {
         continue;
     };
 
@@ -1280,17 +1411,23 @@ for template in relevant_templates
         ),
     ));
 
+    // Without EDHREC or decklist evidence (Pauper Commander, or offline), the
+    // commander's own keywords ("counter", "token"…) match far too broadly to
+    // carry the large bonuses they get when real build data backs them up.
+    let thin_evidence = edhrec_build_cards.is_empty() && reference_snapshot.deck_count() == 0;
+
     let spell_pool = pool
         .iter()
         .filter(|card| {
-            card.commander_legal
+            allowed(card)
                 && identity_subset(&card.color_identity, &identity)
                 && !card.type_line.to_ascii_lowercase().contains("land")
                 && !used.contains(&card.name.to_ascii_lowercase())
         })
         .map(|card| {
             let roles = classify_card(card);
-            let direct_theme = card_matches_theme(card, selected_theme);
+            let direct_theme = card_matches_theme(card, selected_theme)
+                || deep_finds.contains_key(&card.name.to_ascii_lowercase());
             let engine_match =
                 card_matches_engine(card, &commander_engine_terms);
             let reference_frequency =
@@ -1300,10 +1437,36 @@ for template in relevant_templates
             let learned_support =
                 intelligence.support_for_card(card, roles);
 
+            // Deep-search finds have no EDHREC rank or decklist support, so
+            // give them back what the popularity signals would have.
+            let deep_bonus = deep_finds
+                .get(&card.name.to_ascii_lowercase())
+                .map(|find| 8 + (find.score / 10).min(12))
+                .unwrap_or(0);
+
+            // Pauper Commander has no EDHREC build data, so a card's overall
+            // play rate stands in for "format staple" (Gray Merchant, Sign in
+            // Blood…), balancing the theme and engine bonuses.
+            let staple_bonus = if format.is_commander() {
+                0
+            } else {
+                match card.edhrec_rank {
+                    Some(r) if r <= 500 => 95,
+                    Some(r) if r <= 2_000 => 70,
+                    Some(r) if r <= 6_000 => 45,
+                    Some(r) if r <= 15_000 => 15,
+                    _ => 0,
+                }
+            };
+
+            let support = if thin_evidence { learned_support.score / 3 } else { learned_support.score };
+
             let score = base_card_score(card, &tags)
                 + target_bracket.fast_mana_score(card, roles)
                 + bracket_card_score(card, roles, target_bracket)
-                + learned_support.score;
+                + support
+                + deep_bonus
+                + staple_bonus;
 
             (
                 card,
@@ -1317,12 +1480,24 @@ for template in relevant_templates
         })
         .collect::<Vec<_>>();
 
+    // Rarely played deep-search finds earn a place on fit, but a deck built
+    // mostly from them loses the proven core, so cap how many get in.
+    const DEEP_OBSCURE_CAP: usize = 12;
+    let is_deep_obscure = |card: &Card| {
+        deep_finds.contains_key(&card.name.to_ascii_lowercase())
+            && card.edhrec_rank.map(|r| r > 15_000).unwrap_or(true)
+    };
+    let mut deep_obscure_picked = 0usize;
+
     while main.len() < spell_target {
         let mut best_index = None;
         let mut best_score = i32::MIN;
 
         for (index, (card, roles, base, direct_theme, engine_match, reference_frequency, edhrec_core)) in spell_pool.iter().enumerate() {
             if used.contains(&card.name.to_ascii_lowercase()) {
+                continue;
+            }
+            if deep_obscure_picked >= DEEP_OBSCURE_CAP && is_deep_obscure(card) {
                 continue;
             }
 
@@ -1332,7 +1507,7 @@ for template in relevant_templates
                 if *direct_theme && theme_cards < theme_preference_target {
                     90
                 } else if *direct_theme {
-                    45
+                    if thin_evidence { 10 } else { 45 }
                 } else {
                     0
                 };
@@ -1340,8 +1515,11 @@ for template in relevant_templates
             // Off-theme cards are never excluded. Cards with no direct theme,
             // structural, or reference support receive only a modest
             // coherence penalty and can still win the slot on overall value.
+            let widely_played = card.edhrec_rank.map(|r| r <= 6_000).unwrap_or(false);
             let coherence_adjustment =
-                if !*direct_theme && !structural && *reference_frequency == 0 {
+                if !*direct_theme && !structural && *reference_frequency == 0
+                    && !(thin_evidence && widely_played)
+                {
                     -24
                 } else {
                     0
@@ -1351,9 +1529,9 @@ for template in relevant_templates
                 if *engine_match
                     && commander_engine_cards < commander_engine_target
                 {
-                    180
+                    if thin_evidence { 45 } else { 180 }
                 } else if *engine_match {
-                    70
+                    if thin_evidence { 15 } else { 70 }
                 } else {
                     0
                 };
@@ -1398,6 +1576,9 @@ for template in relevant_templates
 
         used.insert(card.name.to_ascii_lowercase());
         role_counts.add_card(card, roles);
+        if is_deep_obscure(card) {
+            deep_obscure_picked += 1;
+        }
 
         if direct_theme {
             theme_cards += 1;
@@ -1442,7 +1623,7 @@ for template in relevant_templates
     let mut land_pool = pool
         .iter()
         .filter(|card| {
-            card.commander_legal
+            allowed(card)
                 && identity_subset(&card.color_identity, &identity)
                 && card.type_line.to_ascii_lowercase().contains("land")
                 && !card.is_basic
@@ -1519,7 +1700,7 @@ for template in relevant_templates
         let mut fallback_cards = pool
             .iter()
             .filter(|card| {
-                card.commander_legal
+                allowed(card)
                     && identity_subset(&card.color_identity, &identity)
                     && !card.type_line.to_ascii_lowercase().contains("land")
                     && !used.contains(&card.name.to_ascii_lowercase())
@@ -1527,7 +1708,8 @@ for template in relevant_templates
             .map(|card| {
                 let roles = classify_card(card);
                 let direct_theme =
-                    card_matches_theme(card, selected_theme);
+                    card_matches_theme(card, selected_theme)
+                        || deep_finds.contains_key(&card.name.to_ascii_lowercase());
                 let reference_frequency =
                     reference_snapshot.frequency(&card.name);
 
@@ -1594,10 +1776,15 @@ for template in relevant_templates
     }
 
     let mut deck = ParsedDeck {
-        name: format!("{generated_name} - Generated"),
+        name: if format == Format::Pdh {
+            format!("{generated_name} - PDH")
+        } else {
+            format!("{generated_name} - Generated")
+        },
         commanders: commander_entries,
         main,
         sideboard: Vec::new(),
+        format,
     };
 
     let mut notes = Vec::new();
@@ -1682,7 +1869,7 @@ if target_bracket.bracket >= 3 {
             break;
         };
 
-        if !card.commander_legal
+        if !allowed(&card)
             || !identity_subset(
                 &card.color_identity,
                 &identity,
@@ -1818,12 +2005,20 @@ progress(GenerationProgress::new(
 
 notes.insert(
     0,
-    format!(
-        "Target power: Bracket {} — {}. Final validation: {}. The generator treats the requested bracket as a hard post-build contract, not merely a scoring preference.",
-        target_bracket.bracket,
-        target_bracket.label(),
-        validated_bracket.display_name(),
-    ),
+    if format.is_commander() {
+        format!(
+            "Target power: Bracket {} — {}. Final validation: {}. The generator treats the requested bracket as a hard post-build contract, not merely a scoring preference.",
+            target_bracket.bracket,
+            target_bracket.label(),
+            validated_bracket.display_name(),
+        )
+    } else {
+        format!(
+            "Power level {} of 5 (Commander brackets don't apply to {}; this only set how aggressive the build is).",
+            target_bracket.bracket,
+            format.label(),
+        )
+    },
 );
     notes.insert(
         1,
@@ -1856,6 +2051,33 @@ notes.insert(
             intelligence.role_summary(),
         ),
     );
+
+    if format == Format::Pdh {
+        notes.insert(
+            0,
+            "Pauper Commander: the commander was printed at uncommon and every other card at common (paper or MTGO printings). Built for 30 life and 16 commander damage. Mystic Remora, Rhystic Study, ante cards, Conspiracies and cards removed from constructed play are excluded.".to_string(),
+        );
+    }
+
+    if options.deep_search {
+        let included: Vec<String> = deck
+            .main
+            .iter()
+            .filter_map(|e| deep_finds.get(&e.name.to_ascii_lowercase()))
+            .filter(|f| f.edhrec_rank.map(|r| r > 15_000).unwrap_or(true))
+            .map(|f| format!("{} ({})", f.name, f.reason))
+            .collect();
+        notes.push(format!(
+            "Deep card search read the rules text of every card for {} and found {} that fit{}",
+            theme_list(selected_theme).join(", "),
+            deep_finds.len(),
+            if included.is_empty() {
+                "; none beat the established picks this time.".to_string()
+            } else {
+                format!(". Picked up from that search: {}.", included.join("; "))
+            }
+        ));
+    }
 
     notes.extend(integrity_report.notes());
 
@@ -2137,6 +2359,11 @@ fn enforce_generation_bracket(
             ),
         );
 
+        if !deck.format.is_commander() {
+            // Commander brackets don't apply outside Commander; the bracket
+            // is only a power dial there.
+            return Ok(estimate);
+        }
         return Err(anyhow!(
             "Requested Bracket {} but the completed deck validates as {}. \
              Commander Lab will not save a deck under the wrong bracket. \
@@ -2215,8 +2442,7 @@ fn power_up_to_target(
         let mut candidates = pool
             .iter()
             .filter(|card| {
-                card.commander_legal
-                    && identity_subset(&card.color_identity, identity)
+                identity_subset(&card.color_identity, identity)
                     && !card.type_line.to_ascii_lowercase().contains("land")
                     && !used.contains(&card.name.to_ascii_lowercase())
             })
@@ -2411,8 +2637,7 @@ fn power_down_to_target(
         let replacement = pool
             .iter()
             .filter(|card| {
-                card.commander_legal
-                    && identity_subset(&card.color_identity, identity)
+                identity_subset(&card.color_identity, identity)
                     && !card.type_line.to_ascii_lowercase().contains("land")
                     && !used.contains(&card.name.to_ascii_lowercase())
             })
@@ -2661,6 +2886,7 @@ fn combo_templates() -> Vec<ComboTemplate> {
 fn resolve_combo_template(
     template: &ComboTemplate,
     identity: &str,
+    format: Format,
     db: &CardDb,
 ) -> Result<Option<Vec<Card>>> {
     let mut cards = Vec::new();
@@ -2670,7 +2896,7 @@ fn resolve_combo_template(
             return Ok(None);
         };
 
-        if !card.commander_legal
+        if format.card_allowed(&card).is_err()
             || !identity_subset(&card.color_identity, identity)
         {
             return Ok(None);
@@ -2889,6 +3115,22 @@ fn land_build_score(
     score
 }
 
+thread_local! {
+    static MATCHERS: std::cell::RefCell<HashMap<String, std::rc::Rc<ThemeMatcher>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Oracle-text matcher for a theme, compiled once per thread.
+fn theme_matcher(theme: &str) -> std::rc::Rc<ThemeMatcher> {
+    MATCHERS.with(|cache| {
+        cache
+            .borrow_mut()
+            .entry(theme.to_ascii_lowercase())
+            .or_insert_with(|| std::rc::Rc::new(ThemeMatcher::new(theme)))
+            .clone()
+    })
+}
+
 /// True when the card fits any of the selected play styles.
 fn card_matches_theme(card: &Card, selected_theme: &str) -> bool {
     theme_list(selected_theme)
@@ -2901,6 +3143,10 @@ fn card_matches_single_theme(card: &Card, selected_theme: &str) -> bool {
         .iter()
         .any(|tag| tag.eq_ignore_ascii_case(selected_theme))
     {
+        return true;
+    }
+
+    if theme_matcher(selected_theme).matches(card) {
         return true;
     }
 

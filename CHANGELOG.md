@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.27.0
+
+- **Pauper Commander (PDH):** build, check and track PDH decks under the PDH Home Base rules.
+  - The commander is a creature, Vehicle or Spacecraft printed at uncommon (an uncommon Background can be the second commander).
+  - The 99 are cards printed at common. Only paper and MTGO printings count; Arena doesn't.
+  - Mystic Remora, Rhystic Study, ante cards, Conspiracies and the cards Wizards removed from constructed play are banned.
+  - Games are played at 30 life with 16 commander damage.
+  - Commander search on the Build screen only offers eligible commanders.
+- **Canadian Highlander:** pick colors and play styles instead of a commander.
+  - Builds 100 singleton cards with no sideboard, using the Vintage card pool and banned list.
+  - Stays within the 10-point limit (points list effective 1 September 2026). The power level sets how many points it may spend.
+  - Every card is chosen from its rules text, so it doesn't depend on Commander decklists.
+- **Deep card search** (an option when generating): reads the rules text of every card in Scryfall's database for cards that fit your play styles, including older cards no decklist runs.
+  - Example: wither and persist creatures for a -1/-1 counters deck.
+  - The deck notes list what it found and why.
+  - Rarely played finds are capped so the deck keeps a proven core.
+- **Your own play styles:** type any ability or theme on the Build screen (for example "-1/-1 Counters", "Elves" or "Landfall") and the deck is built to match it.
+- Theme matching is smarter everywhere: creature types, plurals, old wordings, and +1/+1 versus -1/-1 counters are told apart.
+- **Suggestions:** a "Found by rules text" group, plus a search box to dig for cards with any ability you name. Suggestions only offer cards legal in the deck's format.
+- **Deck page:** shows the deck's format, a points total for Highlander decks, and format-specific legality problems. Change a deck's format from the ⋯ menu.
+- **Game tab:** choose the game mode. Each sets starting life, commander damage and player count:
+  - Commander
+  - Pauper Commander
+  - PDH one-on-one
+  - Canadian Highlander
+  - Brawl
+  - Oathbreaker
+  - 60-card
+  Modes without commander damage hide it, and the commander-tax counter, entirely.
+- Card data now records rarity and Pauper Commander / Vintage legality. **Update card data once** (Settings) to use the new formats.
+- Sticker sheets and Attractions are never put in a deck.
+
 ## 0.26.0
 
 - Game: choose which way the life panels face — **Across** (top row faces the players opposite), **Sides** (the left and right columns face the long edges, like Mythic Tools) or **All me**. Pick it before the game or change it from the game menu. Each player can also turn their own panel a quarter turn from their menu, and the menu, set-life box and swipes follow that panel's direction.

@@ -44,12 +44,20 @@ impl DeckEntry {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ParsedDeck {
     pub name: String,
     pub commanders: Vec<DeckEntry>,
     pub main: Vec<DeckEntry>,
     pub sideboard: Vec<DeckEntry>,
+    /// Format the deck is built for. Saved in the decklist as a
+    /// `// Format: …` comment line; missing means Commander.
+    #[serde(default, skip_serializing_if = "is_commander_format")]
+    pub format: crate::format::Format,
+}
+
+fn is_commander_format(f: &crate::format::Format) -> bool {
+    f.is_commander()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +130,7 @@ pub fn parse_deck_file(path: &Path) -> Result<ParsedDeck> {
 
 pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
     let filename_hints = commander_filename_hints(deck_name);
+    let mut format = crate::format::Format::Commander;
 
     let mut section = Section::Main;
     let mut parsed = Vec::<ParsedLine>::new();
@@ -140,6 +149,9 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
         }
 
         if is_comment(line) {
+            if let Some(found) = format_comment(line) {
+                format = found;
+            }
             continue;
         }
 
@@ -204,6 +216,7 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
             commanders,
             main,
             sideboard,
+            format: format,
         });
     }
 
@@ -236,6 +249,7 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
             commanders,
             main,
             sideboard,
+            format: format,
         });
     }
 
@@ -282,6 +296,7 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
                 commanders,
                 main,
                 sideboard,
+                format: format,
             });
         }
     }
@@ -297,11 +312,16 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
         commanders: Vec::new(),
         main,
         sideboard,
+        format,
     })
 }
 
 pub fn deck_to_text(deck: &ParsedDeck) -> String {
     let mut out = String::new();
+
+    if !deck.format.is_commander() {
+        out.push_str(&format!("// Format: {}\n", deck.format.label()));
+    }
 
     if !deck.commanders.is_empty() {
         out.push_str("Commander\n");
@@ -467,6 +487,13 @@ fn detect_section_header(line: &str) -> Option<Section> {
 
         _ => None,
     }
+}
+
+/// `// Format: Pauper Commander` → the format named in a comment line.
+fn format_comment(line: &str) -> Option<crate::format::Format> {
+    let body = line.trim_start_matches(['/', '#', ';']).trim();
+    let (key, value) = body.split_once(':')?;
+    key.trim().eq_ignore_ascii_case("format").then(|| crate::format::Format::parse(value))
 }
 
 fn is_comment(line: &str) -> bool {

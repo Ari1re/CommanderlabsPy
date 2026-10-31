@@ -28,8 +28,35 @@
     combos: 'Combo',
     synergy: 'Synergy',
     popular: 'Popular',
+    deep: 'Rules text',
+    dig: 'Your search',
     gaps: 'Fills a gap',
   };
+
+  // Deep card search for any play style or ability the user names.
+  let digQuery = $state('');
+  let digging = $state(false);
+
+  async function dig() {
+    const theme = digQuery.trim();
+    if (!theme) return;
+    digging = true;
+    try {
+      const res = await api<{ results: { find: { reason: string }; card: Suggestion['card'] }[] }>('deep_search', {
+        deck: deck.name,
+        theme,
+        limit: 40,
+      });
+      const items = res.results.map((r) => ({ card: r.card, reason: r.find.reason }));
+      sections = [{ id: 'dig', title: `Cards for "${theme}"`, items }, ...(sections ?? []).filter((x) => x.id !== 'dig')];
+      source = 'dig';
+      if (!items.length) app.toast(`No legal cards matched "${theme}".`);
+    } catch (err) {
+      app.error(err);
+    } finally {
+      digging = false;
+    }
+  }
 
   interface Mixed {
     card: Suggestion['card'];
@@ -138,12 +165,18 @@
     <h2>Cards you could add</h2>
     <p class="dim small">
       Picked for {deck.entries.filter((e) => e.zone === 'commander').map((e) => e.name).join(' + ') || 'this deck'}
-      from EDHREC, your deck's gaps, and combos you're one card away from.
+      from EDHREC, your deck's gaps, combos you're one card away from, and a search of every card's
+      rules text for your play styles{deck.format !== 'commander' ? `, legal in ${deck.format_label}` : ''}.
       {#if count >= 100}Your deck is full — add a card here, then cut one from the Cards tab.{/if}
     </p>
   </div>
   <button class="btn ghost" onclick={load} disabled={loading}><Icon name="refresh" size={16} /> Refresh</button>
 </div>
+
+<form class="dig" onsubmit={(e) => { e.preventDefault(); dig(); }}>
+  <input class="input" bind:value={digQuery} placeholder="Dig deeper: any ability or play style (e.g. -1/-1 counters, wither, Elves)" aria-label="Search card rules text" />
+  <button class="btn" disabled={!digQuery.trim() || digging}><Icon name="search" size={16} /> {digging ? 'Searching…' : 'Search rules text'}</button>
+</form>
 
 <div class="filters">
   <div class="chips" role="group" aria-label="Why it's suggested">
@@ -183,7 +216,7 @@
   </div>
 {:else if sections}
   {#if sections.length === 0}
-    <p class="muted">No suggestions found. Make sure the deck has a commander.</p>
+    <p class="muted">No suggestions found. Try searching rules text above.</p>
   {/if}
   {#if sections.length && !shown.length}
     <p class="muted">No suggestions match these filters.</p>
@@ -381,5 +414,21 @@
       grid-template-columns: repeat(2, 1fr);
       gap: 0.75rem;
     }
+  }
+  .dig {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .dig .input {
+    flex: 1 1 16rem;
+    min-width: 0;
+  }
+  .tag.src-deep,
+  .chip.src-deep[aria-pressed='true'],
+  .tag.src-dig,
+  .chip.src-dig[aria-pressed='true'] {
+    border-color: #4f93d6;
   }
 </style>

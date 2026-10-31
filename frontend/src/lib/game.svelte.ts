@@ -22,6 +22,36 @@ export const COUNTERS: CounterDef[] = [
 export const PLAYER_COLORS = ['#c9a45c', '#4f93d6', '#d0605a', '#4fa36a', '#9a76c9', '#d48a3c'];
 export const MANA_COLORS = ['W', 'U', 'B', 'R', 'G', 'C'] as const;
 export const CMD_LETHAL = 21;
+
+/** Magic game modes the tracker supports: starting life, commander damage
+ *  (null = no commander damage) and the usual player count. */
+export interface GameMode {
+  id: string;
+  label: string;
+  life: number;
+  cmd: number | null;
+  players: number;
+  hint: string;
+}
+
+export const GAME_MODES: GameMode[] = [
+  { id: 'commander', label: 'Commander', life: 40, cmd: 21, players: 4, hint: '40 life, 21 commander damage.' },
+  { id: 'pdh', label: 'Pauper Commander', life: 30, cmd: 16, players: 4, hint: '30 life, 16 commander damage.' },
+  { id: 'pdh1v1', label: 'PDH one-on-one', life: 25, cmd: 21, players: 2, hint: 'Pauper Commander duel: 25 life, 21 commander damage.' },
+  { id: 'canlander', label: 'Canadian Highlander', life: 20, cmd: null, players: 2, hint: '20 life, one-on-one, no commander.' },
+  { id: 'brawl', label: 'Brawl', life: 25, cmd: null, players: 2, hint: '25 life, no commander damage.' },
+  { id: 'oathbreaker', label: 'Oathbreaker', life: 20, cmd: null, players: 4, hint: '20 life, no commander damage.' },
+  { id: 'constructed', label: '60-card', life: 20, cmd: null, players: 2, hint: 'Standard, Modern, Pauper and other 60-card formats: 20 life.' },
+];
+
+export function gameMode(id: string | undefined): GameMode {
+  return GAME_MODES.find((m) => m.id === id) ?? GAME_MODES[0];
+}
+
+/** Commander damage that knocks a player out in this game (null = none). */
+export function cmdLethalOf(s: Pick<GameState, 'cmdLethal'> | null | undefined): number | null {
+  return s?.cmdLethal === undefined ? CMD_LETHAL : s.cmdLethal;
+}
 export const LOW_LIFE = 10;
 
 export interface Player {
@@ -70,6 +100,10 @@ export interface GameState {
   blessing: number[];
   dayNight: 'day' | 'night' | null;
   tableMode: boolean;
+  /** Game mode id (see GAME_MODES); older saves are Commander. */
+  mode?: string;
+  /** Commander damage that loses the game; null when the mode has none. */
+  cmdLethal?: number | null;
   /** Panel orientation preset; older saves fall back to tableMode. */
   layout?: Layout;
   cmdLowersLife: boolean;
@@ -88,6 +122,7 @@ export interface GameState {
 
 export interface GameRecord {
   date: number;
+  mode?: string;
   minutes: number;
   turns: number;
   winner: string | null;
@@ -122,11 +157,11 @@ export function newPlayer(id: number, startLife: number): Player {
   };
 }
 
-export function isOut(p: Player, clockOn = false): string | null {
+export function isOut(p: Player, clockOn = false, cmdLethal: number | null = CMD_LETHAL): string | null {
   if (p.conceded) return 'Conceded';
   if (p.life <= 0) return 'Out of life';
   if ((p.counters.poison ?? 0) >= 10) return '10 poison';
-  for (const v of Object.values(p.cmd)) if (v >= CMD_LETHAL) return '21 commander damage';
+  if (cmdLethal != null) for (const v of Object.values(p.cmd)) if (v >= cmdLethal) return `${cmdLethal} commander damage`;
   if (clockOn && (p.clockMs ?? 1) <= 0) return 'Out of time';
   return null;
 }
@@ -167,7 +202,7 @@ export function fmtClock(ms: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-type Setup = Pick<GameState, 'players' | 'startLife' | 'tableMode' | 'layout' | 'cmdLowersLife' | 'lowLifeFx' | 'turns' | 'clockMinutes'>;
+type Setup = Pick<GameState, 'players' | 'startLife' | 'tableMode' | 'layout' | 'mode' | 'cmdLethal' | 'cmdLowersLife' | 'lowLifeFx' | 'turns' | 'clockMinutes'>;
 
 class GameStore {
   state = $state<GameState | null>(load());
@@ -290,6 +325,7 @@ class GameStore {
     if (!s) return null;
     return {
       date: Date.now(),
+      mode: gameMode(s.mode).label,
       minutes: Math.round((Date.now() - s.startedAt) / 60000),
       turns: s.turn,
       winner: winner == null ? null : (this.player(winner)?.name ?? null),
@@ -440,7 +476,7 @@ class GameStore {
   pickFirst() {
     const s = this.state;
     if (!s) return null;
-    const ps = s.players.filter((p) => !isOut(p, s.clockMinutes > 0));
+    const ps = s.players.filter((p) => !isOut(p, s.clockMinutes > 0, cmdLethalOf(s)));
     const chosen = ps[Math.floor(Math.random() * ps.length)]?.id ?? null;
     s.firstPlayer = chosen;
     if (s.turns && chosen != null && s.turn === 0) {
@@ -468,7 +504,7 @@ class GameStore {
     const s = this.state;
     if (!s) return;
     this.tick();
-    const order = seatOrder(s.players).filter((id) => !isOut(this.player(id)!, s.clockMinutes > 0));
+    const order = seatOrder(s.players).filter((id) => !isOut(this.player(id)!, s.clockMinutes > 0, cmdLethalOf(s)));
     if (!order.length) return;
     this.snapshot();
     if (s.active == null) {

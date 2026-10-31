@@ -2,7 +2,7 @@
   import { api, runJob, type Job } from '../lib/api';
   import { app, go } from '../lib/store.svelte';
   import type { CardView } from '../lib/types';
-  import { artCrop, BRACKETS } from '../lib/util';
+  import { artCrop, BRACKETS, FORMATS, POWER_LEVELS, symbolUrl, type FormatId } from '../lib/util';
   import CommanderPicker from '../components/CommanderPicker.svelte';
   import Identity from '../components/Identity.svelte';
   import Icon from '../components/Icon.svelte';
@@ -13,6 +13,10 @@
     reason: string;
   }
 
+  let format = $state<FormatId>('commander');
+  let deep = $state(false);
+  let colors = $state<string[]>([]);
+  let customTheme = $state('');
   let commanders = $state<CardView[]>([]);
   let themes = $state<Theme[] | null>(null);
   /** Selected play styles, in the order picked. The first is the main one. */
@@ -23,6 +27,40 @@
   let failed = $state<string | null>(null);
 
   let spec = $derived(commanders.map((c) => c.name).join(' + '));
+  let formatInfo = $derived(FORMATS.find((f) => f.id === format)!);
+  let powerLevels = $derived(format === 'commander' ? BRACKETS : POWER_LEVELS[format]);
+  let colorSpec = $derived(['W', 'U', 'B', 'R', 'G'].filter((c) => colors.includes(c)).join(''));
+  let ready = $derived(format === 'canlander' ? true : commanders.length > 0);
+  const COLOR_NAMES: Record<string, string> = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' };
+
+  function setFormat(f: FormatId) {
+    if (f === format) return;
+    format = f;
+    commanders = [];
+    themes = null;
+    picked = [];
+    failed = null;
+    if (f === 'canlander') loadThemes();
+  }
+
+  function toggleColor(c: string) {
+    colors = colors.includes(c) ? colors.filter((x) => x !== c) : [...colors, c];
+  }
+
+  function addCustomTheme() {
+    const name = customTheme.trim();
+    if (!name) return;
+    if (!themes) themes = [];
+    if (!themes.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
+      themes = [{ name, score: 0, reason: `Your own play style: cards whose rules text matches "${name}".` }, ...themes];
+    }
+    if (!picked.some((t) => t.toLowerCase() === name.toLowerCase())) {
+      if (picked.length >= MAX_THEMES) picked = picked.slice(0, MAX_THEMES - 1);
+      picked = [...picked, name];
+    }
+    customTheme = '';
+    deep = true;
+  }
   let canPair = $derived(
     commanders.length === 1 &&
       /partner|friends forever|choose a background|doctor's companion/i.test(
@@ -33,11 +71,11 @@
   async function loadThemes() {
     themes = null;
     picked = [];
-    if (!commanders.length) return;
+    if (format !== 'canlander' && !commanders.length) return;
     try {
-      const res = await api<{ themes: Theme[] }>('generation_themes', { commander: spec });
+      const res = await api<{ themes: Theme[] }>('generation_themes', { commander: spec, format });
       themes = res.themes;
-      picked = themes[0] ? [themes[0].name] : [];
+      picked = themes[0] && format !== 'canlander' ? [themes[0].name] : [];
     } catch (err) {
       app.error(err);
       themes = [];
@@ -68,7 +106,12 @@
     failed = null;
     job = { id: 0, kind: 'generate', subject: spec, status: 'running', percent: 0, step: 'Starting', detail: '', log: [], result: null, error: null };
     try {
-      const res = await runJob<{ name: string }>('generate', { commander: spec, theme: picked.join(' + '), bracket }, (j) => (job = j), 800);
+      const res = await runJob<{ name: string }>(
+        'generate',
+        { commander: spec, theme: picked.join(' + '), bracket, format, deep_search: deep, colors: colorSpec },
+        (j) => (job = j),
+        800,
+      );
       app.toast(`Built ${res.name}.`, 'success');
       go({ page: 'deck', name: res.name, tab: 'cards' });
     } catch (err) {
@@ -80,9 +123,15 @@
 <header class="head">
   <h1>Build a deck</h1>
   <p class="dim lede">
-    Pick a commander, a power level and a play style. Commander Lab researches how the commander
-    is usually built, then assembles a legal 100-card deck that matches your bracket.
+    Pick a format, a commander (or colors for Canadian Highlander), a power level and a play style.
+    Commander Lab researches how it's usually built, then assembles a deck that follows the format's rules.
   </p>
+  <div class="segmented formats" role="radiogroup" aria-label="Format">
+    {#each FORMATS as f (f.id)}
+      <button role="radio" aria-checked={format === f.id} onclick={() => setFormat(f.id)}>{f.label}</button>
+    {/each}
+  </div>
+  <p class="small dim">{formatInfo.summary}</p>
 </header>
 
 {#if job && !failed}
@@ -91,7 +140,7 @@
       <div class="building-art" style:background-image={`url("${artCrop(commanders[0].image_uri)}")`}></div>
     {/if}
     <div class="building-body">
-      <h2>Building {spec}</h2>
+      <h2>Building {format === 'canlander' ? `a Canadian Highlander deck` : spec}</h2>
       <p class="dim">{job.step}</p>
       <div class="progress"><i style:width="{job.percent}%"></i></div>
       <ol class="log small">
@@ -102,11 +151,26 @@
 {:else}
   <div class="layout">
     <section class="stack">
-      <h2>Commander</h2>
+      {#if format === 'canlander'}
+      <h2>Colors</h2>
+      <div class="colors" role="group" aria-label="Deck colors">
+        {#each ['W', 'U', 'B', 'R', 'G'] as c (c)}
+          <button class="color" aria-pressed={colors.includes(c)} onclick={() => toggleColor(c)} aria-label={COLOR_NAMES[c]} title={COLOR_NAMES[c]}>
+            <img src={symbolUrl(c)} alt="" width="34" height="34" />
+          </button>
+        {/each}
+      </div>
+      <p class="small muted">
+        {colors.length ? `${colors.map((c) => COLOR_NAMES[c]).join(' / ')}.` : 'No colors picked: a colorless deck.'}
+        There's no commander; you play one-on-one at 20 life.
+      </p>
+      {:else}
+      <h2>{format === 'pdh' ? 'Commander (an uncommon creature)' : 'Commander'}</h2>
       {#if commanders.length < 2}
         <CommanderPicker
+          {format}
           label={commanders.length ? 'Partner or Background' : 'Search for a commander'}
-          placeholder={commanders.length ? 'Add a partner (optional)' : 'Kefka, Court Mage'}
+          placeholder={commanders.length ? 'Add a partner (optional)' : format === 'pdh' ? 'Murmuring Mystic' : 'Kefka, Court Mage'}
           onpick={pick}
         />
       {/if}
@@ -126,12 +190,16 @@
         </div>
         {#if canPair}<p class="small muted">This commander can have a partner. Add one above, or leave it solo.</p>{/if}
       {/if}
+      {/if}
     </section>
 
     <section class="stack">
       <h2>Power level</h2>
-      <div class="brackets" role="radiogroup" aria-label="Bracket">
-        {#each BRACKETS as b (b.n)}
+      {#if format !== 'commander'}
+        <p class="small muted">Commander brackets don't apply to {formatInfo.label}; this sets how hard the build pushes.</p>
+      {/if}
+      <div class="brackets" role="radiogroup" aria-label="Power level">
+        {#each powerLevels as b (b.n)}
           <button role="radio" aria-checked={bracket === b.n} class="bracket" onclick={() => (bracket = b.n)}>
             <span class="b-num">{b.n}</span>
             <span class="b-name">{b.name}</span>
@@ -144,7 +212,7 @@
         <h2>Play style</h2>
         {#if themes?.length}<span class="small muted">Pick up to {MAX_THEMES}. The first is the main focus.</span>{/if}
       </div>
-      {#if !commanders.length}
+      {#if format !== 'canlander' && !commanders.length}
         <p class="muted">Choose a commander to see its most popular play styles.</p>
       {:else if themes === null}
         <p class="muted">Looking up play styles…</p>
@@ -179,18 +247,43 @@
         {/if}
       {/if}
 
+      {#if format === 'canlander' || commanders.length}
+        <form class="custom" onsubmit={(e) => { e.preventDefault(); addCustomTheme(); }}>
+          <input class="input" bind:value={customTheme} placeholder="Add your own (e.g. -1/-1 Counters, Elves, Landfall)" aria-label="Add your own play style" />
+          <button class="btn" disabled={!customTheme.trim()}>Add</button>
+        </form>
+      {/if}
+
+      <label class="deep panel">
+        <input type="checkbox" bind:checked={deep} />
+        <span>
+          <b>Deep card search</b>
+          <span class="small dim">
+            Reads the rules text of every card in Scryfall's database for cards that fit your play styles,
+            including older cards no decklist runs. For example, wither creatures for a -1/-1 counters deck.
+          </span>
+        </span>
+      </label>
+
       {#if failed}
         <p class="error">{failed}</p>
       {/if}
 
       <div>
-        <button class="btn primary big" disabled={!commanders.length || !app.status?.card_data_ready} onclick={build}>
+        <button class="btn primary big" disabled={!ready || !app.status?.card_data_ready} onclick={build}>
           <Icon name="build" size={18} /> Build the deck
         </button>
       </div>
       <p class="small muted">
-        Every deck is checked before it's saved: exactly 100 cards, singleton, inside the
-        commander's colors, Commander-legal, and locked to the bracket you picked.
+        {#if format === 'pdh'}
+          Every deck is checked before it's saved: exactly 100 cards, singleton, inside the commander's colors,
+          an uncommon creature commander and 99 commons, nothing on the PDH banned list.
+        {:else if format === 'canlander'}
+          Every deck is checked before it's saved: 100 cards, singleton, Vintage-legal and within the 10-point limit.
+        {:else}
+          Every deck is checked before it's saved: exactly 100 cards, singleton, inside the
+          commander's colors, Commander-legal, and locked to the bracket you picked.
+        {/if}
       </p>
     </section>
   </div>
@@ -204,6 +297,60 @@
   }
   .lede {
     max-width: 60ch;
+  }
+  .formats {
+    justify-self: start;
+    flex-wrap: wrap;
+  }
+  .formats button {
+    min-height: 40px;
+  }
+  .colors {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .color {
+    display: grid;
+    place-items: center;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: 2px solid var(--line);
+    background: var(--panel);
+    cursor: pointer;
+    opacity: 0.55;
+  }
+  .color[aria-pressed='true'] {
+    border-color: var(--brass);
+    opacity: 1;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--brass) 30%, transparent);
+  }
+  .custom {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .custom .input {
+    flex: 1;
+    min-width: 0;
+  }
+  .deep {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    padding: 0.8rem 1rem;
+    cursor: pointer;
+  }
+  .deep input {
+    accent-color: var(--brass);
+    width: 20px;
+    height: 20px;
+    margin-top: 0.15rem;
+    flex-shrink: 0;
+  }
+  .deep span {
+    display: grid;
+    gap: 0.2rem;
   }
   .layout {
     display: grid;

@@ -61,6 +61,7 @@ fn reference_as_deck(reference: &ReferenceDeck) -> ParsedDeck {
         commanders: Vec::new(),
         main,
         sideboard: Vec::new(),
+        format: Default::default(),
     }
 }
 

@@ -72,10 +72,12 @@
         <div class="art" style:background-image={d.image ? `url("${artCrop(d.image)}")` : 'none'}></div>
         <div class="body">
           <h3>{d.name}</h3>
-          <p class="cmd dim">{d.commanders.join(' + ') || 'No commander set'}</p>
+          <p class="cmd dim">
+            {#if d.format === 'canlander'}Canadian Highlander{:else}{d.commanders.join(' + ') || 'No commander set'}{#if d.format === 'pdh'} · PDH{/if}{/if}
+          </p>
           <div class="meta small">
             <Identity identity={d.identity} />
-            <span class:warn={d.cards !== 100}>{plural(d.cards, 'card')}</span>
+            <span class:warn={d.format === 'canlander' ? d.cards < 100 : d.cards !== 100}>{plural(d.cards, 'card')}</span>
             {#if d.price_usd > 0}<span class="num">{money(d.price_usd, 'usd')}</span>{/if}
             <span class="spacer"></span>
             <span class="muted">{timeAgo(d.modified_ms)}</span>

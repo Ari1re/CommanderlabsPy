@@ -110,11 +110,24 @@ export interface GamePlan {
   notes: string[];
 }
 
+export interface FormatCheck {
+  format: string;
+  label: string;
+  cards: number;
+  points: number;
+  max_points: number | null;
+  pointed_cards: [string, number][];
+  problems: string[];
+}
+
 export interface Deck {
   name: string;
   entries: Entry[];
   plan: GamePlan | null;
   plan_markdown: string | null;
+  format: 'commander' | 'pdh' | 'canlander';
+  format_label: string;
+  format_check: FormatCheck;
 }
 
 export interface DeckSummary {
@@ -126,6 +139,7 @@ export interface DeckSummary {
   modified_ms: number;
   has_plan: boolean;
   price_usd: number;
+  format?: string;
 }
 
 export interface Bracket {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { COUNTERS, CMD_LETHAL, LOW_LIFE, fmtClock, game, isOut, type Player, type Rotation } from '../../lib/game.svelte';
+  import { COUNTERS, LOW_LIFE, cmdLethalOf, fmtClock, game, isOut, type Player, type Rotation } from '../../lib/game.svelte';
   import { artCrop } from '../../lib/util';
   import Icon from '../Icon.svelte';
 
@@ -22,7 +22,9 @@
 
   let s = $derived(game.state!);
   let clockOn = $derived(s.clockMinutes > 0);
-  let out = $derived(isOut(player, clockOn));
+  let lethal = $derived(cmdLethalOf(s));
+  let CMD_LETHAL = $derived(lethal ?? 21);
+  let out = $derived(isOut(player, clockOn, lethal));
   let delta = $derived(game.deltas[player.id]);
   let showDelta = $derived(delta && now - delta.at < 1800 ? delta.value : 0);
   let maxCmd = $derived(Math.max(0, ...Object.values(player.cmd)));
@@ -249,7 +251,7 @@
   <footer>
     <span class="name">{active ? '▶ ' : ''}{player.name}</span>
     {#if !cmd}
-      {#if maxCmd}
+      {#if maxCmd && lethal != null}
         <button class="chip" class:danger={maxCmd >= CMD_LETHAL - 5} onclick={() => { picking = null; editing = { kind: 'cmd' }; }} aria-label="Commander damage taken, most {maxCmd}. Tap to edit">⚔ {maxCmd}</button>
       {/if}
       {#each badges as b (b.key)}
