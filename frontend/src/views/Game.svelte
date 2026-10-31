@@ -138,6 +138,13 @@
 
   onDestroy(leavePlay);
 
+  /** Esc leaves the table on desktop when nothing else is open. */
+  function onkey(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !game.playing) return;
+    if (menu || ending || editing !== null || countersFor !== null || manaOpen || game.cmdFrom) return;
+    leavePlay();
+  }
+
   let s = $derived(game.state);
   let clockOn = $derived((s?.clockMinutes ?? 0) > 0);
   let rows = $derived.by(() => {
@@ -226,6 +233,8 @@
   }
 </script>
 
+<svelte:window onkeydown={onkey} />
+
 {#if game.playing && s}
   <div class="table" class:wide={s.players.length <= 2}>
     {#each rows as row, r (r)}
@@ -242,6 +251,10 @@
         {/each}
       </div>
     {/each}
+
+    <button class="leave" onclick={leavePlay} aria-label="Leave the table (the game is kept)" title="Leave the table (Esc). The game is kept.">
+      <Icon name="back" size={16} /> Leave table
+    </button>
 
     <button class="hub" onclick={() => { game.cmdFrom = null; panel = 'main'; menu = true; }} aria-label="Game menu">
       <img src="/icon.svg" alt="" width="30" height="30" />
@@ -371,9 +384,10 @@
             <label><input type="checkbox" checked={s.lowLifeFx} onchange={(e) => game.setOption('lowLifeFx', (e.target as HTMLInputElement).checked)} /> Pulse when a player is at 10 life or less</label>
           </div>
 
+          <p class="small muted">Leave table goes back to the app (and the setup screen, to edit players). The game is kept; tap Resume to come back.</p>
           <div class="row end">
             <button class="btn" onclick={() => { game.restart(); menu = false; }}><Icon name="refresh" size={16} /> Restart</button>
-            <button class="btn" onclick={leavePlay}><Icon name="settings" size={16} /> Edit players</button>
+            <button class="btn" onclick={leavePlay}><Icon name="back" size={16} /> Leave table</button>
             <button class="btn primary" onclick={() => { menu = false; beginEnd(); }}>End game</button>
           </div>
         </div>
@@ -785,6 +799,34 @@
     background: #1a1622;
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
     cursor: pointer;
+  }
+  /* Desktop: a visible way back to the app (on phones it's in the game menu). */
+  .leave {
+    display: none;
+    position: absolute;
+    top: max(10px, var(--safe-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 6;
+    align-items: center;
+    gap: 0.35rem;
+    min-height: 36px;
+    padding: 0 0.9rem;
+    border-radius: 99px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(13, 10, 18, 0.85);
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .leave:hover {
+    background: #2a2236;
+  }
+  @media (hover: hover) and (pointer: fine), (min-width: 1000px) {
+    .leave {
+      display: inline-flex;
+    }
   }
   .pill {
     position: absolute;

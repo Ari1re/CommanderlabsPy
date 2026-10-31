@@ -254,7 +254,7 @@ The **Game** tab turns your phone into a life counter for 2–6 players.
 - Tap the ♛ Monarch or ⚔ Initiative token to choose who gets it, or drag it onto another player.
 - Turn on **Track turns** to see whose turn it is and pass with **Next turn**. Add a **chess clock** of 10–45 minutes per player.
 - The center button has undo, dice, coin, first player, day/night, a life log, a floating mana pool, card lookup, and **End game**. Choosing the winner saves the game; your win rates by player and deck appear under the setup.
-- The game is kept if you close the app.
+- **Leave table** (top of the screen on desktop, or in the center menu) goes back to the app; Esc does the same on desktop. The game is kept if you leave or close the app, and **Resume** brings it back.
 
 ### Settings
 
