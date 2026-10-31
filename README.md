@@ -137,6 +137,12 @@ Formats:
 | Life | 40, 21 commander damage | 30, 16 commander damage | 20, one-on-one |
 | Banned | Commander banned list | Mystic Remora, Rhystic Study, ante, Conspiracies, cards removed from constructed | Vintage banned list |
 
+Each format builds from its own sources:
+
+- **Commander**: EDHREC, public Moxfield and Archidekt decklists, and the cEDH Decklist Database at Bracket 5.
+- **Pauper Commander**: PDHREC (card inclusion and synergy for the commander) and Archidekt decks in the Pauper EDH format.
+- **Canadian Highlander**: tournament decklists from MTGTop8's Canadian Highlander section and popular Moxfield Highlander decks in your colors.
+
 Commander brackets only apply to Commander. For PDH the power level sets how hard the build pushes. For Canadian Highlander it sets how many points the deck may spend (levels 1–2 none, 3 up to 4, 4 up to 7, 5 all 10).
 
 **Deep card search** (a switch on the Build screen) reads the rules text of every card in Scryfall's database for cards that fit your play styles, including older cards no decklist runs. A -1/-1 counters deck picks up wither and persist creatures, for example. The deck's notes say which cards came from the search and why.

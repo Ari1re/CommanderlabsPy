@@ -298,6 +298,16 @@ impl CardDb {
             "DELETE FROM cards WHERE lower(trim(type_line)) = 'card'",
             [],
         );
+        // Tokens and emblems from older downloads.
+        let _ = conn.execute(
+            "DELETE FROM aliases WHERE oracle_id IN (SELECT oracle_id FROM cards \
+             WHERE lower(type_line) LIKE 'token%' OR lower(type_line) LIKE '% token%' OR lower(type_line) LIKE 'emblem%')",
+            [],
+        );
+        let _ = conn.execute(
+            "DELETE FROM cards WHERE lower(type_line) LIKE 'token%' OR lower(type_line) LIKE '% token%' OR lower(type_line) LIKE 'emblem%'",
+            [],
+        );
 
         // Repair eligibility in-place for databases produced by older
         // Commander Lab releases. Runtime checks still remain authoritative.
@@ -386,6 +396,7 @@ impl CardDb {
                    pdh_legal, vintage_legal, pdh_commander
                 FROM cards
                 WHERE name_lower = ?1
+                ORDER BY lower(type_line) LIKE '%token%', commander_legal DESC, vintage_legal = 'not_legal'
                 LIMIT 1
                 "#,
                 [key],
@@ -621,14 +632,15 @@ impl CardDb {
         .to_string();
         let mut names = Vec::<String>::new();
 
+        let mut failure = None;
         for _page in 0..80 {
-            let body: Value = client
-                .get(&url)
-                .header(USER_AGENT, USER_AGENT_VALUE)
-                .header(ACCEPT, "application/json")
-                .send()?
-                .error_for_status()?
-                .json()?;
+            let body: Value = match scryfall_get(client, &url) {
+                Ok(body) => body,
+                Err(err) => {
+                    failure = Some(err);
+                    break;
+                }
+            };
             if let Some(cards) = body.get("data").and_then(Value::as_array) {
                 for card in cards {
                     if let Some(name) = card.get("name").and_then(Value::as_str) {
@@ -639,19 +651,24 @@ impl CardDb {
             match body.get("next_page").and_then(Value::as_str) {
                 Some(next) if body.get("has_more").and_then(Value::as_bool) == Some(true) => {
                     url = next.to_string();
-                    // Scryfall asks for 50–100 ms between requests.
-                    std::thread::sleep(std::time::Duration::from_millis(110));
+                    // Scryfall allows about two searches a second.
+                    std::thread::sleep(std::time::Duration::from_millis(600));
                 }
                 _ => break,
             }
         }
 
-        if names.len() < 1000 {
-            return Err(anyhow!("Scryfall returned only {} PDH commanders", names.len()));
+        let complete = failure.is_none() && names.len() >= 1000;
+        if names.is_empty() {
+            return Err(failure.unwrap_or_else(|| anyhow!("Scryfall returned no PDH commanders")));
         }
 
         let tx = self.conn.transaction()?;
-        tx.execute("UPDATE cards SET pdh_commander = 0", [])?;
+        // A partial answer still adds commanders; only a complete one may
+        // clear the first guesses.
+        if complete {
+            tx.execute("UPDATE cards SET pdh_commander = 0", [])?;
+        }
         {
             let mut stmt = tx.prepare(
                 "UPDATE cards SET pdh_commander = 1 WHERE name_lower = ?1 \
@@ -662,7 +679,44 @@ impl CardDb {
             }
         }
         tx.commit()?;
+        if let Some(err) = failure {
+            return Err(err.context(format!("stopped after {} commanders", names.len())));
+        }
         Ok(names.len())
+    }
+
+    /// Ask Scryfall whether one card was printed at uncommon in paper or on
+    /// MTGO (the PDH commander rule), for when the bulk refresh didn't run.
+    /// Remembers a yes in the database.
+    pub fn confirm_pdh_commander(&mut self, name: &str) -> bool {
+        let query = format!(
+            "!\"{}\" r:u (t:creature or t:vehicle or t:spacecraft or t:background) -t:land (game:paper or game:mtgo)",
+            name.split(" // ").next().unwrap_or(name)
+        );
+        let Ok(url) = reqwest::Url::parse_with_params("https://api.scryfall.com/cards/search", &[("q", query.as_str())]) else {
+            return false;
+        };
+        let found = Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .ok()
+            .and_then(|c| scryfall_get(&c, url.as_str()).ok())
+            .and_then(|v| v.get("total_cards").and_then(Value::as_u64))
+            .unwrap_or(0)
+            > 0;
+        if found {
+            let _ = self.conn.execute("UPDATE cards SET pdh_commander = 1 WHERE name_lower = ?1", [name.to_ascii_lowercase()]);
+        }
+        found
+    }
+
+    /// How many cards are marked as PDH commanders (thousands once the
+    /// Scryfall refresh has run).
+    pub fn pdh_commander_count(&self) -> u64 {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM cards WHERE pdh_commander = 1", [], |r| r.get::<_, i64>(0))
+            .map(|n| n.max(0) as u64)
+            .unwrap_or(0)
     }
 
     /// Visit every playable card (optionally only those inside a color
@@ -680,8 +734,18 @@ impl CardDb {
 
     /// Cards that may lead a Pauper Commander deck, most played first.
     pub fn search_pdh_commanders(&self, query: &str, limit: usize) -> Result<Vec<Card>> {
+        // If the Scryfall refresh never ran, the flag only reflects each
+        // card's default printing; offer every creature-type card that's
+        // legal in PDH and let picking it confirm the rule online.
+        let filter = if self.pdh_commander_count() >= 1000 {
+            "pdh_commander = 1"
+        } else {
+            "(pdh_commander = 1 OR (pdh_legal IN ('legal', 'not_legal') AND vintage_legal <> 'not_legal' \
+             AND (lower(type_line) LIKE '%creature%' OR lower(type_line) LIKE '%vehicle%' OR lower(type_line) LIKE '%background%') \
+             AND lower(type_line) NOT LIKE '%land%' AND rarity IN ('common', 'uncommon')))"
+        };
         let sql = format!(
-            "SELECT {CARD_COLUMNS} FROM cards WHERE pdh_commander = 1 AND name_lower LIKE ?1 \
+            "SELECT {CARD_COLUMNS} FROM cards WHERE {filter} AND name_lower LIKE ?1 \
              ORDER BY CASE WHEN name_lower = ?2 THEN 0 ELSE 1 END, edhrec_rank IS NULL, edhrec_rank, name LIMIT ?3"
         );
         let needle = query.trim().to_ascii_lowercase();
@@ -726,6 +790,34 @@ impl CardDb {
 
         Ok(inserted)
     }
+}
+
+/// GET a Scryfall API URL, waiting and retrying when it asks us to slow
+/// down (429). A search with no results (404) returns an empty answer.
+fn scryfall_get(client: &Client, url: &str) -> Result<Value> {
+    for attempt in 0..4 {
+        let response = client
+            .get(url)
+            .header(USER_AGENT, USER_AGENT_VALUE)
+            .header(ACCEPT, "application/json")
+            .send()?;
+        let status = response.status();
+        if status.as_u16() == 429 {
+            let wait = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(2 + attempt * 3);
+            std::thread::sleep(std::time::Duration::from_secs(wait.min(30)));
+            continue;
+        }
+        if status.as_u16() == 404 {
+            return Ok(serde_json::json!({ "total_cards": 0, "data": [] }));
+        }
+        return Ok(response.error_for_status()?.json()?);
+    }
+    Err(anyhow!("Scryfall kept asking to slow down (429) for {url}"))
 }
 
 fn download_metadata(client: &Client) -> Result<Vec<u8>> {
@@ -975,8 +1067,13 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
             )
         })?;
 
+        // Tokens and emblems share names with real cards ("Ornithopter",
+        // "Treasure"); keep them out so name lookups find the card.
         let nonplayable_object =
-            raw.layout.eq_ignore_ascii_case("art_series")
+            matches!(
+                raw.layout.to_ascii_lowercase().as_str(),
+                "art_series" | "token" | "double_faced_token" | "emblem"
+            )
                 || raw.set_type.eq_ignore_ascii_case("memorabilia")
                 || raw
                     .type_line

@@ -823,12 +823,21 @@ where
 pub fn resolve_pdh_commanders(spec: &str, db: &CardDb) -> Result<Vec<Card>> {
     let mut out = Vec::new();
     for (i, name) in spec.split(" + ").map(str::trim).filter(|n| !n.is_empty()).enumerate() {
-        let card = db
+        let mut card = db
             .get_card(name)?
             .ok_or_else(|| anyhow!("Couldn't find a card named \"{name}\"."))?;
-        Format::Pdh
-            .commander_allowed(&card, i > 0)
-            .map_err(|why| anyhow!("{} can't lead a Pauper Commander deck: {why}.", card.name))?;
+        if let Err(why) = Format::Pdh.commander_allowed(&card, i > 0) {
+            // The uncommon-printing flag comes from a Scryfall refresh that
+            // may not have run on this device: confirm it online first.
+            let rarity_rule = why.contains("uncommon");
+            if !(rarity_rule && crate::data::CardDb::open(crate::api::DB_PATH).map(|mut d| d.confirm_pdh_commander(&card.name)).unwrap_or(false)) {
+                return Err(anyhow!("{} can't lead a Pauper Commander deck: {why}.", card.name));
+            }
+            card.pdh_commander = true;
+            Format::Pdh
+                .commander_allowed(&card, i > 0)
+                .map_err(|why| anyhow!("{} can't lead a Pauper Commander deck: {why}.", card.name))?;
+        }
         out.push(card);
     }
     if out.len() == 2 {
@@ -1006,19 +1015,23 @@ where
         "Learning EDHREC shell, public references, engine terms, and normal role distribution",
     ));
 
-    let intelligence = learn_commander_intelligence(
-        &commanders,
-        selected_theme,
-        target_bracket.bracket,
-        db,
-        |detail| {
-            progress(GenerationProgress::new(
-                26,
-                "Deep Learn commander model",
-                detail,
-            ));
-        },
-    )?;
+    // Research the commander in the format's own sources (PDHREC and
+    // Archidekt's Pauper EDH decks for PDH).
+    let intelligence = crate::format_sources::with_format(format, || {
+        learn_commander_intelligence(
+            &commanders,
+            selected_theme,
+            target_bracket.bracket,
+            db,
+            |detail| {
+                progress(GenerationProgress::new(
+                    26,
+                    "Deep Learn commander model",
+                    detail,
+                ));
+            },
+        )
+    })?;
 
     // Generation and AI Agent share the learned commander model.
     let reference_snapshot = intelligence.references.clone();
@@ -1447,7 +1460,7 @@ for template in relevant_templates
             // Pauper Commander has no EDHREC build data, so a card's overall
             // play rate stands in for "format staple" (Gray Merchant, Sign in
             // Blood…), balancing the theme and engine bonuses.
-            let staple_bonus = if format.is_commander() {
+            let staple_bonus = if format.is_commander() || !thin_evidence {
                 0
             } else {
                 match card.edhrec_rank {
@@ -2054,6 +2067,21 @@ notes.insert(
 
     if format == Format::Pdh {
         notes.insert(
+            1,
+            if edhrec_build_cards.is_empty() {
+                format!(
+                    "PDHREC has no data for this commander yet, so cards came from {} Pauper EDH decklist(s) on Archidekt, rules text and overall play rate.",
+                    reference_snapshot.deck_count()
+                )
+            } else {
+                format!(
+                    "Built from Pauper Commander sources: PDHREC inclusion and synergy for {} cards, plus {} Pauper EDH decklist(s) from Archidekt.",
+                    edhrec_build_cards.len(),
+                    reference_snapshot.deck_count()
+                )
+            },
+        );
+        notes.insert(
             0,
             "Pauper Commander: the commander was printed at uncommon and every other card at common (paper or MTGO printings). Built for 30 life and 16 commander damage. Mystic Remora, Rhystic Study, ante cards, Conspiracies and cards removed from constructed play are excluded.".to_string(),
         );
@@ -2150,6 +2178,20 @@ notes.insert(
             notes.push(format!(
                 "Recurring combos in the reference corpus: {top_reference_combos}."
             ));
+        }
+    }
+
+    // Pauper Commander's evidence is PDHREC and Archidekt's Pauper EDH decks:
+    // say so instead of EDHREC.
+    if format == Format::Pdh {
+        for note in notes.iter_mut() {
+            if note.starts_with("Commander-specific EDHREC") {
+                *note = "PDHREC's inclusion and synergy for this commander and the commander's own rules text are the main build signals; how widely a card is played overall only breaks ties.".to_string();
+            } else {
+                *note = note
+                    .replace("EDHREC-normal-build cards", "PDHREC-backed cards")
+                    .replace("from Archidekt, Moxfield", "from Archidekt (Pauper EDH format)");
+            }
         }
     }
 

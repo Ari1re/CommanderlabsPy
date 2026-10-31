@@ -27,7 +27,7 @@ pub struct DeckSource {
 }
 
 impl DeckSource {
-    fn automatic(
+    pub fn automatic(
         source: impl Into<String>,
         title: impl Into<String>,
         url: impl Into<String>,
@@ -52,8 +52,11 @@ pub fn generation_sources(
     bracket: u8,
     references: &ReferenceSnapshot,
 ) -> Vec<DeckSource> {
-    let mut out =
-        standard_sources(commanders, selected_theme, bracket);
+    let mut out = if crate::format_sources::active_format() == crate::format::Format::Pdh {
+        pdh_sources(commanders)
+    } else {
+        standard_sources(commanders, selected_theme, bracket)
+    };
 
     for deck in &references.decks {
         push_unique(
@@ -72,6 +75,39 @@ pub fn generation_sources(
     }
 
     out
+}
+
+/// Sources behind a Pauper Commander build: PDHREC instead of EDHREC, the
+/// PDH Home Base rules, and Archidekt's Pauper EDH decks (added per deck).
+pub fn pdh_sources(commanders: &[Card]) -> Vec<DeckSource> {
+    let names: Vec<String> = commanders.iter().map(|c| c.name.clone()).collect();
+    let slug = crate::format_sources::pdhrec_slug(&names);
+    vec![
+        DeckSource::automatic(
+            "PDHREC",
+            format!("{} — PDHREC", names.join(" + ")),
+            format!("https://pdhrec.com/commander/{slug}/"),
+            "Pauper Commander card inclusion and synergy for this commander across the decks PDHREC tracks.",
+        ),
+        DeckSource::automatic(
+            "PDH Home Base",
+            "Pauper Commander rules",
+            "https://pdhhomebase.com/rules/",
+            "Commander and card eligibility, banned list, 30 life and 16 commander damage.",
+        ),
+        DeckSource::automatic(
+            "Scryfall",
+            "Scryfall Bulk Data",
+            "https://scryfall.com/docs/api/bulk-data",
+            "Rarity across printings, Pauper Commander legality, Oracle text, prices and images.",
+        ),
+        DeckSource::automatic(
+            "Commander Spellbook",
+            "Commander Spellbook",
+            "https://commanderspellbook.com/",
+            "Known combo validation and combo-card relationships.",
+        ),
+    ]
 }
 
 pub fn standard_sources(
@@ -187,8 +223,30 @@ pub fn sources_for_existing_deck(
     commanders: &[Card],
     bracket: u8,
 ) -> Vec<DeckSource> {
-    let mut out =
-        standard_sources(commanders, "", bracket);
+    let mut out = match deck.format {
+        crate::format::Format::Pdh => pdh_sources(commanders),
+        crate::format::Format::Canlander => vec![
+            DeckSource::automatic(
+                "MTGTop8",
+                "Canadian Highlander events and metagame",
+                "https://www.mtgtop8.com/format?f=CHL",
+                "Tournament decklists by archetype.",
+            ),
+            DeckSource::automatic(
+                "Moxfield",
+                "Canadian Highlander decks on Moxfield",
+                "https://moxfield.com/decks/public?fmt=highlanderCanadian",
+                "The most viewed public lists in the format.",
+            ),
+            DeckSource::automatic(
+                "Canadian Highlander",
+                "Points list",
+                "https://canadianhighlander.ca/points-list/",
+                "The 10-point limit and each card's points.",
+            ),
+        ],
+        crate::format::Format::Commander => standard_sources(commanders, "", bracket),
+    };
 
     if deck
         .name

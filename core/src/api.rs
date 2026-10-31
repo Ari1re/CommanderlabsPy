@@ -1853,9 +1853,17 @@ impl Engine {
                 }
             }
 
-            job.progress(20, "Reading EDHREC for your commander", "");
+            job.progress(20, if format == Format::Pdh { "Reading PDHREC for your commander" } else { "Reading EDHREC for your commander" }, "");
             let theme = engine.cached_plan(&name).and_then(|p| p.primary_tags.first().cloned()).unwrap_or_default();
-            let signals = if commanders.is_empty() { Vec::new() } else { commander_build_cards(&commanders, &theme, 300) };
+            let signals = if commanders.is_empty() {
+                Vec::new()
+            } else if format == Format::Pdh {
+                // Pauper Commander: PDHREC instead of EDHREC.
+                let names: Vec<String> = commanders.iter().map(|c| c.name.clone()).collect();
+                crate::format_sources::pdhrec_commander(&names).map(|p| p.signals()).unwrap_or_default()
+            } else {
+                commander_build_cards(&commanders, &theme, 300)
+            };
             job.progress(70, "Ranking suggestions", format!("{} candidates", signals.len()));
 
             let mut synergy = Vec::new();
