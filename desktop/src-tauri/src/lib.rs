@@ -16,11 +16,21 @@ async fn api(engine: State<'_, Arc<Engine>>, cmd: String, args: Option<Value>) -
         .map_err(|e| format!("{e:#}"))
 }
 
+/// Android: open the system installer for a downloaded update APK.
+#[tauri::command]
+async fn install_apk(app: tauri::AppHandle, path: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || tauri_plugin_apk_installer::install(&app, &path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         // Opens web links and update downloads in the system browser / installer.
         .plugin(tauri_plugin_opener::init())
+        // Android updates: hands the downloaded APK to the package installer.
+        .plugin(tauri_plugin_apk_installer::init())
         .setup(|app| {
             let platform = if cfg!(target_os = "android") { "android" } else { "desktop" };
             // Desktop keeps using the same folder as the browser edition so
@@ -30,7 +40,7 @@ pub fn run() {
             app.manage(engine);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api])
+        .invoke_handler(tauri::generate_handler![api, install_apk])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 if let Some(engine) = window.app_handle().try_state::<Arc<Engine>>() {

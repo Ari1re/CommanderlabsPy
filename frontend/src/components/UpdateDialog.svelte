@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { openExternal, runJob } from '../lib/api';
+  import { onMount } from 'svelte';
+  import { invokeNative, openExternal, runJob } from '../lib/api';
   import { app } from '../lib/store.svelte';
   import Modal from './Modal.svelte';
   import Icon from './Icon.svelte';
@@ -10,6 +11,43 @@
   let progress = $state<{ percent: number; detail: string } | null>(null);
   let done = $state<string | null>(null);
   let opened = $state(false);
+  /** Android: the downloaded APK, once it's here. */
+  let apkPath = $state<string | null>(null);
+  /** Android: waiting for the user to allow installing apps. */
+  let needsPermission = $state(false);
+  let installerOpen = $state(false);
+
+  let label = $derived(
+    u?.kind === 'android'
+      ? apkPath
+        ? 'Install'
+        : 'Download and install'
+      : u?.kind === 'source'
+        ? 'Update and rebuild'
+        : u?.install === 'auto'
+          ? 'Update and restart'
+          : 'Download update',
+  );
+
+  onMount(() => {
+    // Back from Android's "install unknown apps" screen: carry on.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && needsPermission && apkPath) installApk();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  });
+
+  async function installApk() {
+    if (!apkPath) return;
+    try {
+      const res = await invokeNative<{ status: string }>('install_apk', { path: apkPath });
+      needsPermission = res.status === 'permission';
+      installerOpen = res.status === 'started';
+    } catch (err) {
+      app.error(err);
+    }
+  }
 
   /** The release notes are the changelog entry: keep the bullet lines. */
   let notes = $derived(
@@ -23,6 +61,7 @@
 
   async function install() {
     if (!u) return;
+    if (apkPath) return installApk();
     if (u.install === 'download') {
       if (u.download_url) {
         await openExternal(u.download_url);
@@ -32,8 +71,19 @@
     }
     progress = { percent: 0, detail: '' };
     try {
-      const res = await runJob<{ message: string }>('update_install', {}, (j) => (progress = { percent: j.percent, detail: j.detail }), 500);
-      done = res.message;
+      const res = await runJob<{ message: string; apk?: string; restarting: boolean }>(
+        'update_install',
+        {},
+        (j) => (progress = { percent: j.percent, detail: j.detail }),
+        500,
+      );
+      if (res.apk) {
+        apkPath = res.apk;
+        progress = null;
+        await installApk();
+      } else {
+        done = res.message;
+      }
     } catch (err) {
       app.error(err);
       progress = null;
@@ -66,7 +116,20 @@
       {#if u.available}<p class="small dim">{u.how}</p>{/if}
       {#if progress && !done}
         <div class="progress"><i style:width="{progress.percent}%"></i></div>
-        <p class="small dim">Downloading… {progress.detail}</p>
+        <p class="small dim">
+          {u.kind === 'source' ? 'Updating… (rebuilding takes a few minutes)' : 'Downloading…'} {progress.detail}
+        </p>
+      {/if}
+      {#if needsPermission}
+        <p class="small">
+          Android needs your OK once: turn on <b>Allow from this source</b> for Commander Lab on the screen that opened, then
+          come back. The installer opens by itself, or tap <b>Install</b>.
+        </p>
+      {:else if installerOpen}
+        <p class="small">
+          Android's installer is open. Tap <b>Install</b> (or <b>Update</b>); Commander Lab closes, updates and keeps your decks.
+          Didn't see it? Tap <b>Install</b> again.
+        </p>
       {/if}
       {#if done}<p class="ok">{done}</p>{/if}
       {#if opened}
@@ -86,7 +149,7 @@
     {#if u?.available && !done}
       <button class="btn primary" onclick={install} disabled={!!progress || (u.install === 'download' && !u.download_url)}>
         <Icon name="download" size={16} />
-        {u.install === 'auto' ? (progress ? 'Updating…' : 'Update and restart') : 'Download update'}
+        {progress ? 'Updating…' : label}
       </button>
     {:else}
       <button class="btn" onclick={onclose}>Close</button>

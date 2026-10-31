@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Lets the app hand an update APK to Android's installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!-- Its own provider class and authority, so it can't clash with a
+             FileProvider the app itself declares. -->
+        <provider
+            android:name="com.commanderlab.apkinstaller.ApkFileProvider"
+            android:authorities="${applicationId}.apkinstaller"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/apk_installer_paths" />
+        </provider>
+    </application>
+</manifest>

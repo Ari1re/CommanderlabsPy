@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.31.0
+
+- **Every copy of Commander Lab updates itself from Settings.**
+  - **Android:** **Download and install** downloads the new APK inside the app and opens Android's installer, which updates the app in place and keeps your decks. The first time, Android asks you to allow Commander Lab to install apps; once you turn that on and come back, the installer opens by itself.
+  - **Built from source** (`./run-linux.sh`): Settings compares your checkout with GitHub and shows what's new. **Update and rebuild** pulls the code, rebuilds with progress shown, and restarts with the same options.
+  - **Linux `.deb`:** downloads the new package and installs it after your system asks for your password, then restarts. Without a password prompt available, it opens the package in your software installer.
+  - **Browser-edition binary** run on its own: replaces itself and restarts.
+  - Windows, the Linux `.sh` install and AppImages update as before.
+
 ## 0.30.2
 
 - **Linux ships the desktop app.** The `.sh` opens the desktop app on every distro, NixOS included, and adds **Commander Lab** to your app launcher. On NixOS it runs through `appimage-run`, and gets that from Nix for the run if it isn't installed. The browser edition is only used with `--web`, or when the desktop app can't start.

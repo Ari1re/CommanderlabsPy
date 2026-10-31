@@ -8,11 +8,16 @@
 //! - Windows installer: download the setup exe and run it with `/P /R`
 //!   (progress only, reopen the app afterwards), then quit.
 //! - Windows portable exe: swap the exe for the new one and restart it.
-//! - Linux (installed by the .sh, incl. NixOS' browser edition): run the new
-//!   .sh with `--extract`, then restart through the launcher.
-//! - Linux AppImage run on its own: replace the file and restart it.
-//! - Android and the .deb: the UI opens the download; the system installer
-//!   takes over (Android installs over the old app, keeping all data).
+//! - Linux (installed by the .sh, NixOS included): run the new .sh with
+//!   `--extract`, then restart through the launcher.
+//! - Linux AppImage or browser-edition binary run on its own: replace the
+//!   file and restart it.
+//! - .deb: download it and install it with pkexec (the system asks for the
+//!   password), then restart.
+//! - Android: download the APK; the app then opens Android's installer, which
+//!   installs over the old app and keeps all data.
+//! - Built from a git checkout (./run-linux.sh): there's no build number, so
+//!   it compares with the remote branch, then pulls, rebuilds and restarts.
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
@@ -50,6 +55,11 @@ pub struct UpdateInfo {
     /// "auto": the app installs it and restarts; "download": open the file
     /// and let the system install it; "none": no update for this build.
     pub install: String,
+    /// What kind of copy this is: "windows-installer", "windows-portable",
+    /// "linux-script", "appimage", "linux-binary", "deb", "android",
+    /// "source" or "manual".
+    #[serde(default)]
+    pub kind: String,
     /// How the update is applied on this device, in a sentence.
     pub how: String,
     pub checked_at: u64,
@@ -66,7 +76,7 @@ fn client(timeout: u64) -> Result<Client> {
         .build()?)
 }
 
-/// How this copy of the app was installed (desktop and web only).
+/// How this copy of the app was installed.
 #[derive(Debug, Clone, PartialEq)]
 enum Install {
     WindowsInstaller,
@@ -74,8 +84,31 @@ enum Install {
     /// Installed by the .sh into ~/.local/share/commander-lab/app.
     LinuxScript { app_dir: PathBuf, web: bool },
     LinuxAppImage(PathBuf),
-    /// .deb, Android or anything else the app can't replace itself.
+    /// The browser-edition binary run from wherever it was downloaded to.
+    LinuxBinary(PathBuf),
+    /// Installed from the .deb (the program lives under /usr).
+    Deb(PathBuf),
+    Android,
+    /// Built by ./run-linux.sh in a git checkout.
+    Source { repo: PathBuf, web: bool },
+    /// Anything else: the update is opened in the browser.
     Manual,
+}
+
+impl Install {
+    fn kind(&self) -> &'static str {
+        match self {
+            Install::WindowsInstaller => "windows-installer",
+            Install::WindowsPortable(_) => "windows-portable",
+            Install::LinuxScript { .. } => "linux-script",
+            Install::LinuxAppImage(_) => "appimage",
+            Install::LinuxBinary(_) => "linux-binary",
+            Install::Deb(_) => "deb",
+            Install::Android => "android",
+            Install::Source { .. } => "source",
+            Install::Manual => "manual",
+        }
+    }
 }
 
 fn linux_app_dir() -> PathBuf {
@@ -87,9 +120,35 @@ fn linux_app_dir() -> PathBuf {
     base.join("app")
 }
 
+/// The git checkout this program was built in by ./run-linux.sh, if any.
+fn source_checkout() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .find(|dir| dir.join(".git").exists() && dir.join("run-linux.sh").exists())
+        .map(Path::to_path_buf)
+}
+
+fn dir_writable(dir: &Path) -> bool {
+    let probe = dir.join(".commander-lab-write-test");
+    let ok = fs::write(&probe, b"").is_ok();
+    let _ = fs::remove_file(&probe);
+    ok
+}
+
+fn installed_by_dpkg(exe: &Path) -> bool {
+    exe.starts_with("/usr")
+        && Path::new("/var/lib/dpkg").exists()
+        && Command::new("dpkg")
+            .arg("-S")
+            .arg(exe)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+}
+
 fn detect(platform: &str) -> Install {
     if platform == "android" {
-        return Install::Manual;
+        return Install::Android;
     }
     let exe = std::env::current_exe().ok();
     if cfg!(windows) {
@@ -113,6 +172,19 @@ fn detect(platform: &str) -> Install {
         if let Some(path) = appimage {
             return Install::LinuxAppImage(path);
         }
+        if current_build().is_none() {
+            if let Some(repo) = source_checkout() {
+                return Install::Source { repo, web: platform == "web" };
+            }
+        }
+        if let Some(exe) = exe {
+            if installed_by_dpkg(&exe) {
+                return Install::Deb(exe);
+            }
+            if platform == "web" && exe.parent().map(dir_writable).unwrap_or(false) {
+                return Install::LinuxBinary(exe);
+            }
+        }
     }
     Install::Manual
 }
@@ -124,6 +196,8 @@ fn asset_for(platform: &str, install: &Install) -> &'static str {
         (_, Install::WindowsPortable(_)) => "CommanderLab-windows-x86_64-portable.exe",
         (_, Install::LinuxScript { .. }) => "CommanderLab-linux-x86_64.sh",
         (_, Install::LinuxAppImage(_)) => "CommanderLab-linux-x86_64.AppImage",
+        (_, Install::LinuxBinary(_)) => "CommanderLab-web-linux-x86_64",
+        (_, Install::Deb(_)) => "CommanderLab-linux-amd64.deb",
         _ if cfg!(windows) => "CommanderLab-windows-x86_64-setup.exe",
         _ => "CommanderLab-linux-x86_64.sh",
     }
@@ -131,16 +205,29 @@ fn asset_for(platform: &str, install: &Install) -> &'static str {
 
 /// Latest release, at most every ten minutes unless `force`.
 pub fn check(platform: &str, force: bool) -> Result<UpdateInfo> {
+    let install = detect(platform);
     if !force {
-        if let Ok(cached) = fs::read_to_string(CACHE_PATH).map(|t| serde_json::from_str::<UpdateInfo>(&t)) {
-            if let Ok(info) = cached {
-                if now().saturating_sub(info.checked_at) < RECHECK_SECS && info.current_build == current_build() {
-                    return Ok(info);
-                }
+        if let Ok(Ok(info)) = fs::read_to_string(CACHE_PATH).map(|t| serde_json::from_str::<UpdateInfo>(&t)) {
+            if now().saturating_sub(info.checked_at) < RECHECK_SECS
+                && info.current_build == current_build()
+                && info.kind == install.kind()
+            {
+                return Ok(info);
             }
         }
     }
+    let info = match &install {
+        Install::Source { repo, .. } => check_source(repo),
+        _ => check_release(platform, &install)?,
+    };
+    if let Some(parent) = Path::new(CACHE_PATH).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(CACHE_PATH, serde_json::to_string(&info)?);
+    Ok(info)
+}
 
+fn check_release(platform: &str, install: &Install) -> Result<UpdateInfo> {
     let release: Value = client(20)?
         // COMMANDERLAB_RELEASE_URL lets tests point the check elsewhere.
         .get(std::env::var("COMMANDERLAB_RELEASE_URL").unwrap_or_else(|_| format!("https://api.github.com/repos/{REPO}/releases/latest")))
@@ -153,8 +240,7 @@ pub fn check(platform: &str, force: bool) -> Result<UpdateInfo> {
 
     let tag = release.get("tag_name").and_then(Value::as_str).unwrap_or_default();
     let latest_build = tag.strip_prefix("build-").and_then(|n| n.parse::<u32>().ok());
-    let install = detect(platform);
-    let wanted = asset_for(platform, &install);
+    let wanted = asset_for(platform, install);
     let download_url = release
         .get("assets")
         .and_then(Value::as_array)
@@ -166,17 +252,19 @@ pub fn check(platform: &str, force: bool) -> Result<UpdateInfo> {
 
     let current = current_build();
     let available = matches!((current, latest_build), (Some(c), Some(l)) if l > c);
-    let (mode, how) = match (&install, platform) {
-        (_, "android") => ("download", "Downloads the new app; Android then asks to install it over this one. Your decks are kept."),
-        (Install::WindowsInstaller, _) => ("auto", "Downloads the installer, installs the update and reopens Commander Lab."),
-        (Install::WindowsPortable(_), _) => ("auto", "Replaces this program file with the new version and reopens it."),
-        (Install::LinuxScript { web: true, .. }, _) => ("auto", "Installs the update and restarts Commander Lab in a new browser tab."),
-        (Install::LinuxScript { .. }, _) => ("auto", "Installs the update and reopens Commander Lab."),
-        (Install::LinuxAppImage(_), _) => ("auto", "Replaces this AppImage with the new version and reopens it."),
-        (Install::Manual, _) => ("download", "Downloads the new version for you to install (this copy can't replace itself)."),
+    let (mode, how) = match install {
+        Install::Android => ("auto", "Downloads the new version and opens Android's installer. Tap Install; your decks are kept."),
+        Install::WindowsInstaller => ("auto", "Downloads the installer, installs the update and reopens Commander Lab."),
+        Install::WindowsPortable(_) => ("auto", "Replaces this program file with the new version and reopens it."),
+        Install::LinuxScript { web: true, .. } => ("auto", "Installs the update and restarts Commander Lab in a new browser tab."),
+        Install::LinuxScript { .. } => ("auto", "Installs the update and reopens Commander Lab."),
+        Install::LinuxAppImage(_) => ("auto", "Replaces this AppImage with the new version and reopens it."),
+        Install::LinuxBinary(_) => ("auto", "Replaces this program with the new version and restarts it."),
+        Install::Deb(_) => ("auto", "Downloads the new package and installs it (your system asks for your password), then reopens Commander Lab."),
+        Install::Source { .. } | Install::Manual => ("download", "Downloads the new version for you to install (this copy can't replace itself)."),
     };
 
-    let info = UpdateInfo {
+    Ok(UpdateInfo {
         current_version: crate::VERSION.to_string(),
         current_build: current,
         latest_build,
@@ -196,30 +284,96 @@ pub fn check(platform: &str, force: bool) -> Result<UpdateInfo> {
             .to_string(),
         download_url,
         install: if current.is_none() { "none".into() } else { mode.into() },
-        how: if current.is_none() {
-            if from_git_checkout() {
-                "Built from source: run ./run-linux.sh --update in the Commander Lab folder to pull and rebuild the latest version.".into()
-            } else {
-                "This is a development build, so it doesn't update itself.".into()
-            }
-        } else {
-            how.into()
-        },
+        how: if current.is_none() { "This is a development build, so it doesn't update itself.".into() } else { how.into() },
+        kind: install.kind().into(),
         checked_at: now(),
-    };
-    if let Some(parent) = Path::new(CACHE_PATH).parent() {
-        let _ = fs::create_dir_all(parent);
+    })
+}
+
+fn git(repo: &Path, args: &[&str]) -> Result<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        // Never wait on a password prompt nobody can see.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .context("git isn't installed")?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(anyhow!("git {} failed: {}", args.join(" "), err));
     }
-    let _ = fs::write(CACHE_PATH, serde_json::to_string(&info)?);
-    Ok(info)
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The branch this checkout pulls from.
+fn upstream(repo: &Path) -> String {
+    git(repo, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).unwrap_or_else(|_| "origin/main".into())
+}
+
+/// The newest section of a changelog.
+fn top_changelog_section(text: &str) -> String {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.starts_with("## ") {
+            if !out.is_empty() {
+                break;
+            }
+        }
+        if !out.is_empty() || line.starts_with("## ") {
+            out.push(line);
+        }
+    }
+    out.join("\n")
+}
+
+/// Built from source: compare with the branch on GitHub.
+fn check_source(repo: &Path) -> UpdateInfo {
+    let mut info = UpdateInfo {
+        current_version: crate::VERSION.to_string(),
+        page_url: format!("https://github.com/{REPO}/commits/main"),
+        install: "auto".into(),
+        how: "Pulls the latest code with git, rebuilds (this takes a few minutes) and restarts Commander Lab.".into(),
+        kind: "source".into(),
+        checked_at: now(),
+        ..Default::default()
+    };
+    let result = (|| -> Result<()> {
+        git(repo, &["fetch", "--quiet"])?;
+        let up = upstream(repo);
+        let behind: u32 = git(repo, &["rev-list", "--count", &format!("HEAD..{up}")])?.parse().unwrap_or(0);
+        info.available = behind > 0;
+        let cargo = git(repo, &["show", &format!("{up}:Cargo.toml")]).unwrap_or_default();
+        info.latest_version = cargo
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("version = \"").and_then(|v| v.strip_suffix('"')))
+            .unwrap_or(crate::VERSION)
+            .to_string();
+        if behind > 0 {
+            info.latest_version = format!("{} ({behind} new commit{})", info.latest_version, if behind == 1 { "" } else { "s" });
+            let changelog = git(repo, &["show", &format!("{up}:CHANGELOG.md")]).unwrap_or_default();
+            let mut notes = top_changelog_section(&changelog);
+            if notes.is_empty() {
+                notes = git(repo, &["log", "--format=- %s", &format!("HEAD..{up}")]).unwrap_or_default();
+            }
+            info.notes = notes.chars().take(4000).collect();
+        }
+        Ok(())
+    })();
+    if let Err(err) = result {
+        info.install = "none".into();
+        info.how = format!(
+            "Couldn't compare with GitHub ({err:#}). Run ./run-linux.sh --update in {} to update.",
+            repo.display()
+        );
+    }
+    info
 }
 
 /// Running from a `cargo build` inside a git checkout (./run-linux.sh).
+#[allow(dead_code)]
 fn from_git_checkout() -> bool {
-    std::env::current_exe()
-        .ok()
-        .map(|exe| exe.ancestors().any(|dir| dir.join(".git").exists() && dir.join("run-linux.sh").exists()))
-        .unwrap_or(false)
+    source_checkout().is_some()
 }
 
 fn download(url: &str, to: &Path, mut progress: impl FnMut(u64, u64)) -> Result<()> {
@@ -272,9 +426,56 @@ fn quit_soon() {
     });
 }
 
-/// Download and install the latest release, then restart. Returns a message
-/// for the user. The process exits about a second and a half later.
-pub fn install(platform: &str, mut progress: impl FnMut(u16, String)) -> Result<String> {
+fn have(program: &str) -> bool {
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {program} >/dev/null 2>&1"))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Start `program args…` two seconds after this process has quit.
+fn restart_later(program: &Path, args: &[String]) -> Result<()> {
+    Command::new("sh")
+        .arg("-c")
+        .arg("sleep 2; exec \"$0\" \"$@\"")
+        .arg(program)
+        .args(args)
+        .spawn()
+        .context("Couldn't restart Commander Lab")?;
+    Ok(())
+}
+
+/// Swap a running program file for a new one (a running file can be renamed
+/// but not always overwritten).
+fn swap_file(new: &Path, path: &Path, old_ext: &str) -> Result<()> {
+    make_executable(new)?;
+    let old = path.with_extension(old_ext);
+    let _ = fs::remove_file(&old);
+    fs::rename(path, &old).context("Couldn't move the old program aside")?;
+    if let Err(err) = fs::copy(new, path) {
+        let _ = fs::rename(&old, path);
+        return Err(err).context("Couldn't put the new program in place");
+    }
+    make_executable(path)?;
+    Ok(())
+}
+
+/// What an update did.
+#[derive(Debug, Serialize)]
+pub struct InstallOutcome {
+    pub message: String,
+    /// Android: the downloaded APK, for the app to hand to the installer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apk: Option<String>,
+    /// The app quits by itself in a moment.
+    pub restarting: bool,
+}
+
+/// Download and install the latest version. Desktop copies restart about a
+/// second and a half later; on Android the app opens the installer.
+pub fn install(platform: &str, mut progress: impl FnMut(u16, String)) -> Result<InstallOutcome> {
     let info = check(platform, true)?;
     if !info.available {
         return Err(anyhow!("You already have the latest version."));
@@ -282,9 +483,18 @@ pub fn install(platform: &str, mut progress: impl FnMut(u16, String)) -> Result<
     if info.install != "auto" {
         return Err(anyhow!("This copy can't update itself. {}", info.how));
     }
-    let url = info.download_url.clone().ok_or_else(|| anyhow!("The latest release has no file for this system."))?;
     let install = detect(platform);
-    let dir = std::env::temp_dir().join("commander-lab-update");
+    if let Install::Source { repo, web } = &install {
+        return install_source(repo, *web, &info, progress);
+    }
+
+    let url = info.download_url.clone().ok_or_else(|| anyhow!("The latest release has no file for this system."))?;
+    let dir = if matches!(install, Install::Android) {
+        // Android's temp folder is cleared without warning; keep it with the app's data.
+        std::env::current_dir()?.join("data").join("updates")
+    } else {
+        std::env::temp_dir().join("commander-lab-update")
+    };
     fs::create_dir_all(&dir)?;
     let file_name = url.rsplit('/').next().unwrap_or("update");
     let target = dir.join(file_name);
@@ -295,19 +505,20 @@ pub fn install(platform: &str, mut progress: impl FnMut(u16, String)) -> Result<
     progress(92, "Installing".into());
 
     match install {
+        Install::Android => {
+            progress(100, "Opening the installer".into());
+            return Ok(InstallOutcome {
+                message: format!("Downloaded {}. Opening Android's installer…", info.latest_version),
+                apk: Some(target.to_string_lossy().into_owned()),
+                restarting: false,
+            });
+        }
         Install::WindowsInstaller => {
             // Passive install (progress bar only) and reopen afterwards.
             Command::new(&target).args(["/P", "/R"]).spawn().context("Couldn't start the installer")?;
         }
         Install::WindowsPortable(exe) => {
-            // A running exe can be renamed but not overwritten.
-            let old = exe.with_extension("old.exe");
-            let _ = fs::remove_file(&old);
-            fs::rename(&exe, &old).context("Couldn't move the old program aside")?;
-            if let Err(err) = fs::copy(&target, &exe) {
-                let _ = fs::rename(&old, &exe);
-                return Err(err).context("Couldn't put the new program in place");
-            }
+            swap_file(&target, &exe, "old.exe")?;
             Command::new(&exe).spawn().context("Couldn't start the new version")?;
         }
         Install::LinuxScript { app_dir, web } => {
@@ -316,37 +527,132 @@ pub fn install(platform: &str, mut progress: impl FnMut(u16, String)) -> Result<
             if !status.success() {
                 return Err(anyhow!("The installer failed (exit {status})."));
             }
-            let launcher = app_dir.join("commander-lab.sh");
             // Start the new version once this one has quit (and freed the
             // browser edition's port).
-            let flag = if web { " --web" } else { "" };
-            Command::new("sh")
-                .arg("-c")
-                .arg(format!("sleep 2; exec \"{}\"{flag}", launcher.display()))
-                .spawn()
-                .context("Couldn't restart Commander Lab")?;
+            let args = if web { vec!["--web".to_string()] } else { vec![] };
+            restart_later(&app_dir.join("commander-lab.sh"), &args)?;
         }
         Install::LinuxAppImage(path) => {
-            make_executable(&target)?;
-            let old = path.with_extension("AppImage.old");
-            let _ = fs::remove_file(&old);
-            fs::rename(&path, &old).context("Couldn't move the old AppImage aside")?;
-            if let Err(err) = fs::copy(&target, &path) {
-                let _ = fs::rename(&old, &path);
-                return Err(err).context("Couldn't put the new AppImage in place");
-            }
-            make_executable(&path)?;
-            Command::new("sh")
-                .arg("-c")
-                .arg(format!("sleep 2; exec \"{}\"", path.display()))
-                .spawn()
-                .context("Couldn't restart Commander Lab")?;
+            swap_file(&target, &path, "AppImage.old")?;
+            restart_later(&path, &[])?;
         }
-        Install::Manual => return Err(anyhow!("This copy can't update itself.")),
+        Install::LinuxBinary(exe) => {
+            swap_file(&target, &exe, "old")?;
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            restart_later(&exe, &args)?;
+        }
+        Install::Deb(exe) => {
+            if !have("pkexec") {
+                // No graphical password prompt: let the software center take it.
+                Command::new("xdg-open").arg(&target).spawn().context("Couldn't open the downloaded package")?;
+                return Ok(InstallOutcome {
+                    message: "Opened the new package in your software installer. Install it, then reopen Commander Lab.".into(),
+                    apk: None,
+                    restarting: false,
+                });
+            }
+            let installer: &[&str] = if have("apt-get") { &["apt-get", "install", "-y"] } else { &["dpkg", "-i"] };
+            let status = Command::new("pkexec")
+                .args(installer)
+                .arg(&target)
+                .status()
+                .context("Couldn't start the package installer")?;
+            if !status.success() {
+                return Err(anyhow!(
+                    "The package wasn't installed (cancelled, or the password was wrong). Try again, or install {} yourself.",
+                    target.display()
+                ));
+            }
+            restart_later(&exe, &[])?;
+        }
+        Install::Source { .. } | Install::Manual => return Err(anyhow!("This copy can't update itself.")),
     }
     progress(100, "Restarting".into());
     quit_soon();
-    Ok(format!("Updating to {}. Commander Lab will restart in a moment.", info.latest_version))
+    Ok(InstallOutcome {
+        message: format!("Updating to {}. Commander Lab will restart in a moment.", info.latest_version),
+        apk: None,
+        restarting: true,
+    })
+}
+
+/// Built from source: git pull, rebuild with ./run-linux.sh, restart.
+fn install_source(repo: &Path, web: bool, info: &UpdateInfo, mut progress: impl FnMut(u16, String)) -> Result<InstallOutcome> {
+    use std::io::{BufRead, BufReader};
+    progress(3, "Getting the latest code".into());
+    git(repo, &["pull", "--ff-only"])?;
+
+    // Rough progress: one "Compiling" line per crate in the lockfile.
+    let crates = fs::read_to_string(repo.join("Cargo.lock"))
+        .map(|t| t.matches("[[package]]").count())
+        .unwrap_or(400)
+        .max(1);
+    progress(8, "Rebuilding (this takes a few minutes)".into());
+    let mut cmd = Command::new("sh");
+    cmd.arg("run-linux.sh").arg("--build");
+    if web {
+        cmd.arg("--web");
+    }
+    let mut child = cmd
+        .current_dir(repo)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Couldn't start the rebuild")?;
+    let stdout = child.stdout.take();
+    let drain = std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        if let Some(out) = stdout {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                lines.push(line);
+            }
+        }
+        lines
+    });
+    let mut compiled = 0usize;
+    let mut tail: Vec<String> = Vec::new();
+    if let Some(err) = child.stderr.take() {
+        for line in BufReader::new(err).lines().map_while(Result::ok) {
+            let trimmed = line.trim();
+            if let Some(name) = trimmed.strip_prefix("Compiling ") {
+                compiled += 1;
+                let pct = 8 + (compiled * 87 / crates).min(87) as u16;
+                progress(pct, format!("Building {}", name.split_whitespace().next().unwrap_or("")));
+            }
+            tail.push(line);
+            if tail.len() > 40 {
+                tail.remove(0);
+            }
+        }
+    }
+    let status = child.wait()?;
+    let out_lines = drain.join().unwrap_or_default();
+    if !status.success() {
+        let mut all = out_lines;
+        all.extend(tail);
+        let errors: Vec<&String> = all.iter().filter(|l| l.contains("error")).collect();
+        let shown: Vec<&String> = if errors.is_empty() { all.iter().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect() } else { errors.into_iter().take(8).collect() };
+        return Err(anyhow!(
+            "The rebuild failed. Run ./run-linux.sh --update in {} to see the details.\n{}",
+            repo.display(),
+            shown.iter().map(|l| l.as_str()).collect::<Vec<_>>().join("\n")
+        ));
+    }
+
+    progress(100, "Restarting".into());
+    let mut args = vec![repo.join("run-linux.sh").to_string_lossy().into_owned()];
+    if web {
+        args.push("--web".into());
+    }
+    // Keep the options it was started with (--port, --data, ...).
+    args.extend(std::env::args().skip(1).filter(|a| a != "--web" && a != "--desktop"));
+    restart_later(Path::new("sh"), &args)?;
+    quit_soon();
+    Ok(InstallOutcome {
+        message: format!("Updated to {}. Commander Lab will restart in a moment.", info.latest_version),
+        apk: None,
+        restarting: true,
+    })
 }
 
 #[cfg(test)]
@@ -361,6 +667,14 @@ mod tests {
             asset_for("web", &Install::LinuxScript { app_dir: PathBuf::new(), web: true }),
             "CommanderLab-linux-x86_64.sh"
         );
-        assert_eq!(detect("android"), Install::Manual);
+        assert_eq!(asset_for("web", &Install::LinuxBinary(PathBuf::new())), "CommanderLab-web-linux-x86_64");
+        assert_eq!(asset_for("desktop", &Install::Deb(PathBuf::new())), "CommanderLab-linux-amd64.deb");
+        assert_eq!(detect("android"), Install::Android);
+    }
+
+    #[test]
+    fn newest_changelog_section() {
+        let text = "# Changelog\n\n## 0.31.0\n\n- New\n\n## 0.30.0\n\n- Old\n";
+        assert_eq!(top_changelog_section(text), "## 0.31.0\n\n- New\n");
     }
 }
