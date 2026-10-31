@@ -1,8 +1,12 @@
 name: probe-sources
-on: { push: { branches: [probe/sources] } }
+on: { push: { branches: [probe/sources] }, workflow_dispatch: {} }
+permissions: { contents: write }
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 probe.py
+      - run: python3 probe.py > output.txt 2>&1 || true
+      - run: |
+          git config user.name probe; git config user.email probe@users.noreply.github.com
+          git add output.txt; git commit -m "probe output [skip ci]"; git push
