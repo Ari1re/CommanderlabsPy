@@ -1,83 +1,67 @@
-=== ARCHIDEKT formats
-1 200 1000 [('Budget Auras', 1), ('Tempo Non-Budget Standard', 1)]
-2 200 1000 [('Modern Artifact Burn', 2), ('Black Burn', 2)]
-3 200 1000 [('Buffs by Hans', 3), ('Baby Lasagna', 3)]
-4 200 1000 [('8 Cast', 4), ('Reanimator', 4)]
-5 200 1000 [('Social Cards', 5), ('no banlist mono white', 5)]
-6 200 1000 [('Goblins', 6), ('Mono Black Devotion', 6)]
-7 200 1000 [('The Forgetful Fish deck featured on Shuffle Up', 7), ("Baldur's Gate 3", 7)]
-8 200 251 [('Blind Annihilation ☢️', 8), ('Aggression ⚔️', 8)]
-9 200 1000 [('Dinozauro', 9), ('Izzet Spells', 9)]
-10 200 1000 [('Penny Pox is back', 10), ('Astral Enchantress', 10)]
-11 HTTP Error 429: Too Many Requests 
-12 HTTP Error 429: Too Many Requests 
-13 HTTP Error 429: Too Many Requests 
-14 HTTP Error 429: Too Many Requests 
-15 HTTP Error 429: Too Many Requests 
-16 HTTP Error 429: Too Many Requests 
-17 HTTP Error 429: Too Many Requests 
-18 HTTP Error 429: Too Many Requests 
-19 HTTP Error 429: Too Many Requests 
-20 HTTP Error 429: Too Many Requests 
-21 HTTP Error 429: Too Many Requests 
-22 HTTP Error 429: Too Many Requests 
-23 HTTP Error 429: Too Many Requests 
-24 HTTP Error 429: Too Many Requests 
-25 HTTP Error 429: Too Many Requests 
-26 HTTP Error 429: Too Many Requests 
-27 HTTP Error 429: Too Many Requests 
-28 HTTP Error 429: Too Many Requests 
-29 HTTP Error 429: Too Many Requests 
-30 HTTP Error 429: Too Many Requests 
-31 HTTP Error 429: Too Many Requests 
-archidekt pdh commander search HTTP Error 429: Too Many Requests 
-=== MOXFIELD fmt
-paupercommander HTTP Error 400: Bad Request 
-pauperEdh 200 10000 ['[cPDH] Tatyova Combo', '[cPDH] Tormod Ramirez'] ['pauperEdh', 'pauperEdh']
-pauperedh 200 10000 ['[cPDH] Tatyova Combo', '[cPDH] Tormod Ramirez'] ['pauperEdh', 'pauperEdh']
-pdh HTTP Error 400: Bad Request 
-highlanderCanadian 200 10000 ['Canadian Highlander: Eggs', '2026/04/27 - Mardu Midrange Reanimator - 1st/2nd (YJ Monday Night Highlander, Jason J.)'] ['highlanderCanadian', 'highlanderCanadian']
-canadianhighlander HTTP Error 400: Bad Request 
-canlander HTTP Error 400: Bad Request 
-highlander HTTP Error 400: Bad Request 
-commander 200 10000 ['Winota: Snowball Stax', ' 🌸 Warrior Queen [cEDH Najeela] 🌸'] ['commander', 'commander']
-=== MTGTOP8
-CHL 200 Canadian Highlander events and metagame @ mtgtop8.com [('480', '5 %'), ('564', '5 %'), ('572', '4 %'), ('483', '4 %'), ('543', '3 %'), ('556', '3 %'), ('498', '3 %'), ('459', '2 %')]
-PDH 200 events and metagame @ mtgtop8.com []
-pEDH 200 events and metagame @ mtgtop8.com []
-PAU 200 Pauper events and metagame @ mtgtop8.com [('536', '11 %'), ('512', '9 %'), ('549', '6 %'), ('765', '5 %'), ('539', '5 %'), ('1010', '4 %'), ('551', '4 %'), ('620', '4 %')]
-EDH 200 Duel Commander events and metagame @ mtgtop8.com []
-cEDH 200 cEDH events and metagame @ mtgtop8.com []
-CHL rocks decks [('44941', '531772'), ('44941', '531775'), ('12526', '272204'), ('12518', '272162'), ('11990', '268732')]
-mtgo export 200 1 Garruk Wildspeaker
-1 Garruk, Unleashed
-1 Green Sun's Zenith
-1 Inscription of Abundance
-1 Berserk
-1 Blossoming Defense
-1 Finale of Devastation
-1 Chrome Mox
-1 Eldritch Evolution
-1 Esika's Chariot
-1 Sylvan Library
-1 Unlicensed Hearse
-1 Vines of Vastwood
-1 Vivien, Monsters' Advocate
-1 Mox Diamond
-1 Mox Emerald
-1 Natural Order
-1 Nissa, Who Shakes the World
-1 Ram Through
-1 Rancor
-1
-meta links [('105', 'Red Deck Wins'), ('105', 'Jeskai Midrange'), ('105', 'Goblins'), ('105', 'Jund'), ('105', '4c Blood'), ('105', 'Abzan Aggro'), ('105', 'Bant'), ('105', 'RG Aggro'), ('105', 'Other - Aggro'), ('105', 'Grixis Control'), ('105', 'The Rocks'), ('105', 'Sultai Tempo')]
-=== MTGDECKS
-https://mtgdecks.net/Canadian-Highlander 200 MTG Canadian-Highlander top decks and meta October 2026 • MTG DECKS
-https://mtgdecks.net/Pauper-EDH HTTP Error 404: Not Found 
-https://mtgdecks.net/Pauper-Commander HTTP Error 404: Not Found 
-https://mtgdecks.net/PDH HTTP Error 404: Not Found 
-=== PDHREC / others
-https://pdhrec.com/ 200 Commanders | PDHREC
-https://www.pdhrec.com/ 200 Commanders | PDHREC
-https://pdhhomebase.com/ 200 PDH Home Base &#8211; Welcome to PDH Home Base, your hub for Pauper Commander (P
-https://json.edhrec.com/pages/commanders/murmuring-mystic.json HTTP Error 403: Forbidden 
+=== PDHREC home
+200 68322
+next data: False False api ['https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js', '/js/nav.js']
+links: ['/1/', '/137/', '/2/', '/about', '/apple-touch-icon.png', '/colors', '/commander/abomination-of-llanowar/', '/commander/arabella-abandoned-doll/', '/commander/araumi-of-the-dead-tide/', '/commander/balmor-battlemage-captain/', '/commander/black-waltz-no-3/', '/commander/breeches-brazen-plunderer-malcolm-keen-eyed-navigator/', '/commander/cormela-glamour-thief/', '/commander/dina-soul-steeper/', '/commander/elas-il-kor-sadistic-pilgrim/', '/commander/fynn-the-fangbearer/', '/commander/gut-true-soul-zealot-inspiring-leader/', '/commander/imoti-celebrant-of-bounty/', '/commander/kutzil-malamet-exemplar/', '/commander/mayhem-devil/', '/commander/minthara-merciless-soul/', '/commander/queza-augur-of-agonies/', '/commander/rilsa-rael-kingpin/', '/commander/shirei-shizos-caretaker/', '/commander/slimefoot-the-stowaway/', '/commander/soulherder/', '/commander/tatyova-benthic-druid/', '/commander/third-path-iconoclast/', '/commander/tor-wauki-the-younger/', '/commander/zada-hedron-grinder/', '/css/main.css', '/css/nav.css', '/favicon-16x16.png', '/favicon-32x32.png', '/safari-pinned-tab.svg', '/site.webmanifest', '/staples']
+ Commanders | PDHREC window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments); } gtag('js', new Date()); gtag('config', 'G-Z8HBNDG4CX'); PDHREC PDH REC Commanders By Color Staples About Menu Commanders Colors Staples About gtag('event', 'page-view', {name: "index"}); $0.35 $0.18 In 1079 decks $0.35 $0.13 In 887 decks $0.79 $0.37 In 829 decks $3.49 $1.90 In 761 decks $0.35 $0.23 In 735 decks $0.79 $0.85 In 726 decks $0.35 $0.20 In 672 decks $0.35 $0.24 In 618 decks $0.35 $0.22 In 602 decks $0.35 $0.22 In 601 decks $2.99 $2.34 In 557 decks $0.35 $0.29 In 538 decks $0.35 $0.24 In 515 decks $0.35 $0.13 In 488 decks $0.35 $0.27 In 476 decks $0.39 $0.37 In 474 decks $0.35 $0.10 In 461 decks $0.35 $0.33 In 452 decks $0.35 $0.22 In 448 decks $0.35 $0.28 In 446 decks $0.99 $1.31 In 441 decks $0.79 $0.43 In 431 decks $2.29 $0.66 In 416 decks $0.79 $0.30 In 410 decks &laquo; &#8249; 1 2 3 &#8250; &raquo; PDHREC is unofficial Fan Content permitted under the Fan Content Policy. Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. &copy;Wizards of the Coast LLC. 
+--- https://pdhrec.com/commander/murmuring-mystic 200 308169
+ Murmuring Mystic | PDHREC window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments); } gtag('js', new Date()); gtag('config', 'G-Z8HBNDG4CX'); gtag('event', 'page-view', { name: "murmuring-mystic" }); PDHREC PDH REC Commanders By Color Staples About Menu Commanders Colors Staples About $1.29 $0.33 In 193 decks Murmuring Mystic In 193 decks. Synergy Popularity Types $0.69 $0.45 Airborne Aid In 67.4% of 193 decks +66.2% synergy $0.35 $0.20 Winged Words In 70.5% of 193 decks +61.6% synergy $0.35 $0.15 Opt In 89.1% of 193 decks +61.3% synergy $2.29 $1.67 Abjure In 58% of 193 decks +56.1% synergy $0.49 $0.29 Of One Mind In 62.2% of 193 decks +55.9% synergy $0.79 $0.3
+--- https://pdhrec.com/commanders/murmuring-mystic HTTP Error 404: Not Found 0
+
+--- https://pdhrec.com/api/commanders HTTP Error 404: Not Found 0
+
+--- https://pdhrec.com/commander/murmuring-mystic/ 200 308169
+ Murmuring Mystic | PDHREC window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments); } gtag('js', new Date()); gtag('config', 'G-Z8HBNDG4CX'); gtag('event', 'page-view', { name: "murmuring-mystic" }); PDHREC PDH REC Commanders By Color Staples About Menu Commanders Colors Staples About $1.29 $0.33 In 193 decks Murmuring Mystic In 193 decks. Synergy Popularity Types $0.69 $0.45 Airborne Aid In 67.4% of 193 decks +66.2% synergy $0.35 $0.20 Winged Words In 70.5% of 193 decks +61.6% synergy $0.35 $0.15 Opt In 89.1% of 193 decks +61.3% synergy $2.29 $1.67 Abjure In 58% of 193 decks +56.1% synergy $0.49 $0.29 Of One Mind In 62.2% of 193 decks +55.9% synergy $0.79 $0.3
+--- https://pdhrec.com/sitemap.xml HTTP Error 404: Not Found 0
+
+--- https://pdhrec.com/robots.txt HTTP Error 404: Not Found 0
+
+=== MOXFIELD pauperEdh commander filter
+200 10000 [('[cPDH] Tatyova Combo', 'pauperEdh'), ('[cPDH] Tormod Ramirez', 'pauperEdh'), ('Gretchen Titchwillow - Second Breakfast - Combo / Midrange cPDH', 'pauperEdh'), ('Witherbloom Apprentice 🍵 "WApp" 🍵 Control 🍵 cPDH', 'pauperEdh'), ('[cPDH] Armix Ramirez', 'pauperEdh')]
+{"matchTypes": [], "matchedCards": [], "id": "XQ4yr", "name": "[cPDH] Tatyova Combo", "hasPrimer": true, "format": "pauperEdh", "areCommentsEnabled": true, "visibility": "public", "publicUrl": "https://moxfield.com/decks/xtsZ51FFS0SptMlsZ1BweA", "publicId": "xtsZ51FFS0SptMlsZ1BweA", "likeCount": 238, "viewCount": 48565, "commentCount": 27, "sfwCommentCount": 21, "bookmarkCount": 0, "isLegal": true, "authorsCanEdit": false, "isShared": false, "mainCardId": "YjvZy", "mainCardIdIsCardFace": false, "mainCardIdIsBackFace": false, "createdByUser": {"userName": "MtG_Crash", "displayName": "MtG_Crash", "profileImageUrl": "https://assets.moxfield.net/profile/profile-32257-fc8a7de3-b6ff-4c19-be44-34ca05e81f18", "badges": []}, "authors": [{"userName": "MtG_Crash", "displayName": "MtG_Crash", "profileImageUrl": "https://assets.moxfield.net/profile/profile-32257-fc8a7de3-b6ff-4c19-be44-34ca05e81f18",
+CH &colorIdentity=UR 200 10000 [('Canadian Highlander: Eggs', ['W', 'U', 'B', 'R', 'G']), ('2026/04/27 - Mardu Midrange Reanimator - 1st/2nd (YJ Monday Night Highlander, Jason J.)', ['W', 'U', 'B', 'R', 'G']), ('2025/08/31 - Temur Moon Monsters - Winner (Discord Cockatrice Weekly, Hjelp)', ['W', 'U', 'B', 'R', 'G']), ('Canadian Highlander: Merfolk (Bant)', ['W', 'U', 'G'])]
+CH &colors=UR 200 10000 [('Canadian Highlander: Eggs', ['W', 'U', 'B', 'R', 'G']), ('2026/04/27 - Mardu Midrange Reanimator - 1st/2nd (YJ Monday Night Highlander, Jason J.)', ['W', 'U', 'B', 'R', 'G']), ('2025/08/31 - Temur Moon Monsters - Winner (Discord Cockatrice Weekly, Hjelp)', ['W', 'U', 'B', 'R', 'G']), ('Canadian Highlander: Merfolk (Bant)', ['W', 'U', 'G'])]
+CH &filter=UR 200 9718 [('2025/08/31 - Temur Moon Monsters - Winner (Discord Cockatrice Weekly, Hjelp)', ['W', 'U', 'B', 'R', 'G']), ('Canadian Highlander: Grixis Welder (Academy)', ['W', 'U', 'B', 'R', 'G']), ('Canadian Highlander: Czech Pile', ['U', 'B', 'R', 'G']), ('Canadian Highlander: Jeskai Green', ['W', 'U', 'R', 'G'])]
+CH &q=izzet 200 10000 [('Canadian Highlander: Eggs', ['W', 'U', 'B', 'R', 'G']), ('2026/04/27 - Mardu Midrange Reanimator - 1st/2nd (YJ Monday Night Highlander, Jason J.)', ['W', 'U', 'B', 'R', 'G']), ('2025/08/31 - Temur Moon Monsters - Winner (Discord Cockatrice Weekly, Hjelp)', ['W', 'U', 'B', 'R', 'G']), ('Canadian Highlander: Merfolk (Bant)', ['W', 'U', 'G'])]
+=== ARCHIDEKT 11-31 slow
+11 200 1000 ['Playing Eldrazi Quickly', 'Slim Shady DC']
+12 200 1000 ['Light-Paws Voltron 🦊', 'Ferrous Rokiric']
+13 200 1000 ['Faerie Schemes - Throne of Eldraine', 'Savage Hunter - Throne of Eldraine']
+14 200 1000 ['Hautli Aggro', 'Espernoyhbreamer']
+15 200 1000 ['Fable Celebrant', 'Kasmina Combo']
+16 200 1000 ['Life Gainz', '[Historic] Death & Taxes']
+17 200 1000 ['PDH Izzet Tokens', "Sailors' Bane - Competitive PDH"]
+18 200 1000 ['Nazgul', 'Hallowed Priest token version']
+19 200 1000 ['Runes', 'Monogreen Devotion']
+20 200 1000 ['Historic Brawl Storm', 'Kotis, the Fangkeeper Brawl']
+21 HTTP Error 429: Too Many Requests
+22 HTTP Error 429: Too Many Requests
+23 HTTP Error 429: Too Many Requests
+24 HTTP Error 429: Too Many Requests
+25 HTTP Error 429: Too Many Requests
+26 200 894 ['Teysa of the Ghost Council', '~The Chief of Arena 🔫🤵~']
+27 200 307 ['Tiny Phelia', 'Tiny Tamiyo Flow']
+28 200 0 []
+29 200 0 []
+30 200 0 []
+31 200 0 []
+=== MTGTOP8 CHL
+archetypes: [('480', '105', 'Red Deck Wins'), ('564', '105', 'Jeskai Midrange'), ('572', '105', 'Goblins'), ('483', '105', 'Jund'), ('543', '105', '4c Blood'), ('556', '105', 'Abzan Aggro'), ('498', '105', 'Bant'), ('459', '105', 'RG Aggro'), ('460', '105', 'Other - Aggro'), ('542', '105', 'Grixis Control'), ('482', '105', 'The Rocks'), ('499', '105', 'Sultai Tempo'), ('541', '105', 'Esper Control'), ('462', '105', 'Other - Control'), ('497', '105', 'Elfball'), ('540', '105', 'Reanimator'), ('557', '105', 'Storm'), ('496', '105', 'Pattern Rector'), ('461', '105', 'Other - Combo')]
+recent events: [('22519', '"There Can Only Be One, Eh?" 3'), ('22519', 'Mox Boarding House (Seattle)'), ('20365', 'There Can Only Be One, Eh?'), ('20365', 'Mox Boarding House Seattle'), ('19499', 'There Can Be Only One, Eh?'), ('19499', 'Mox Boarding House Seattle'), ('16993', 'Monday Night Canadian Highlander'), ('16708', 'Monday Night Canadian Highlander'), ('88528', 'Duel Citizenship'), ('88528', 'TCG cafe (Oxford, UK)')]
+RDW decks: [('77400', '787544', 'Red Deck Wins'), ('46961', '547210', 'Schmedium Red'), ('46835', '546235', 'Medium Red'), ('44847', '530773', 'Rdw'), ('35336', '467066', 'Medium Red'), ('35336', '467067', 'Rdw'), ('21407', '343291', 'Mono-red Aggro'), ('21073', '340050', 'Red Deck Wins'), ('20365', '333264', 'Burn'), ('16993', '305107', 'Burn')]
+export tail: 1 City of Traitors
+1 Castle Garenbrig
+1 Treetop Village
+1 Mishra's Factory
+1 Verdant Catacombs
+1 Wasteland
+1 Waterlogged Grove
+1 Windswept Heath
+1 Wooded Foothills
+1 Yavimaya, Cradle of Growth
+1 Urza's Saga
+1 Mutavault
+1 Nurturing Peatland
+1 Prismatic Vista
+1 Rishadan Port
+12 Forest
+
