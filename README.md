@@ -117,6 +117,8 @@ On NixOS, open a shell first: `nix-shell -p cargo rustc gcc nodejs`.
 
 **Build** → pick a commander (partners and backgrounds supported), a **bracket from 1 to 5** and up to three **play styles** taken from that commander's most popular EDHREC themes. The first style you pick is the main focus. Commander Lab researches how the commander is usually built and assembles a 100-card deck.
 
+At **Bracket 5 (cEDH)**, the generator builds from cEDH Decklist Database lists first; casual decklists and EDHREC only break ties. The deck's notes say which sources were used.
+
 Every generated deck is checked before it's saved: exactly 100 cards, singleton, inside the commander's colors, Commander-legal, and locked to the bracket you picked.
 
 ### Add an existing deck
@@ -185,7 +187,7 @@ Every change is saved automatically, whether it's an added card, a new printing,
 
 ### Share
 
-**Share** shows a QR code and a share code holding the whole list, printings included. On another device, scan it or paste the code. No account or server is involved.
+**Share** shows a QR code and a share code holding just what rebuilds the deck: the commander and every card with its count. Tick **Include printings and sideboard** to add those too; this makes a bigger code. On another device, scan it or paste the code. No account or server is involved.
 
 ### Export to Moxfield
 

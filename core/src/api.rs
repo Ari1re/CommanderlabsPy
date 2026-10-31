@@ -227,7 +227,7 @@ impl Engine {
             "restore_version" => self.restore_version(&arg::<String>(a, "name")?, arg(a, "id")?),
 
             // --- sharing --------------------------------------------------------
-            "share" => self.share(&arg::<String>(a, "name")?),
+            "share" => self.share(&arg::<String>(a, "name")?, opt(a, "extras").unwrap_or(false)),
             "share_preview" => {
                 let (name, text) = share::decode(&arg::<String>(a, "code")?)?;
                 let deck = parse_deck_text(&name, &text)?;
@@ -1395,14 +1395,23 @@ impl Engine {
     // Sharing
     // -----------------------------------------------------------------------
 
-    fn share(&self, name: &str) -> Result<Value> {
+    fn share(&self, name: &str, extras: bool) -> Result<Value> {
         let deck = self.load(name)?;
-        let code = share::encode(name, &deck_to_text(&deck))?;
-        let (svg, error) = match share::qr_svg(&code) {
+        let codes = share::encode_deck(name, &deck, extras)?;
+        let (svg, error) = match share::qr_svg(&codes.qr) {
             Ok(svg) => (Some(svg), None),
             Err(err) => (None, Some(err.to_string())),
         };
-        Ok(json!({ "code": code, "svg": svg, "error": error }))
+        let has_extras = !deck.sideboard.is_empty()
+            || deck.commanders.iter().chain(deck.main.iter()).any(|e| e.set_code.is_some() || e.foil);
+        Ok(json!({
+            "code": codes.text,
+            "svg": svg,
+            "error": error,
+            "extras": extras,
+            "has_extras": has_extras,
+            "qr_version": share::qr_version(&codes.qr),
+        }))
     }
 
     fn import_share(&self, code: &str, name: Option<String>) -> Result<Value> {

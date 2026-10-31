@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.25.0
+
+- Sharing: the QR now holds only what rebuilds the deck (commander, cards and counts) in a denser QR-native encoding. A typical 100-card deck went from QR size 31 to 22, much easier to scan. "Include printings and sideboard" adds them back. Older share codes still import.
+- Fixed: opening Share or a card preview no longer zooms the whole app out on Android. The app no longer pinch-zooms like a web page.
+- cEDH generation: at Bracket 5, cEDH Decklist Database lists are now the primary evidence for card choices; casual decklists and EDHREC only break ties. The deck notes say which sources drove the build, and fall back clearly when a commander has no cEDH lists.
+
 ## 0.24.0
 
 - Game tab reworked to play like Mythic Tools:

@@ -59,6 +59,11 @@ pub struct ReferenceSnapshot {
     pub query: String,
     pub decks: Vec<ReferenceDeck>,
     pub card_frequency: HashMap<String, u32>,
+    /// Card counts across cEDH Decklist Database lists only.
+    #[serde(default)]
+    pub cedh_frequency: HashMap<String, u32>,
+    #[serde(default)]
+    pub cedh_deck_count: usize,
     #[serde(default)]
     pub card_names: HashMap<String, String>,
     #[serde(default)]
@@ -103,6 +108,14 @@ impl ReferenceSnapshot {
 
     pub fn deck_count(&self) -> usize {
         self.decks.len()
+    }
+
+    /// How many cEDH Decklist Database lists play this card.
+    pub fn cedh_frequency(&self, card_name: &str) -> u32 {
+        self.cedh_frequency
+            .get(&card_name.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn top_cards(&self, limit: usize) -> Vec<(String, u32)> {
@@ -746,6 +759,12 @@ fn fetch_moxfield_references(
     out
 }
 
+/// Lists from the cEDH Decklist Database (competitive, tournament-proven).
+pub fn is_cedh_source(deck: &ReferenceDeck) -> bool {
+    deck.source.to_ascii_lowercase().contains("cedh")
+        || deck.title.to_ascii_lowercase().contains("cedh")
+}
+
 fn fetch_cedh_ddb_references(
     commander_names: &[String],
     limit: usize,
@@ -1040,6 +1059,8 @@ fn build_snapshot(
         .collect::<HashSet<_>>();
 
     let mut card_frequency = HashMap::<String, u32>::new();
+    let mut cedh_frequency = HashMap::<String, u32>::new();
+    let mut cedh_deck_count = 0usize;
     let mut card_names = HashMap::<String, String>::new();
     let mut pair_frequency = HashMap::<String, u32>::new();
     let mut pair_cards = HashMap::<String, Vec<String>>::new();
@@ -1051,6 +1072,10 @@ fn build_snapshot(
     for deck in &decks {
         let mut seen = HashSet::<String>::new();
         let mut non_commanders = Vec::<String>::new();
+        let is_cedh = is_cedh_source(deck);
+        if is_cedh {
+            cedh_deck_count += 1;
+        }
 
         for card in &deck.cards {
             let key = card.to_ascii_lowercase();
@@ -1058,6 +1083,9 @@ fn build_snapshot(
 
             if seen.insert(key.clone()) {
                 *card_frequency.entry(key.clone()).or_default() += 1;
+                if is_cedh {
+                    *cedh_frequency.entry(key.clone()).or_default() += 1;
+                }
 
                 if !commander_set.contains(&key) {
                     non_commanders.push(card.clone());
@@ -1116,6 +1144,8 @@ fn build_snapshot(
         query,
         decks,
         card_frequency,
+        cedh_frequency,
+        cedh_deck_count,
         card_names,
         pair_frequency,
         pair_cards,
@@ -1660,4 +1690,36 @@ fn save_cache(
     .with_context(|| format!("Could not write {}", path.display()))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod cedh_tests {
+    use super::*;
+
+    fn deck(source: &str, cards: &[&str]) -> ReferenceDeck {
+        ReferenceDeck {
+            source: source.to_string(),
+            title: "t".to_string(),
+            url: String::new(),
+            cards: cards.iter().map(|c| c.to_string()).collect(),
+            combos: Vec::new(),
+            combo_scan_complete: true,
+        }
+    }
+
+    #[test]
+    fn cedh_lists_are_tallied_separately() {
+        let snap = build_snapshot(
+            "Kinnan, Bonder Prodigy".to_string(),
+            vec![
+                deck("cEDH DDB / Moxfield", &["Kinnan, Bonder Prodigy", "Basalt Monolith", "Mana Crypt"]),
+                deck("cEDH DDB / Moxfield", &["Kinnan, Bonder Prodigy", "Basalt Monolith"]),
+                deck("Moxfield", &["Kinnan, Bonder Prodigy", "Cultivate"]),
+            ],
+        );
+        assert_eq!(snap.cedh_deck_count, 2);
+        assert_eq!(snap.cedh_frequency("Basalt Monolith"), 2);
+        assert_eq!(snap.cedh_frequency("Cultivate"), 0);
+        assert_eq!(snap.frequency("Cultivate"), 1);
+    }
 }

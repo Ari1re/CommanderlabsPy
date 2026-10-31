@@ -22,7 +22,7 @@
   async function checkCode(value: string) {
     code = value;
     preview = null;
-    if (!value.includes('CLD1.')) return;
+    if (!/CLD[12][.:]/.test(value)) return;
     try {
       preview = await api('share_preview', { code: value });
       scanning = false;
@@ -91,7 +91,7 @@
       {/if}
       <label class="field">
         <span>Or paste a share code</span>
-        <textarea class="input code" rows="3" value={code} oninput={(e) => checkCode((e.target as HTMLTextAreaElement).value)} placeholder="CLD1.…"></textarea>
+        <textarea class="input code" rows="3" value={code} oninput={(e) => checkCode((e.target as HTMLTextAreaElement).value)} placeholder="CLD2.…"></textarea>
       </label>
       {#if preview}
         <div class="preview panel">

@@ -7,16 +7,19 @@
 
   let { name, onclose }: { name: string; onclose: () => void } = $props();
 
-  let share = $state<{ code: string; svg: string | null; error: string | null } | null>(null);
+  let share = $state<{ code: string; svg: string | null; error: string | null; has_extras: boolean } | null>(null);
+  let extras = $state(false);
 
-  onMount(async () => {
+  async function load() {
     try {
-      share = await api('share', { name });
+      share = await api('share', { name, extras });
     } catch (err) {
       app.error(err);
       onclose();
     }
-  });
+  }
+
+  onMount(load);
 
   async function copy() {
     if (share && (await copyText(share.code))) app.toast('Share code copied.', 'success');
@@ -45,11 +48,20 @@
       {:else}
         <p class="dim">{share.error}</p>
       {/if}
+      {#if share.has_extras}
+        <label class="check">
+          <input type="checkbox" bind:checked={extras} onchange={load} />
+          Include printings and sideboard <span class="muted small">(bigger code)</span>
+        </label>
+      {/if}
       <label class="field">
         <span>Share code</span>
         <textarea class="input code" rows="3" readonly value={share.code}></textarea>
       </label>
-      <p class="small muted">The code holds the whole list, printings included. Send it in any chat; it doesn't need an account or server.</p>
+      <p class="small muted">
+        {extras ? 'Includes the commander, every card, printings and the sideboard.' : 'Just what rebuilds the deck: the commander and every card with its count.'}
+        Send the code in any chat; no account or server needed.
+      </p>
     </div>
   {/if}
   {#snippet footer()}
@@ -62,7 +74,7 @@
 
 <style>
   .qr {
-    width: min(320px, 100%);
+    width: min(260px, 72vw);
     margin: 0 auto;
     padding: 10px;
     background: #fff;
@@ -72,12 +84,28 @@
     display: block;
     width: 100%;
     height: auto;
+    aspect-ratio: 1;
   }
   .center {
     text-align: center;
   }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 40px;
+    cursor: pointer;
+  }
+  .check input {
+    accent-color: var(--brass);
+    width: 20px;
+    height: 20px;
+  }
   .code {
+    width: 100%;
+    max-width: 100%;
     font-size: 0.8rem;
     word-break: break-all;
+    overflow-wrap: anywhere;
   }
 </style>

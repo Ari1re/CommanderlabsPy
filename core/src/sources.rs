@@ -100,6 +100,18 @@ pub fn standard_sources(
         ),
     ];
 
+    if bracket >= 5 {
+        out.insert(
+            0,
+            DeckSource::automatic(
+                "cEDH Decklist Database",
+                "cEDH Decklist Database",
+                "https://cedh-decklist-database.com/",
+                "Tournament-proven competitive lists. At Bracket 5 these are the primary evidence; casual decklists and EDHREC only break ties.",
+            ),
+        );
+    }
+
     let themes = crate::archetype::theme_list(selected_theme);
     let pages: Vec<Option<String>> = if themes.is_empty() {
         vec![None]
