@@ -1,8 +1,33 @@
-{"data":{"detail":"36386 cards","error":null,"finished_ms":1793481993113,"id":1,"kind":"update_cards","log":["  5% Downloading Scryfall card data — This takes a minute or two."," 95% Reloading card database — 36386 cards"],"percent":100,"result":{"cards":36386},"started_ms":1793481912437,"status
+{"data":{"detail":"35402 cards","error":null,"finished_ms":1793482239072,"id":1,"kind":"update_cards","log":["  5% Downloading Scryfall card data — This takes a minute or two."," 95% Reloading card database — 35402 cards"],"percent":100,"result":{"cards":35402},"started_ms":1793482212933,"status
+=== GENERATE {"format":"canlander","colors":"UR","theme":"Tempo","bracket":5}
+done None {'name': 'Izzet Tempo - Highlander'}
+  8% Reading the card pool — Every Vintage-legal card in Izzet
+ 22% Reading Canadian Highlander decklists — MTGTop8 and Moxfield
+ 26% Reading Canadian Highlander decklists — MTGTop8: 19 Canadian Highlander archetypes
+ 26% Reading Canadian Highlander decklists — Moxfield: 192 popular Canadian Highlander decks to compare
+ 30% Choosing spells — 12486 legal cards • point budget 10/10
+ 70% Building the mana base — Izzet
+100% Done — Izzet Tempo - Highlander
+FORMAT canlander {'cards': 100, 'format': 'canlander', 'label': 'Canadian Highlander', 'max_points': 10, 'pointed_cards': [['Sol Ring', 3], ['Mana Drain', 1], ['Mana Vault', 1], ['Mystical Tutor', 2], ['Merchant Scroll', 1], ['The One Ring', 1], ['Treasure Cruise', 1]], 'points': 10, 'problems': []}
+CARDS Mental Misstep, Sol Ring, Mana Drain, Arcane Denial, Mana Vault, Brainstorm, Mystical Tutor, Jace, Vryn's Prodigy // Jace, Telepath Unbound, Nimble Obstructionist, Counterspell, Aether Spellbomb, Three Steps Ahead, Siren Stormtamer, Goblin Cratermaker, Lotus Petal, Hypnotic Sprite // Mesmeric Glare, Spellstutter Sprite, Daze, Dire Fleet Daredevil, Ragavan, Nimble Pilferer, Merchant Scroll, Chrome Mox, Wheel of Fortune, Snapcaster Mage, Kami of the Crescent Moon, Runaway Steam-Kin, Walking Ballista, Ornithopter, Mockingbird, Windfall, Gitaxian Probe, Shivan Devastator, Lion's Eye Diamond, Reckless Fireweaver, Metallic Mimic, Harmonic Prodigy, Mox Diamond, Lightning Bolt, Skullclamp, The One Ring, Ponder, Vexing Bauble, Narset, Parter of Veils, Treasure Cruise, Timetwister, Faithless Looting, Sensei's Divining Top, Chain of Vapor, Consider, Serum Visions, Opt, Shadowspear, Blood Moon, Preordain, Spell Pierce, Thorn of Amethyst, Howling Mine, Strike It Rich, Pyroblast, Pact of Negation, Cascade Bluffs, Shivan Reef, Volcanic Island, Prismatic Vista, Scalding Tarn, Fiery Islet, Steam Vents, Sulfur Falls, Arid Mesa, Wooded Foothills, Bloodstained Mire, Flooded Strand, Misty Rainforest, Polluted Delta, Ferrous Lake, Island, Mountain
+NOTE Canadian Highlander: 100 cards, one copy of each except basic lands, no sideboard, no commander. Played one-on-one at 20 life. Vintage banned list and the points list (updated 1 September 2026).
+NOTE Points: 10 of 10 used — Sol Ring (3), Mana Drain (1), Mana Vault (1), Mystical Tutor (2), Merchant Scroll (1), The One Ring (1), Treasure Cruise (1).
+NOTE Built as a tempo deck with 40 lands, 18 creatures, 16 interaction spells, 18 card-draw spells.
+NOTE Built from Canadian Highlander decklists: 5 tournament list(s) from MTGTop8 and 1 popular Moxfield list(s) within these colors (2 in exactly these colors), weighted toward Tempo decks. Most played there: Blood Moon (87%), Scalding Tarn (87%), Prismatic Vista (87%), Mox Diamond (83%), Chrome Mox (83%), Urza's Saga (83%), Skullclamp (58%), Rishadan Port (58%), Fireblast (58%), Price of Progress (58%). Few lists use exactly these colors, so card quality and the deck's needs carried more of the choice.
+SRC MTGTop8 | Canadian Highlander events and metagame | https://www.mtgtop8.com/format?f=CHL
+SRC Moxfield | Canadian Highlander decks on Moxfield | https://moxfield.com/decks/public?fmt=highlanderCanadian
+SRC Canadian Highlander | Points list | https://canadianhighlander.ca/points-list/
+SRC MTGTop8 | Red Deck Wins (MTGTop8) | https://www.mtgtop8.com/event?e=46835&d=546235&f=CHL
+SRC MTGTop8 | Red Deck Wins (MTGTop8) | https://www.mtgtop8.com/event?e=35336&d=467066&f=CHL
+SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=51301&d=580413&f=CHL
+SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=48350&d=556174&f=CHL
+SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=46474&d=543505&f=CHL
+SRC Moxfield | Canadian Highlander: Owling Mine (Izzet) (Moxfield) | https://www.moxfield.com/decks/WdR8beJZ-kiPD8KDaJat5Q
+SRC count 9
 === GENERATE {"commander":"Murmuring Mystic","theme":"Flying","bracket":3,"format":"pdh"}
 done None {'name': 'Murmuring Mystic - PDH'}
  26% Deep Learn commander model — [EVIDENCE] Reading PDHREC normal-build tags for Murmuring Mystic
- 26% Deep Learn commander model — [EVIDENCE] Reading commander/theme EDHREC cardlists for Flying
+ 26% Deep Learn commander model — [EVIDENCE] Reading commander/theme PDHREC cardlists for Flying
  26% Deep Learn commander model — [EVIDENCE] PDHREC: 78 cards across 193 decks
  26% Deep Learn commander model — [EVIDENCE] Building large reference corpus from Moxfield / Archidekt / cEDH and checking recurring Spellbook combos
  26% Deep Learn commander model — [REFERENCES] Corpus ready • decks=3 • recurring_pairs=374 • complete_combo_patterns=0
@@ -31,11 +56,11 @@ CARDS Murmuring Mystic, Winged Words, Distant Melody, Keep Watch, Opt, Preordain
 NOTE Pauper Commander: the commander was printed at uncommon and every other card at common (paper or MTGO printings). Built for 30 life and 16 commander damage. Mystic Remora, Rhystic Study, ante cards, Conspiracies and cards removed from constructed play are excluded.
 NOTE Power level 3 of 5 (Commander brackets don't apply to Pauper Commander; this only set how aggressive the build is).
 NOTE Built from Pauper Commander sources: PDHREC inclusion and synergy for 78 cards, plus 3 Pauper EDH decklist(s) from Archidekt.
-NOTE Selected play-style theme: Flying. Commander core: local inference. Included 10 direct style cards, 56 commander-engine cards, and 54 EDHREC-normal-build cards.
+NOTE Selected play-style theme: Flying. Commander core: local inference. Included 10 direct style cards, 56 commander-engine cards, and 54 PDHREC-backed cards.
 NOTE The generator reserves structural slots for ramp, card advantage, interaction, tutors, protection and recursion before filling flexible value cards.
-NOTE Commander-specific EDHREC inclusion/synergy and the commander's actual rules text are primary build signals; global EDHREC rank is only a secondary tiebreaker.
+NOTE PDHREC's inclusion and synergy for this commander and the commander's own rules text are the main build signals; how widely a card is played overall only breaks ties.
 NOTE Deep Learn model confidence: 16%. Learned structural targets: ramp 8 • draw 14 • interaction 12 • tutors 2 • wipes 1 • protection 2 • recursion 2.
-NOTE Integrity PASSED: 100 cards • 36 lands • ramp 3 • draw 33 • interaction 15 • keepable hands 80% • 0 repair(s) • 1 warning(s)
+NOTE Integrity PASSED: 100 cards • 36 lands • ramp 3 • draw 33 • interaction 15 • keepable hands 82% • 0 repair(s) • 1 warning(s)
 NOTE Integrity warning: Light on ramp (3; aim for 8–12).
 NOTE Compared against 3 cached/public reference deck(s) from Archidekt, Moxfield. Deep Learn also measured recurring card pairs and 0 distinct complete Spellbook combo line(s) across the corpus.
 NOTE Most common cards in the reference sample: Arcane Signet (3), Brainstorm (3), Distant Melody (3), Island (3), Keep Watch (3), Murmuring Mystic (3), Winged Words (3), Anticipate (2), Arcane Denial (2), Consider (2), Counterspell (2), Gitaxian Probe (2).
@@ -47,47 +72,10 @@ SRC Archidekt | [Murmuring Mystic] Pauper Birds | https://archidekt.com/decks/66
 SRC Archidekt | Aven Wind Guide | https://archidekt.com/decks/4324464
 SRC Archidekt | Murmuring Mystic | https://archidekt.com/decks/7405222
 SRC count 7
-=== GENERATE {"format":"canlander","colors":"UR","theme":"Tempo","bracket":5}
-error The Canadian Highlander build didn't pass the format check:
-Ornithopter: not a tournament-legal card. None
-  8% Reading the card pool — Every Vintage-legal card in Izzet
- 22% Reading Canadian Highlander decklists — MTGTop8 and Moxfield
- 26% Reading Canadian Highlander decklists — MTGTop8: 19 Canadian Highlander archetypes
- 26% Reading Canadian Highlander decklists — Moxfield: 192 popular Canadian Highlander decks to compare
- 30% Choosing spells — 12486 legal cards • point budget 10/10
- 70% Building the mana base — Izzet
-=== GENERATE {"format":"canlander","colors":"WUB","theme":"Control","bracket":5}
-done None {'name': 'Esper Control - Highlander'}
-  8% Reading the card pool — Every Vintage-legal card in Esper
- 22% Reading Canadian Highlander decklists — MTGTop8 and Moxfield
- 26% Reading Canadian Highlander decklists — MTGTop8: 19 Canadian Highlander archetypes
- 26% Reading Canadian Highlander decklists — Moxfield: 192 popular Canadian Highlander decks to compare
- 30% Choosing spells — 18291 legal cards • point budget 10/10
- 70% Building the mana base — Esper
-100% Done — Esper Control - Highlander
-FORMAT canlander {'cards': 100, 'format': 'canlander', 'label': 'Canadian Highlander', 'max_points': 10, 'pointed_cards': [['Sol Ring', 3], ['Mystical Tutor', 2], ['Treasure Cruise', 1], ['Mana Drain', 1], ['Mox Sapphire', 3]], 'points': 10, 'problems': []}
-CARDS Swords to Plowshares, Path to Exile, Brainstorm, Ponder, Counterspell, Sol Ring, Mystical Tutor, Mana Leak, Remand, Gitaxian Probe, Treasure Cruise, Mystic Confluence, Preordain, Supreme Verdict, Spell Snare, Mana Drain, Force of Will, Teferi, Time Raveler, Mental Misstep, Snapcaster Mage, Fatal Push, Cryptic Command, Erode, Prismatic Ending, Jace, the Mind Sculptor, Disallow, Condescend, Mox Sapphire, Memory Lapse, Utter End, Wan Shi Tong, Librarian, Negate, Solitude, Duress, Thoughtseize, Baleful Strix, Sensei's Divining Top, Consider, Serum Visions, Opt, Skullclamp, Inquisition of Kozilek, Orcish Bowmasters, Reprieve, Esper Sentinel, Aven Mindcensor, Impulse, Fact or Fiction, Dismember, Baral, Chief of Compliance, Beza, the Bounding Spring, Torrential Gearhulk, Daze, Logic Knot, Spell Pierce, Mind Twist, Deadly Dispute, Demonic Consultation, No More Lies, Flooded Strand, Polluted Delta, Hallowed Fountain, Tundra, Seachrome Coast, Arid Mesa, Marsh Flats, Windswept Heath, Underground Sea, Misty Rainforest, Scalding Tarn, Watery Grave, Glacial Fortress, Prismatic Vista, Scrubland, Godless Shrine, Bloodstained Mire, Isolated Chapel, Verdant Catacombs, Floodfarm Verge, Fetid Heath, Sunken Hollow, Plains, Island, Swamp
-NOTE Canadian Highlander: 100 cards, one copy of each except basic lands, no sideboard, no commander. Played one-on-one at 20 life. Vintage banned list and the points list (updated 1 September 2026).
-NOTE Points: 10 of 10 used — Sol Ring (3), Mystical Tutor (2), Treasure Cruise (1), Mana Drain (1), Mox Sapphire (3).
-NOTE Built as a control deck with 41 lands, 10 creatures, 24 interaction spells, 22 card-draw spells.
-NOTE Built from Canadian Highlander decklists: 2 tournament list(s) from MTGTop8 and 6 popular Moxfield list(s) within these colors (6 in exactly these colors), weighted toward Control decks. Most played there: Polluted Delta (100%), Path to Exile (100%), Flooded Strand (100%), Swords to Plowshares (100%), Hallowed Fountain (92%), Seachrome Coast (92%), Brainstorm (81%), Ponder (81%), Arid Mesa (80%), Windswept Heath (80%).
-SRC MTGTop8 | Canadian Highlander events and metagame | https://www.mtgtop8.com/format?f=CHL
-SRC Moxfield | Canadian Highlander decks on Moxfield | https://moxfield.com/decks/public?fmt=highlanderCanadian
-SRC Canadian Highlander | Points list | https://canadianhighlander.ca/points-list/
-SRC MTGTop8 | Esper Control (MTGTop8) | https://www.mtgtop8.com/event?e=20428&d=333837&f=CHL
-SRC MTGTop8 | Esper Control (MTGTop8) | https://www.mtgtop8.com/event?e=16562&d=302408&f=CHL
-SRC Moxfield | Azorius Control (Moxfield) | https://www.moxfield.com/decks/iDh6JGp32kOfLLPVj2hxfQ
-SRC Moxfield | BW CursePox (Moxfield) | https://www.moxfield.com/decks/YPnsrzASuU2iwUQYC3zitg
-SRC Moxfield | Canadian Highlander: Zombies (Orzhov) (Moxfield) | https://www.moxfield.com/decks/Xc6CDoPGYk6bUmRIQaODow
-SRC Moxfield | UW Artifact Beatdown (Moxfield) | https://www.moxfield.com/decks/ird3k8vw-Uqt5VAisnsP4g
-SRC Moxfield | Canadian Highlander: Thoracle (Esper) (Moxfield) | https://www.moxfield.com/decks/A_KZE24sMkOm6WzEWDZE9w
-SRC Moxfield | Canadian Highlander: Pixie (Esper - Artifacts) (Moxfield) | https://www.moxfield.com/decks/KRwDYwV6r0yO2Yxb52diWg
-SRC count 11
 === LOG
-[1793481994.868] [PDHREC] https://pdhrec.com/commander/murmuring-mystic/ • decks=193 • cards=78
-[1793482000.144] [REF] ARCHIDEKT DISCOVERY • page=1 • usable=3 • next_page=2
-[1793482002.905] [REF] CORPUS COMPLETE • query=PDH: Murmuring Mystic • decks=3 • common_cards=209 • recurring_pairs=374 • combo_patterns=0 • next_arch_page=2 • next_mox_page=2
-[1793482023.620] [HIGHLANDER] colors=UR • decks=4 • new downloads=41
-[1793482035.080] [HIGHLANDER] colors=WUB • decks=8 • new downloads=30
+[1793482257.059] [HIGHLANDER] colors=UR • decks=6 • new downloads=41
+[1793482259.768] [PDHREC] https://pdhrec.com/commander/murmuring-mystic/ • decks=193 • cards=78
+[1793482266.157] [REF] ARCHIDEKT DISCOVERY • page=1 • usable=3 • next_page=2
+[1793482268.949] [REF] CORPUS COMPLETE • query=PDH: Murmuring Mystic • decks=3 • common_cards=209 • recurring_pairs=374 • combo_patterns=0 • next_arch_page=2 • next_mox_page=2
 Commander Lab 0.28.0 — data in run
 Open http://127.0.0.1:7878  (Ctrl+C to quit)
