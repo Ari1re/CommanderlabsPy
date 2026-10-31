@@ -2087,6 +2087,20 @@ notes.insert(
         );
     }
 
+    // Pauper Commander's evidence is PDHREC and Archidekt's Pauper EDH decks:
+    // say so instead of EDHREC.
+    if format == Format::Pdh {
+        for note in notes.iter_mut() {
+            if note.starts_with("Commander-specific EDHREC") {
+                *note = "PDHREC's inclusion and synergy for this commander and the commander's own rules text are the main build signals; how widely a card is played overall only breaks ties.".to_string();
+            } else {
+                *note = note
+                    .replace("EDHREC-normal-build cards", "PDHREC-backed cards")
+                    .replace("from Archidekt, Moxfield", "from Archidekt (Pauper EDH format)");
+            }
+        }
+    }
+
     if options.deep_search {
         let included: Vec<String> = deck
             .main

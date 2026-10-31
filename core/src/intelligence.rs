@@ -396,7 +396,8 @@ where
         .collect::<Vec<_>>();
 
     progress(format!(
-        "[EVIDENCE] Reading commander/theme EDHREC cardlists for {}",
+        "[EVIDENCE] Reading commander/theme {} cardlists for {}",
+        if pdh { "PDHREC" } else { "EDHREC" },
         if selected_theme.trim().is_empty() {
             core_tags
                 .first()

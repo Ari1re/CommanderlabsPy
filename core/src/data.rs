@@ -298,6 +298,16 @@ impl CardDb {
             "DELETE FROM cards WHERE lower(trim(type_line)) = 'card'",
             [],
         );
+        // Tokens and emblems from older downloads.
+        let _ = conn.execute(
+            "DELETE FROM aliases WHERE oracle_id IN (SELECT oracle_id FROM cards \
+             WHERE lower(type_line) LIKE 'token%' OR lower(type_line) LIKE '% token%' OR lower(type_line) LIKE 'emblem%')",
+            [],
+        );
+        let _ = conn.execute(
+            "DELETE FROM cards WHERE lower(type_line) LIKE 'token%' OR lower(type_line) LIKE '% token%' OR lower(type_line) LIKE 'emblem%'",
+            [],
+        );
 
         // Repair eligibility in-place for databases produced by older
         // Commander Lab releases. Runtime checks still remain authoritative.
@@ -386,6 +396,7 @@ impl CardDb {
                    pdh_legal, vintage_legal, pdh_commander
                 FROM cards
                 WHERE name_lower = ?1
+                ORDER BY lower(type_line) LIKE '%token%', commander_legal DESC, vintage_legal = 'not_legal'
                 LIMIT 1
                 "#,
                 [key],
@@ -1056,8 +1067,13 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
             )
         })?;
 
+        // Tokens and emblems share names with real cards ("Ornithopter",
+        // "Treasure"); keep them out so name lookups find the card.
         let nonplayable_object =
-            raw.layout.eq_ignore_ascii_case("art_series")
+            matches!(
+                raw.layout.to_ascii_lowercase().as_str(),
+                "art_series" | "token" | "double_faced_token" | "emblem"
+            )
                 || raw.set_type.eq_ignore_ascii_case("memorabilia")
                 || raw
                     .type_line
