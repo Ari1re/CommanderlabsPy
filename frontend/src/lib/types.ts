@@ -210,12 +210,16 @@ export interface MpcImage {
   dpi: number;
   extension: string;
   thumbnail_url: string;
+  tags?: string[];
+  official?: boolean;
+  printing?: string;
 }
 
 export interface MpcFace {
   query: string;
   candidates: MpcImage[];
   selected: number;
+  pending_ids?: string[];
 }
 
 export interface MpcCard {
@@ -236,6 +240,7 @@ export interface MpcOrder {
   resolved: number;
   faces: number;
   not_found?: string[];
+  warning?: string | null;
 }
 
 export interface MpcConfig {
@@ -247,6 +252,8 @@ export interface MpcConfig {
   foil: boolean;
   include_sideboard: boolean;
   max_candidates: number;
+  include_official: boolean;
+  prefer_official: boolean;
 }
 
 export interface Source {

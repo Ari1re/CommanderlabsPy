@@ -54,8 +54,12 @@ pub struct MpcConfig {
     pub stock: String,
     pub foil: bool,
     pub include_sideboard: bool,
-    /// Max candidate images kept per card for the art cycler.
+    /// Max candidate images kept per card (0 = every image found).
     pub max_candidates: usize,
+    /// Add Scryfall's official scans (every distinct artwork) as choices.
+    pub include_official: bool,
+    /// List official art before community scans.
+    pub prefer_official: bool,
 }
 
 impl Default for MpcConfig {
@@ -64,11 +68,13 @@ impl Default for MpcConfig {
             backend_url: DEFAULT_BACKEND.to_string(),
             cardback_id: String::new(),
             preferred_sources: Vec::new(),
-            minimum_dpi: 300,
+            minimum_dpi: 0,
             stock: STOCKS[0].to_string(),
             foil: false,
             include_sideboard: false,
-            max_candidates: 12,
+            max_candidates: 0,
+            include_official: true,
+            prefer_official: false,
         }
     }
 }
@@ -85,8 +91,19 @@ impl MpcConfig {
                     .trim_start_matches("http://")
                     .trim_end_matches('/')
                     .to_ascii_lowercase();
+                let mut changed = false;
                 if config.backend_url.trim().is_empty() || RETIRED_BACKENDS.contains(&host.as_str()) {
                     config.backend_url = DEFAULT_BACKEND.to_string();
+                    changed = true;
+                }
+                // Untouched settings from before 0.27.2 (300 DPI, 12 images)
+                // hid most of the art; move them to "show everything".
+                if config.minimum_dpi == 300 && config.max_candidates == 12 {
+                    config.minimum_dpi = 0;
+                    config.max_candidates = 0;
+                    changed = true;
+                }
+                if changed {
                     let _ = config.save();
                 }
                 return config;
@@ -123,7 +140,17 @@ pub struct MpcImage {
     pub dpi: u32,
     pub extension: String,
     pub thumbnail_url: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Scryfall's official scan rather than a community image.
+    #[serde(default)]
+    pub official: bool,
+    /// Set and collector number of an official scan ("LEA 161").
+    #[serde(default)]
+    pub printing: String,
 }
+
+pub const OFFICIAL_SOURCE: &str = "Scryfall (official)";
 
 impl MpcImage {
     pub fn file_name(&self) -> String {
@@ -141,6 +168,9 @@ pub struct MpcFace {
     pub query: String,
     pub candidates: Vec<MpcImage>,
     pub selected: usize,
+    /// MPC Autofill results not loaded yet (loaded on request).
+    #[serde(default)]
+    pub pending_ids: Vec<String>,
 }
 
 impl MpcFace {
@@ -149,6 +179,7 @@ impl MpcFace {
             query: query.into(),
             candidates: Vec::new(),
             selected: 0,
+            pending_ids: Vec::new(),
         }
     }
 
@@ -270,18 +301,31 @@ impl MpcOrder {
         out
     }
 
-    /// Apply search results keyed by normalized query.
-    pub fn apply_results(&mut self, results: &HashMap<String, Vec<MpcImage>>) {
+    /// Apply search results keyed by normalized query: community images,
+    /// the MPC results still to load, and official scans.
+    pub fn apply_results(
+        &mut self,
+        results: &HashMap<String, Vec<MpcImage>>,
+        pending: &HashMap<String, Vec<String>>,
+        official: &HashMap<String, Vec<MpcImage>>,
+        prefer_official: bool,
+    ) {
+        let fill = |face: &mut MpcFace| {
+            let key = search_query(&face.query);
+            let community = results.get(&key).cloned().unwrap_or_default();
+            let scans = official.get(&key).cloned().unwrap_or_default();
+            face.candidates = if prefer_official {
+                scans.into_iter().chain(community).collect()
+            } else {
+                community.into_iter().chain(scans).collect()
+            };
+            face.pending_ids = pending.get(&key).cloned().unwrap_or_default();
+            face.selected = 0;
+        };
         for card in &mut self.cards {
-            if let Some(found) = results.get(&search_query(&card.front.query)) {
-                card.front.candidates = found.clone();
-                card.front.selected = 0;
-            }
+            fill(&mut card.front);
             if let Some(back) = card.back.as_mut() {
-                if let Some(found) = results.get(&search_query(&back.query)) {
-                    back.candidates = found.clone();
-                    back.selected = 0;
-                }
+                fill(back);
             }
         }
     }
@@ -362,7 +406,11 @@ impl MpcOrder {
                     "{} {} | {}\n",
                     card.quantity, card.front.query, back.query
                 )),
-                None => out.push_str(&format!("{} {}\n", card.quantity, card.front.query)),
+                None => out.push_str(&format!(
+                    "{} {}\n",
+                    card.quantity,
+                    card.front.query.split(" // ").next().unwrap_or(&card.front.query)
+                )),
             }
         }
         out
@@ -418,8 +466,39 @@ pub struct MpcClient {
 #[derive(Debug, Clone, Default)]
 pub struct SearchOutcome {
     pub results: HashMap<String, Vec<MpcImage>>,
+    /// MPC identifiers found but not loaded yet, per query.
+    pub pending: HashMap<String, Vec<String>>,
     pub default_cardback: Option<String>,
     pub not_found: Vec<String>,
+}
+
+/// Images per card loaded straight away; the rest load when asked for.
+const EAGER_IMAGES: usize = 40;
+
+/// Other spellings to try when a name finds nothing: split cards are
+/// indexed under both halves ("fire ice"), and punctuation varies.
+fn alternate_queries(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let joined = query.replace(" // ", " ").replace("//", " ");
+    if joined != query {
+        out.push(search_query(&joined));
+        // Adventure and flip cards are usually indexed by their first half.
+        if let Some(first) = query.split("//").next() {
+            let first = search_query(first);
+            if !first.is_empty() && !out.contains(&first) {
+                out.push(first);
+            }
+        }
+    }
+    let plain: String = query
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+        .collect();
+    let plain = search_query(&plain);
+    if plain != query && !out.contains(&plain) {
+        out.push(plain);
+    }
+    out
 }
 
 impl MpcClient {
@@ -493,15 +572,50 @@ impl MpcClient {
             .unwrap_or_default()
     }
 
-    pub fn search(
-        &self,
-        queries: &[String],
-        config: &MpcConfig,
-        mut progress: impl FnMut(usize, usize),
-    ) -> Result<SearchOutcome> {
-        let sources = self.sources();
-        let search_settings = json!({
-            "searchTypeSettings": { "fuzzySearch": false, "filterCardbacks": false },
+    fn editor_search(&self, queries: &[String], settings: &Value) -> Result<HashMap<String, Vec<String>>> {
+        let mut out = HashMap::new();
+        // The backend caps queries per request; batch conservatively.
+        for batch in queries.chunks(20) {
+            let body = json!({
+                "searchSettings": settings,
+                "queries": batch
+                    .iter()
+                    .map(|query| json!({ "query": query, "cardType": "CARD" }))
+                    .collect::<Vec<_>>(),
+            });
+            let response = self.post("/2/editorSearch/", &body)?;
+            let results = response.get("results").cloned().unwrap_or(Value::Null);
+            for query in batch {
+                let ids = results
+                    .get(query)
+                    .and_then(|by_type| by_type.get("CARD"))
+                    .and_then(Value::as_array)
+                    .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                out.insert(query.clone(), ids);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Details (name, source, DPI, thumbnail) for MPC image identifiers.
+    pub fn images(&self, ids: &[String]) -> Result<HashMap<String, MpcImage>> {
+        let mut metadata = HashMap::<String, MpcImage>::new();
+        for chunk in ids.chunks(100) {
+            let body = json!({ "cardIdentifiers": chunk });
+            let response = self.post("/2/cards/", &body)?;
+            if let Some(Value::Object(map)) = response.get("results") {
+                for (id, card) in map {
+                    metadata.insert(id.clone(), parse_image(id, card));
+                }
+            }
+        }
+        Ok(metadata)
+    }
+
+    fn settings(&self, config: &MpcConfig, sources: &[Value], fuzzy: bool) -> Value {
+        json!({
+            "searchTypeSettings": { "fuzzySearch": fuzzy, "filterCardbacks": false },
             "sourceSettings": { "sources": sources },
             "filterSettings": {
                 "minimumDPI": config.minimum_dpi,
@@ -511,83 +625,90 @@ impl MpcClient {
                 "includesTags": [],
                 "excludesTags": ["NSFW"]
             }
-        });
-        let mut identifiers_by_query = HashMap::<String, Vec<String>>::new();
+        })
+    }
 
-        // The backend caps queries per request; batch conservatively.
+    pub fn search(
+        &self,
+        queries: &[String],
+        config: &MpcConfig,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<SearchOutcome> {
+        let sources = self.sources();
+        let search_settings = self.settings(config, &sources, false);
         let total = queries.len();
-        for (batch_index, batch) in queries.chunks(20).enumerate() {
-            let body = json!({
-                "searchSettings": search_settings,
-                "queries": batch
-                    .iter()
-                    .map(|query| json!({ "query": query, "cardType": "CARD" }))
-                    .collect::<Vec<_>>(),
-            });
-
-            let response = self.post("/2/editorSearch/", &body)?;
-            let results = response.get("results").cloned().unwrap_or(Value::Null);
-
-            for query in batch {
-                let ids = results
-                    .get(query)
-                    .and_then(|by_type| by_type.get("CARD"))
-                    .and_then(Value::as_array)
-                    .map(|list| {
-                        list.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                identifiers_by_query.insert(query.clone(), ids);
-            }
-
-            progress(((batch_index + 1) * 20).min(total), total);
+        let mut identifiers_by_query = HashMap::<String, Vec<String>>::new();
+        for (i, batch) in queries.chunks(20).enumerate() {
+            identifiers_by_query.extend(self.editor_search(batch, &search_settings)?);
+            progress(((i + 1) * 20).min(total), total);
         }
 
-        // Fetch metadata for the candidates we will actually show.
+        // Names that found nothing: try other spellings, then fuzzy matching.
+        let missing: Vec<String> = queries
+            .iter()
+            .filter(|q| identifiers_by_query.get(*q).map(|ids| ids.is_empty()).unwrap_or(true))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            let mut tries: Vec<(String, String)> = Vec::new();
+            for q in &missing {
+                for alt in alternate_queries(q) {
+                    tries.push((q.clone(), alt));
+                }
+            }
+            if !tries.is_empty() {
+                let alts: Vec<String> = tries.iter().map(|(_, a)| a.clone()).collect();
+                if let Ok(found) = self.editor_search(&alts, &search_settings) {
+                    for (original, alt) in &tries {
+                        if let Some(ids) = found.get(alt).filter(|ids| !ids.is_empty()) {
+                            identifiers_by_query.entry(original.clone()).or_default().extend(ids.iter().cloned());
+                        }
+                    }
+                }
+            }
+            let still: Vec<String> = missing
+                .into_iter()
+                .filter(|q| identifiers_by_query.get(q).map(|ids| ids.is_empty()).unwrap_or(true))
+                .collect();
+            if !still.is_empty() {
+                let fuzzy = self.settings(config, &sources, true);
+                if let Ok(found) = self.editor_search(&still, &fuzzy) {
+                    for (q, ids) in found {
+                        if !ids.is_empty() {
+                            identifiers_by_query.insert(q, ids);
+                        }
+                    }
+                }
+            }
+        }
+
+        let cap = if config.max_candidates == 0 { usize::MAX } else { config.max_candidates };
+
+        // Details for the first images of every card; the rest load on request.
         let mut wanted = Vec::<String>::new();
+        let mut seen = std::collections::HashSet::<String>::new();
         for ids in identifiers_by_query.values() {
-            for id in ids.iter().take(config.max_candidates.max(1) * 2) {
-                if !wanted.contains(id) {
+            for id in ids.iter().take(EAGER_IMAGES.min(cap)) {
+                if seen.insert(id.clone()) {
                     wanted.push(id.clone());
                 }
             }
         }
-
-        let mut metadata = HashMap::<String, MpcImage>::new();
-        for chunk in wanted.chunks(100) {
-            let body = json!({ "cardIdentifiers": chunk });
-            let response = self.post("/2/cards/", &body)?;
-            if let Some(Value::Object(map)) = response.get("results") {
-                for (id, card) in map {
-                    metadata.insert(id.clone(), parse_image(id, card));
-                }
-            }
-        }
+        let metadata = self.images(&wanted)?;
 
         let mut outcome = SearchOutcome::default();
         for query in queries {
             let ids = identifiers_by_query.get(query).cloned().unwrap_or_default();
-            let mut images: Vec<MpcImage> = ids
-                .iter()
-                .map(|id| {
-                    metadata.get(id).cloned().unwrap_or_else(|| MpcImage {
-                        identifier: id.clone(),
-                        name: query.clone(),
-                        ..Default::default()
-                    })
-                })
-                .collect();
-
+            let ids: Vec<String> = ids.into_iter().take(cap).collect();
+            let (loaded, rest): (Vec<String>, Vec<String>) =
+                ids.iter().cloned().partition(|id| metadata.contains_key(id));
+            let mut images: Vec<MpcImage> = loaded.iter().filter_map(|id| metadata.get(id).cloned()).collect();
             rank_images(&mut images, &config.preferred_sources);
-            images.truncate(config.max_candidates.max(1));
-
-            if images.is_empty() {
+            if images.is_empty() && rest.is_empty() {
                 outcome.not_found.push(query.clone());
             }
             outcome.results.insert(query.clone(), images);
+            outcome.pending.insert(query.clone(), rest);
         }
 
         // Cardbacks are a POST that takes the same search settings.
@@ -600,6 +721,101 @@ impl MpcClient {
 
         Ok(outcome)
     }
+}
+
+/// Official scans for a face: one per distinct artwork across every paper
+/// printing (newest printing of each artwork), from Scryfall.
+pub fn official_images(card_name: &str, face_name: &str) -> Vec<MpcImage> {
+    let Ok(printings) = crate::printings::printings(card_name) else {
+        return Vec::new();
+    };
+    let face_key = face_name.to_ascii_lowercase();
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut out = Vec::new();
+    for p in printings.iter().filter(|p| p.lang.is_empty() || p.lang == "en") {
+        let (thumb, png, art) = match p.faces.iter().find(|f| f.name.to_ascii_lowercase() == face_key) {
+            Some(face) => (face.image.clone(), face.png.clone(), face.illustration_id.clone()),
+            None => (p.image.clone(), p.png.clone(), p.illustration_id.clone()),
+        };
+        if png.is_empty() {
+            continue;
+        }
+        let key = if art.is_empty() { png.clone() } else { art };
+        if !seen.insert(key) {
+            continue;
+        }
+        let label = format!("{} {}", p.set_code, p.collector_number);
+        out.push(MpcImage {
+            identifier: png,
+            name: format!("{} ({}).png", face_name, label).replace(['/', '\\', ':'], "-"),
+            source_name: OFFICIAL_SOURCE.to_string(),
+            dpi: 300,
+            extension: "png".into(),
+            thumbnail_url: thumb,
+            tags: Vec::new(),
+            official: true,
+            printing: format!("{} · {}", p.set_name, label),
+        });
+    }
+    out
+}
+
+/// Download the official scans an order uses into `dir` and point the order
+/// at those files: the MPC Autofill desktop tool (v4+) takes a local file in
+/// place of a Google Drive ID.
+/// Returns (scans saved, names that couldn't be downloaded).
+pub fn localize_official(order: &mut MpcOrder, dir: &Path, mut progress: impl FnMut(usize, usize)) -> Result<(usize, Vec<String>)> {
+    let mut faces: Vec<&mut MpcFace> = Vec::new();
+    for card in &mut order.cards {
+        faces.push(&mut card.front);
+        if let Some(back) = card.back.as_mut() {
+            faces.push(back);
+        }
+    }
+    let todo: Vec<usize> = faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.chosen().map(|c| c.official).unwrap_or(false))
+        .map(|(i, _)| i)
+        .collect();
+    if todo.is_empty() {
+        return Ok((0, Vec::new()));
+    }
+    fs::create_dir_all(dir)?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(60))
+        .user_agent(concat!("CommanderLab/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let mut saved = 0;
+    let mut failed = Vec::new();
+    for (n, i) in todo.iter().enumerate() {
+        let face = &mut faces[*i];
+        let selected = face.selected;
+        let image = &mut face.candidates[selected];
+        let path = dir.join(&image.name);
+        if !path.exists() && image.identifier.starts_with("http") {
+            let fetched = client
+                .get(&image.identifier)
+                .send()
+                .and_then(|r| r.error_for_status())
+                .and_then(|r| r.bytes());
+            match fetched {
+                Ok(bytes) => {
+                    fs::write(&path, &bytes)?;
+                    std::thread::sleep(Duration::from_millis(60));
+                }
+                Err(_) => {
+                    failed.push(image.name.clone());
+                    progress(n + 1, todo.len());
+                    continue;
+                }
+            }
+        }
+        image.identifier = fs::canonicalize(&path).unwrap_or(path).display().to_string();
+        saved += 1;
+        progress(n + 1, todo.len());
+    }
+    Ok((saved, failed))
 }
 
 fn parse_image(id: &str, card: &Value) -> MpcImage {
@@ -619,6 +835,13 @@ fn parse_image(id: &str, card: &Value) -> MpcImage {
         dpi: card.get("dpi").and_then(Value::as_u64).unwrap_or(0) as u32,
         extension: text(&["extension"]),
         thumbnail_url: text(&["mediumThumbnailUrl", "smallThumbnailUrl", "medium_thumbnail_url"]),
+        tags: card
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|t| t.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default(),
+        official: false,
+        printing: String::new(),
     }
 }
 
@@ -646,6 +869,7 @@ mod tests {
             dpi,
             extension: "png".into(),
             thumbnail_url: String::new(),
+            ..Default::default()
         }
     }
 
@@ -689,7 +913,7 @@ mod tests {
         results.insert("forest".into(), vec![image("FO", "S", 600)]);
         results.insert("delver of secrets".into(), vec![image("DF", "S", 600)]);
         results.insert("insectile aberration".into(), vec![image("DB", "S", 600)]);
-        order.apply_results(&results);
+        order.apply_results(&results, &HashMap::new(), &HashMap::new(), false);
 
         let xml = order.to_xml().unwrap();
         assert!(xml.contains("<quantity>5</quantity>"));
@@ -712,5 +936,29 @@ mod tests {
     #[test]
     fn escape_handles_xml_specials() {
         assert_eq!(escape("Tom & Jerry's <x>"), "Tom &amp; Jerry&apos;s &lt;x&gt;");
+    }
+
+    #[test]
+    fn official_art_merges_and_alternates_cover_split_cards() {
+        let config = MpcConfig::default();
+        assert_eq!(config.max_candidates, 0);
+        let lines = vec![OrderLine { name: "Sol Ring".into(), quantity: 1, faces: None }];
+        let mut order = MpcOrder::from_lines("T", &lines, &config);
+        let mut community = HashMap::new();
+        community.insert("sol ring".to_string(), vec![image("SR", "S", 600)]);
+        let mut pending = HashMap::new();
+        pending.insert("sol ring".to_string(), vec!["MORE".to_string()]);
+        let mut official = HashMap::new();
+        official.insert("sol ring".to_string(), vec![MpcImage { identifier: "https://x/sr.png".into(), official: true, ..Default::default() }]);
+        order.apply_results(&community, &pending, &official, false);
+        let face = &order.cards[0].front;
+        assert_eq!(face.candidates.len(), 2);
+        assert!(!face.candidates[0].official && face.candidates[1].official);
+        assert_eq!(face.pending_ids, vec!["MORE".to_string()]);
+        order.apply_results(&community, &pending, &official, true);
+        assert!(order.cards[0].front.candidates[0].official);
+
+        assert_eq!(alternate_queries("fire // ice"), vec!["fire ice".to_string(), "fire".to_string()]);
+        assert_eq!(alternate_queries("lim-dûl's vault"), vec!["lim dûl s vault".to_string()]);
     }
 }

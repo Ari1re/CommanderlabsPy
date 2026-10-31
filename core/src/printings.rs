@@ -24,6 +24,24 @@ pub struct Printing {
     pub price_usd_foil: Option<String>,
     pub price_eur: Option<String>,
     pub lang: String,
+    /// Full-size scan (745×1040 PNG) of the front face.
+    #[serde(default)]
+    pub png: String,
+    /// Scryfall's artwork ID: printings that share it share the same art.
+    #[serde(default)]
+    pub illustration_id: String,
+    /// Each face of a double-faced printing, with its own images.
+    #[serde(default)]
+    pub faces: Vec<PrintingFace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PrintingFace {
+    pub name: String,
+    pub image: String,
+    pub png: String,
+    #[serde(default)]
+    pub illustration_id: String,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +83,10 @@ fn image_of(card: &Value) -> String {
         .unwrap_or_default()
 }
 
+fn uri(uris: Option<&Value>, key: &str) -> String {
+    uris.and_then(|u| u.get(key)).and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
 fn parse(card: &Value) -> Option<Printing> {
     let s = |k: &str| card.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     let price = |k: &str| {
@@ -91,6 +113,48 @@ fn parse(card: &Value) -> Option<Printing> {
         price_usd_foil: price("usd_foil"),
         price_eur: price("eur"),
         lang: s("lang"),
+        png: {
+            let own = uri(card.get("image_uris"), "png");
+            if own.is_empty() {
+                card.get("card_faces")
+                    .and_then(Value::as_array)
+                    .and_then(|f| f.first())
+                    .map(|f| uri(f.get("image_uris"), "png"))
+                    .unwrap_or_default()
+            } else {
+                own
+            }
+        },
+        illustration_id: {
+            let own = s("illustration_id");
+            if own.is_empty() {
+                card.get("card_faces")
+                    .and_then(Value::as_array)
+                    .and_then(|f| f.first())
+                    .and_then(|f| f.get("illustration_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            } else {
+                own
+            }
+        },
+        faces: card
+            .get("card_faces")
+            .and_then(Value::as_array)
+            .map(|faces| {
+                faces
+                    .iter()
+                    .filter(|f| f.get("image_uris").is_some())
+                    .map(|f| PrintingFace {
+                        name: f.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        image: uri(f.get("image_uris"), "normal"),
+                        png: uri(f.get("image_uris"), "png"),
+                        illustration_id: f.get("illustration_id").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -105,9 +169,12 @@ pub fn printings(name: &str) -> Result<Vec<Printing>> {
             .map(|age| age < CACHE_TTL)
             .unwrap_or(false);
         if fresh {
-            if let Ok(cached) = fs::read_to_string(&path).map(|t| serde_json::from_str(&t)) {
+            if let Ok(cached) = fs::read_to_string(&path).map(|t| serde_json::from_str::<Vec<Printing>>(&t)) {
+                // Caches from before 0.27.2 lack the full-size scans.
                 if let Ok(list) = cached {
-                    return Ok(list);
+                    if list.iter().any(|p| !p.png.is_empty()) {
+                        return Ok(list);
+                    }
                 }
             }
         }
@@ -118,12 +185,27 @@ pub fn printings(name: &str) -> Result<Vec<Printing>> {
         .user_agent(concat!("CommanderLab/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
+    // Exact full name first (split cards are only found as "Fire // Ice"),
+    // then the front face for names saved without their back.
     let front = name.split(" // ").next().unwrap_or(name);
-    let query = format!("!\"{front}\" game:paper");
-    let mut url = format!(
-        "https://api.scryfall.com/cards/search?unique=prints&order=released&dir=desc&q={}",
-        urlencoding::encode(&query)
-    );
+    let search_url = |n: &str| {
+        format!(
+            "https://api.scryfall.com/cards/search?unique=prints&order=released&dir=desc&q={}",
+            urlencoding::encode(&format!("!\"{n}\" game:paper"))
+        )
+    };
+    let mut url = search_url(name);
+    if name != front {
+        let found = client
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+        if !found {
+            url = search_url(front);
+        }
+    }
 
     let mut out = Vec::new();
     for _ in 0..4 {
