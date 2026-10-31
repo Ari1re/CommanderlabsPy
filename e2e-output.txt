@@ -1,4 +1,4 @@
-{"data":{"detail":"36386 cards","error":null,"finished_ms":1793481404895,"id":1,"kind":"update_cards","log":["  5% Downloading Scryfall card data — This takes a minute or two."," 95% Reloading card database — 36386 cards"],"percent":100,"result":{"cards":36386},"started_ms":1793481400263,"status
+{"data":{"detail":"36386 cards","error":null,"finished_ms":1793481686887,"id":1,"kind":"update_cards","log":["  5% Downloading Scryfall card data — This takes a minute or two."," 95% Reloading card database — 36386 cards"],"percent":100,"result":{"cards":36386},"started_ms":1793481682504,"status
 === GENERATE {"commander":"Murmuring Mystic","theme":"Flying","bracket":3,"format":"pdh"}
 error Murmuring Mystic can't lead a Pauper Commander deck: PDH commanders must have been printed at uncommon in paper or on MTGO. None
   4% Resolving commander — Murmuring Mystic
@@ -11,12 +11,12 @@ done None {'name': 'Izzet Tempo - Highlander'}
  30% Choosing spells — 12486 legal cards • point budget 10/10
  70% Building the mana base — Izzet
 100% Done — Izzet Tempo - Highlander
-FORMAT canlander {'cards': 100, 'format': 'canlander', 'label': 'Canadian Highlander', 'max_points': 10, 'pointed_cards': [['Mox Ruby', 3], ['Mana Drain', 1], ['Mystical Tutor', 2], ['Mana Vault', 1], ['Sol Ring', 3]], 'points': 10, 'problems': []}
-CARDS Mox Ruby, Goblin Cratermaker, Abrade, Skirk Prospector, Rundvelt Hordemaster, Moria Marauder, Stingscourger, Skullclamp, Umezawa's Jitte, Goblin Trashmaster, Gempalm Incinerator, Goblin Lackey, Legion Loyalist, Fanatical Firebrand, Krenko, Tin Street Kingpin, Warren Instigator, Goblin Piledriver, Goblin Recruiter, Mogg War Marshal, Goblin Instigator, Goro-Goro, Disciple of Ryusei, Battle Cry Goblin, Mental Misstep, Mana Drain, Lightning Bolt, Arcane Denial, Brainstorm, Mystical Tutor, Conspicuous Snoop, Price of Progress, Torch Courier, Cacophony Scamp, Exuberant Fuseling, Counterspell, Goblin Grenade, Sulfuric Vortex, Brute Force, Kari Zev's Expertise, Daze, Tarfire, Aether Spellbomb, Unsummon, Spell Snare, Wheel of Fortune, Fading Hope, Mana Vault, Sol Ring, Mogg Fanatic, Goblin Bushwhacker, Goblin Sledder, Legion Warboss, Goblin Matron, Goblin Chieftain, Goblin Warchief, Pashalik Mons, Ponder, Ardoz, Cobbler of War, Chrome Mox, Timetwister, Mogg Raider, Cascade Bluffs, Shivan Reef, Volcanic Island, Steam Vents, Sulfur Falls, Flooded Strand, Gemstone Caverns, Misty Rainforest, Polluted Delta, Prismatic Vista, Scalding Tarn, Ferrous Lake, Fiery Islet, Riverglide Pathway // Lavaglide Pathway, Riverpyre Verge, Island, Mountain
+FORMAT canlander {'cards': 100, 'format': 'canlander', 'label': 'Canadian Highlander', 'max_points': 10, 'pointed_cards': [['Mana Drain', 1], ['Mystical Tutor', 2], ['Mox Ruby', 3], ['Treasure Cruise', 1], ['Mox Sapphire', 3]], 'points': 10, 'problems': []}
+CARDS Mental Misstep, Mana Drain, Arcane Denial, Brainstorm, Mystical Tutor, Counterspell, Aether Spellbomb, Mox Ruby, Daze, Ponder, Treasure Cruise, Unsummon, Mox Sapphire, Sensei's Divining Top, Spell Snare, Wheel of Fortune, Snapcaster Mage, Kami of the Crescent Moon, Fading Hope, Deprive, Disrupting Shoal, Force of Will, Boomerang, Chrome Mox, Timetwister, Trinket Mage, Word of Undoing, Chain of Vapor, Consider, Serum Visions, Opt, Preordain, Spell Pierce, Mox Diamond, Howling Mine, Dictate of Kruphix, Sleight of Hand, Personal Tutor, Force of Negation, Gush, Blood Moon, Ivory Tower, Temple Bell, Copy Artifact, Stasis, Into the Roil, Back to Basics, Void Snare, Fevered Visions, Dack Fayden, Repeal, Jace Beleren, Black Vise, Trade Routes, Blink of an Eye, Ebony Owl Netsuke, Font of Mythos, Iron Maiden, Time Warp, Jace, the Mind Sculptor, Cascade Bluffs, Shivan Reef, Volcanic Island, Steam Vents, Sulfur Falls, Flooded Strand, Misty Rainforest, Polluted Delta, Prismatic Vista, Scalding Tarn, Ferrous Lake, Fiery Islet, Riverglide Pathway // Lavaglide Pathway, Riverpyre Verge, Frostboil Snarl, Island, Mountain
 NOTE Canadian Highlander: 100 cards, one copy of each except basic lands, no sideboard, no commander. Played one-on-one at 20 life. Vintage banned list and the points list (updated 1 September 2026).
-NOTE Points: 10 of 10 used — Mox Ruby (3), Mana Drain (1), Mystical Tutor (2), Mana Vault (1), Sol Ring (3).
-NOTE Built as a tempo deck with 40 lands, 32 creatures, 14 interaction spells, 8 card-draw spells and 0 on-theme cards.
-NOTE Built from Canadian Highlander decklists in these colors: 3 tournament list(s) from MTGTop8 and 1 popular Moxfield list(s), weighted toward Tempo decks. Most played there: Mox Ruby (100%), Goblin Matron (64%), Den of the Bugbear (64%), Battle Cry Goblin (64%), Goro-Goro, Disciple of Ryusei (64%), Price of Progress (64%), Fanatical Firebrand (64%), Wasteland (64%), Goblin Cratermaker (64%), Legion Loyalist (64%).
+NOTE Points: 10 of 10 used — Mana Drain (1), Mystical Tutor (2), Mox Ruby (3), Treasure Cruise (1), Mox Sapphire (3).
+NOTE Built as a tempo deck with 40 lands, 3 creatures, 15 interaction spells, 16 card-draw spells.
+NOTE Built from Canadian Highlander decklists: 3 tournament list(s) from MTGTop8 and 1 popular Moxfield list(s) within these colors (1 in exactly these colors), weighted toward Tempo decks. Most played there: Mox Ruby (100%), Mox Diamond (77%), Mystic Sanctuary (77%), Brainstorm (77%), Trade Routes (77%), Library of Alexandria (77%), Ivory Tower (77%), Aether Spellbomb (77%), Snapcaster Mage (77%), Otawara, Soaring City (77%). Few lists use exactly these colors, so card quality and the deck's needs carried more of the choice.
 SRC MTGTop8 | Canadian Highlander events and metagame | https://www.mtgtop8.com/format?f=CHL
 SRC Moxfield | Canadian Highlander decks on Moxfield | https://moxfield.com/decks/public?fmt=highlanderCanadian
 SRC Canadian Highlander | Points list | https://canadianhighlander.ca/points-list/
@@ -25,36 +25,8 @@ SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=48350&d=556174
 SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=46474&d=543505&f=CHL
 SRC Moxfield | Canadian Highlander: Owling Mine (Izzet) (Moxfield) | https://www.moxfield.com/decks/WdR8beJZ-kiPD8KDaJat5Q
 SRC count 7
-=== GENERATE {"format":"canlander","colors":"BRG","theme":"Midrange","bracket":4}
-done None {'name': 'Jund Midrange - Highlander'}
-  8% Reading the card pool — Every Vintage-legal card in Jund
- 22% Reading Canadian Highlander decklists — MTGTop8 and Moxfield
- 26% Reading Canadian Highlander decklists — MTGTop8: 19 Canadian Highlander archetypes
- 26% Reading Canadian Highlander decklists — Moxfield: 192 popular Canadian Highlander decks to compare
- 30% Choosing spells — 18211 legal cards • point budget 7/10
- 70% Building the mana base — Jund
-100% Done — Jund Midrange - Highlander
-FORMAT canlander {'cards': 100, 'format': 'canlander', 'label': 'Canadian Highlander', 'max_points': 10, 'pointed_cards': [['Mox Ruby', 3], ['Mox Jet', 3], ['Reanimate', 1]], 'points': 7, 'problems': []}
-CARDS Lightning Bolt, Ragavan, Nimble Pilferer, Mox Ruby, Deathrite Shaman, Fatal Push, Orcish Bowmasters, Skullclamp, Opposition Agent, Mox Jet, Chain Lightning, Price of Progress, Barrowgoyf, Unearth, Pyrogoyf, Chrome Mox, Broadside Bombardiers, Molten Collapse, Fury, Duress, Thoughtseize, Fable of the Mirror-Breaker // Reflection of Kiki-Jiki, Inquisition of Kozilek, Reanimate, Laelia, the Blade Reforged, Inti, Seneschal of the Sun, Bloodtithe Harvester, Abrupt Decay, Abrade, Dismember, Dauthi Voidwalker, Fear of Missing Out, Emperor of Bones, Haywire Mite, Birds of Paradise, Blood Moon, Snuff Out, Animate Dead, Magus of the Moon, Ignoble Hierarch, Grist, the Hunger Tide, Goblin Trashmaster, Assassin's Trophy, Smuggler's Copter, Overlord of the Balemurk, Lotus Petal, Galvanic Discharge, Carnage Interpreter, Screaming Nemesis, Legion Warboss, Deadly Dispute, Mind Twist, Unholy Heat, Mox Opal, Hymn to Tourach, Long Goodbye, Bitter Triumph, Goblin Bombardment, Sulfuric Vortex, Urza's Bauble, Badlands, Arid Mesa, Scalding Tarn, Wooded Foothills, Bloodstained Mire, Marsh Flats, Polluted Delta, Verdant Catacombs, Bayou, Blood Crypt, Raucous Theater, Prismatic Vista, Blazemire Verge, Wasteland, Taiga, Sulfurous Springs, Overgrown Tomb, Stomping Ground, Misty Rainforest, Windswept Heath, Blackcleave Cliffs, Dragonskull Summit, Swamp, Mountain, Forest
-NOTE Canadian Highlander: 100 cards, one copy of each except basic lands, no sideboard, no commander. Played one-on-one at 20 life. Vintage banned list and the points list (updated 1 September 2026).
-NOTE Points: 7 of 10 used — Mox Ruby (3), Mox Jet (3), Reanimate (1).
-NOTE Built as a midrange deck with 41 lands, 24 creatures, 15 interaction spells, 11 card-draw spells and 0 on-theme cards.
-NOTE Built from Canadian Highlander decklists in these colors: 10 tournament list(s) from MTGTop8 and 6 popular Moxfield list(s), weighted toward Midrange decks. Most played there: Lightning Bolt (100%), Wasteland (97%), Mox Ruby (87%), Ragavan, Nimble Pilferer (83%), Arid Mesa (77%), Scalding Tarn (77%), Wooded Foothills (77%), Fatal Push (73%), Chain Lightning (73%), Polluted Delta (73%).
-SRC MTGTop8 | Canadian Highlander events and metagame | https://www.mtgtop8.com/format?f=CHL
-SRC Moxfield | Canadian Highlander decks on Moxfield | https://moxfield.com/decks/public?fmt=highlanderCanadian
-SRC Canadian Highlander | Points list | https://canadianhighlander.ca/points-list/
-SRC MTGTop8 | Red Deck Wins (MTGTop8) | https://www.mtgtop8.com/event?e=77400&d=787544&f=CHL
-SRC MTGTop8 | Red Deck Wins (MTGTop8) | https://www.mtgtop8.com/event?e=35336&d=467066&f=CHL
-SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=58001&d=633482&f=CHL
-SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=51301&d=580413&f=CHL
-SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=48350&d=556174&f=CHL
-SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=47074&d=547885&f=CHL
-SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=46474&d=543505&f=CHL
-SRC MTGTop8 | Goblins (MTGTop8) | https://www.mtgtop8.com/event?e=44847&d=530769&f=CHL
-SRC MTGTop8 | Jund (MTGTop8) | https://www.mtgtop8.com/event?e=77400&d=787550&f=CHL
-SRC count 19
 === LOG
-[1793481423.156] [HIGHLANDER] colors=UR • decks=4 • new downloads=41
-[1793481438.035] [HIGHLANDER] colors=BRG • decks=16 • new downloads=42
+[1793481686.796] [cards] PDH commander refresh skipped: HTTP status client error (429 Too Many Requests) for url (https://api.scryfall.com/cards/search?format=json&include_extras=false&include_multilingual=false&include_variations=false&order=name&page=21&q=r%3Au+%28t%3Acreature+or+t%3Avehicle+or+t%3Aspacecraft+or+t%3Abackground%29+-t%3Aland+-t%3Aconspiracy+not%3Afunny+%28game%3Apaper+or+game%3Amtgo%29&unique=cards)
+[1793481705.130] [HIGHLANDER] colors=UR • decks=4 • new downloads=41
 Commander Lab 0.28.0 — data in run
 Open http://127.0.0.1:7878  (Ctrl+C to quit)
