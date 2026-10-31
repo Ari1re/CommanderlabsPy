@@ -18,6 +18,7 @@ pub mod deep_agent;
 pub mod deep_learn;
 pub mod edhrec;
 pub mod format;
+pub mod format_sources;
 pub mod generator;
 pub mod goldfish;
 pub mod guide;

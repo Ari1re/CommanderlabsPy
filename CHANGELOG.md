@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.29.0
+
+- **Pauper Commander uses Pauper Commander sources.** Card choices come from **PDHREC** (pdhrec.com), the PDH counterpart of EDHREC: how often each card shows up across a commander's decks, and its synergy. Public **Archidekt decks in the Pauper EDH format** feed the reference decklists. EDHREC and Commander decklists are no longer used for PDH, and the Suggestions tab reads PDHREC for PDH decks too.
+- **Canadian Highlander uses Canadian Highlander decklists.** The builder reads tournament lists from **MTGTop8**'s Canadian Highlander section (by archetype) and the most viewed **Moxfield** Highlander decks. It keeps the lists in your colors and builds from how often cards appear in them, weighting exact color matches and decks of your play style highest. When only a few lists match your colors, card quality and the deck's needs carry more of the choice, and the notes say so.
+- The Sources tab lists the sources each format actually used (PDHREC and Archidekt for PDH; MTGTop8 and Moxfield lists for Highlander).
+- **Fixed:** Scryfall's card file includes tokens and emblems with the same names as real cards ("Ornithopter", "Treasure"); a lookup could pick the token. They're no longer imported, and older card data is cleaned up on start.
+- **Fixed:** the check for which cards can lead a PDH deck now paces itself under Scryfall's rate limit, retries when asked to slow down, and keeps partial results. If it still couldn't finish, picking a commander confirms it with Scryfall on the spot instead of rejecting it.
+
 ## 0.28.0
 
 - **Updates inside the app.** Commander Lab checks GitHub for a newer build when it starts. When one is out, an **Update** button appears (in the sidebar on desktop, a banner, and a dot on Settings), and **Settings → Updates** can check any time.

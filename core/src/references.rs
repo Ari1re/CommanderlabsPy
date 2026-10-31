@@ -294,7 +294,14 @@ pub fn gather_reference_decks(
     commander_names: &[String],
     bracket: u8,
 ) -> ReferenceSnapshot {
-    let query = commander_names.join(" + ");
+    // Pauper Commander decks are a separate corpus (Archidekt's "Pauper EDH"
+    // format) with its own caches.
+    let pdh = crate::format_sources::active_format() == crate::format::Format::Pdh;
+    let query = if pdh {
+        format!("PDH: {}", commander_names.join(" + "))
+    } else {
+        commander_names.join(" + ")
+    };
 
     if let Some(mut cached) = load_cache(&query, bracket) {
             // Reconcile snapshot data into the per-source cache.
@@ -371,11 +378,16 @@ pub fn gather_reference_decks(
         crawl.archidekt_page + 1
     };
 
-    let moxfield = fetch_moxfield_references(
-        commander_names,
-        MOXFIELD_REFERENCE_LIMIT,
-        crawl.moxfield_page,
-    );
+    // Moxfield's search can't filter Pauper Commander decks by commander.
+    let moxfield = if pdh {
+        Vec::new()
+    } else {
+        fetch_moxfield_references(
+            commander_names,
+            MOXFIELD_REFERENCE_LIMIT,
+            crawl.moxfield_page,
+        )
+    };
 
     logging::record(
         "REF",
@@ -394,7 +406,7 @@ pub fn gather_reference_decks(
         crawl.moxfield_page + 1
     };
 
-    if bracket >= 5 {
+    if bracket >= 5 && !pdh {
         let cedh = fetch_cedh_ddb_references(
             commander_names,
             CEDH_REFERENCE_LIMIT,
@@ -541,14 +553,16 @@ fn fetch_archidekt_references(
 
     let encoded = urlencoding::encode(primary);
     let page = page.max(1);
+    // Archidekt formats: 3 = Commander, 17 = Pauper EDH.
+    let deck_format = if crate::format_sources::active_format() == crate::format::Format::Pdh { 17 } else { 3 };
 
     let search_urls = [
         format!(
-            "https://archidekt.com/api/decks/v3/?deckFormat=3&commanderName={encoded}&orderBy=-viewCount&page={page}&pageSize={}",
+            "https://archidekt.com/api/decks/v3/?deckFormat={deck_format}&commanderName={encoded}&orderBy=-viewCount&page={page}&pageSize={}",
             limit.max(10),
         ),
         format!(
-            "https://archidekt.com/api/decks/v3/?deckFormat=3&name={encoded}&orderBy=-viewCount&page={page}&pageSize={}",
+            "https://archidekt.com/api/decks/v3/?deckFormat={deck_format}&name={encoded}&orderBy=-viewCount&page={page}&pageSize={}",
             limit.max(10),
         ),
     ];
