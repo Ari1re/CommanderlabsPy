@@ -1,0 +1,83 @@
+=== ARCHIDEKT formats
+1 200 1000 [('Budget Auras', 1), ('Tempo Non-Budget Standard', 1)]
+2 200 1000 [('Modern Artifact Burn', 2), ('Black Burn', 2)]
+3 200 1000 [('Buffs by Hans', 3), ('Baby Lasagna', 3)]
+4 200 1000 [('8 Cast', 4), ('Reanimator', 4)]
+5 200 1000 [('Social Cards', 5), ('no banlist mono white', 5)]
+6 200 1000 [('Goblins', 6), ('Mono Black Devotion', 6)]
+7 200 1000 [('The Forgetful Fish deck featured on Shuffle Up', 7), ("Baldur's Gate 3", 7)]
+8 200 251 [('Blind Annihilation ☢️', 8), ('Aggression ⚔️', 8)]
+9 200 1000 [('Dinozauro', 9), ('Izzet Spells', 9)]
+10 200 1000 [('Penny Pox is back', 10), ('Astral Enchantress', 10)]
+11 HTTP Error 429: Too Many Requests 
+12 HTTP Error 429: Too Many Requests 
+13 HTTP Error 429: Too Many Requests 
+14 HTTP Error 429: Too Many Requests 
+15 HTTP Error 429: Too Many Requests 
+16 HTTP Error 429: Too Many Requests 
+17 HTTP Error 429: Too Many Requests 
+18 HTTP Error 429: Too Many Requests 
+19 HTTP Error 429: Too Many Requests 
+20 HTTP Error 429: Too Many Requests 
+21 HTTP Error 429: Too Many Requests 
+22 HTTP Error 429: Too Many Requests 
+23 HTTP Error 429: Too Many Requests 
+24 HTTP Error 429: Too Many Requests 
+25 HTTP Error 429: Too Many Requests 
+26 HTTP Error 429: Too Many Requests 
+27 HTTP Error 429: Too Many Requests 
+28 HTTP Error 429: Too Many Requests 
+29 HTTP Error 429: Too Many Requests 
+30 HTTP Error 429: Too Many Requests 
+31 HTTP Error 429: Too Many Requests 
+archidekt pdh commander search HTTP Error 429: Too Many Requests 
+=== MOXFIELD fmt
+paupercommander HTTP Error 400: Bad Request 
+pauperEdh 200 10000 ['[cPDH] Tatyova Combo', '[cPDH] Tormod Ramirez'] ['pauperEdh', 'pauperEdh']
+pauperedh 200 10000 ['[cPDH] Tatyova Combo', '[cPDH] Tormod Ramirez'] ['pauperEdh', 'pauperEdh']
+pdh HTTP Error 400: Bad Request 
+highlanderCanadian 200 10000 ['Canadian Highlander: Eggs', '2026/04/27 - Mardu Midrange Reanimator - 1st/2nd (YJ Monday Night Highlander, Jason J.)'] ['highlanderCanadian', 'highlanderCanadian']
+canadianhighlander HTTP Error 400: Bad Request 
+canlander HTTP Error 400: Bad Request 
+highlander HTTP Error 400: Bad Request 
+commander 200 10000 ['Winota: Snowball Stax', ' 🌸 Warrior Queen [cEDH Najeela] 🌸'] ['commander', 'commander']
+=== MTGTOP8
+CHL 200 Canadian Highlander events and metagame @ mtgtop8.com [('480', '5 %'), ('564', '5 %'), ('572', '4 %'), ('483', '4 %'), ('543', '3 %'), ('556', '3 %'), ('498', '3 %'), ('459', '2 %')]
+PDH 200 events and metagame @ mtgtop8.com []
+pEDH 200 events and metagame @ mtgtop8.com []
+PAU 200 Pauper events and metagame @ mtgtop8.com [('536', '11 %'), ('512', '9 %'), ('549', '6 %'), ('765', '5 %'), ('539', '5 %'), ('1010', '4 %'), ('551', '4 %'), ('620', '4 %')]
+EDH 200 Duel Commander events and metagame @ mtgtop8.com []
+cEDH 200 cEDH events and metagame @ mtgtop8.com []
+CHL rocks decks [('44941', '531772'), ('44941', '531775'), ('12526', '272204'), ('12518', '272162'), ('11990', '268732')]
+mtgo export 200 1 Garruk Wildspeaker
+1 Garruk, Unleashed
+1 Green Sun's Zenith
+1 Inscription of Abundance
+1 Berserk
+1 Blossoming Defense
+1 Finale of Devastation
+1 Chrome Mox
+1 Eldritch Evolution
+1 Esika's Chariot
+1 Sylvan Library
+1 Unlicensed Hearse
+1 Vines of Vastwood
+1 Vivien, Monsters' Advocate
+1 Mox Diamond
+1 Mox Emerald
+1 Natural Order
+1 Nissa, Who Shakes the World
+1 Ram Through
+1 Rancor
+1
+meta links [('105', 'Red Deck Wins'), ('105', 'Jeskai Midrange'), ('105', 'Goblins'), ('105', 'Jund'), ('105', '4c Blood'), ('105', 'Abzan Aggro'), ('105', 'Bant'), ('105', 'RG Aggro'), ('105', 'Other - Aggro'), ('105', 'Grixis Control'), ('105', 'The Rocks'), ('105', 'Sultai Tempo')]
+=== MTGDECKS
+https://mtgdecks.net/Canadian-Highlander 200 MTG Canadian-Highlander top decks and meta October 2026 • MTG DECKS
+https://mtgdecks.net/Pauper-EDH HTTP Error 404: Not Found 
+https://mtgdecks.net/Pauper-Commander HTTP Error 404: Not Found 
+https://mtgdecks.net/PDH HTTP Error 404: Not Found 
+=== PDHREC / others
+https://pdhrec.com/ 200 Commanders | PDHREC
+https://www.pdhrec.com/ 200 Commanders | PDHREC
+https://pdhhomebase.com/ 200 PDH Home Base &#8211; Welcome to PDH Home Base, your hub for Pauper Commander (P
+https://json.edhrec.com/pages/commanders/murmuring-mystic.json HTTP Error 403: Forbidden 
