@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from '../../lib/api';
-  import { COUNTERS, CMD_LETHAL, game, type Player } from '../../lib/game.svelte';
+  import { COUNTERS, CMD_LETHAL, game, type Player, type Rotation } from '../../lib/game.svelte';
   import type { CardView } from '../../lib/types';
   import { artCrop } from '../../lib/util';
   import Icon from '../Icon.svelte';
@@ -8,10 +8,10 @@
   // A player's menu, full screen and turned to face them.
   let {
     player,
-    flipped = false,
+    rotation = 0,
     onclose,
     onedit,
-  }: { player: Player; flipped?: boolean; onclose: () => void; onedit: () => void } = $props();
+  }: { player: Player; rotation?: Rotation; onclose: () => void; onedit: () => void } = $props();
 
   let customName = $state('');
   let artQuery = $state('');
@@ -47,7 +47,7 @@
   }
 </script>
 
-<div class="sheet" class:flipped role="dialog" aria-modal="true" aria-label="Menu for {player.name}" style:--pc={player.color}>
+<div class="sheet rot{rotation}" class:sideways={rotation === 90 || rotation === 270} role="dialog" aria-modal="true" aria-label="Menu for {player.name}" style:--pc={player.color}>
   <div class="sheet-head">
     <b>{player.name}</b>
     <span class="num life-mini">{player.life} life</span>
@@ -112,7 +112,16 @@
       <button aria-pressed={s.initiative === player.id} onclick={() => game.setDesignation('initiative', player.id)}>⚔ Initiative</button>
       <button aria-pressed={s.blessing.includes(player.id)} onclick={() => game.toggleBlessing(player.id)}>✦ City's blessing</button>
     </div>
-    <p class="hint">Drag the ♛ or ⚔ token on a player's panel to hand it to someone else.</p>
+    <p class="hint">Tap the ♛ or ⚔ token on a panel to choose who gets it, or drag it to another player.</p>
+
+    <p class="group">My panel</p>
+    <div class="toggles">
+      <button onclick={() => game.rotatePlayer(player.id)}>⟳ Rotate my panel</button>
+      {#if player.rotation != null}
+        <button onclick={() => game.rotatePlayer(player.id, null)}>Follow the table layout</button>
+      {/if}
+    </div>
+    <p class="hint">Turns your panel a quarter turn so it faces where you sit.</p>
 
     <p class="group">Background art</p>
     <input class="search" bind:value={artQuery} oninput={searchArt} placeholder="Search any card for its art" aria-label="Search card art" />
@@ -143,8 +152,25 @@
     padding: var(--safe-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     border-top: 4px solid var(--pc);
   }
-  .sheet.flipped {
+  .sheet.rot180 {
     transform: rotate(180deg);
+  }
+  /* Sideways: swap the screen's width and height, then turn about the centre. */
+  .sheet.sideways {
+    inset: auto;
+    left: 50%;
+    top: 50%;
+    width: 100vh;
+    width: 100dvh;
+    height: 100vw;
+    height: 100dvw;
+    padding: 0;
+  }
+  .sheet.rot90 {
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+  .sheet.rot270 {
+    transform: translate(-50%, -50%) rotate(270deg);
   }
   .sheet-head {
     display: flex;

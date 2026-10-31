@@ -214,12 +214,15 @@ Without one, the agent still runs its research and simulations.
 
 ### Game: life and counters
 
-The **Game** tab turns your phone into a life counter for 2–6 players. The top row faces the players across the table.
+The **Game** tab turns your phone into a life counter for 2–6 players.
+
+- **Panels face** sets the layout: **Across** (the top row faces the players opposite), **Sides** (the left and right columns face the long edges of the table) or **All me**. Change it any time from the center button, and anyone can turn just their own panel with **Rotate my panel** in their menu.
 
 - **Tap** the left or right side of a panel for −1 / +1. **Hold** for −10 / +10.
 - **Swipe** up or down on a panel (or tap ⋯) for that player's menu. It has **Set life total**, commander damage taken, poison, commander tax, energy, experience, rad, tickets, custom counters, Monarch/Initiative/City's blessing, background art from any card, and concede.
 - **Deal commander damage** turns every other panel into a damage counter for that commander. Tap the players you hit, then **Done with combat**.
-- Drag the ♛ Monarch or ⚔ Initiative token to hand it to another player.
+- Tap a counter on a panel (poison, tax, ⚔ commander damage, custom counters) to change it right there.
+- Tap the ♛ Monarch or ⚔ Initiative token to choose who gets it, or drag it onto another player.
 - Turn on **Track turns** to see whose turn it is and pass with **Next turn**. Add a **chess clock** of 10–45 minutes per player.
 - The center button has undo, dice, coin, first player, day/night, a life log, a floating mana pool, card lookup, and **End game**. Choosing the winner saves the game; your win rates by player and deck appear under the setup.
 - The game is kept if you close the app.
