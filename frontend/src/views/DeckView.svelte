@@ -306,6 +306,8 @@
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
+    min-height: 40px;
+    margin: -0.5rem 0;
     color: var(--text-2);
     text-decoration: none;
     width: fit-content;

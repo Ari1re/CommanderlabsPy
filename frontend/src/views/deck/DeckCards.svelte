@@ -447,6 +447,16 @@
     }
   }
   @media (hover: none) {
+    .entry {
+      min-height: 46px;
+    }
+    .name {
+      align-self: stretch;
+    }
+    .tools :global(.btn.small.icon) {
+      width: 38px;
+      min-height: 38px;
+    }
     .tools {
       opacity: 1;
     }

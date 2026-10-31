@@ -2,7 +2,7 @@ use crate::{
     analysis::{
         classify_card, has_copy_rule_override, identity_subset, CardRoles,
     },
-    archetype::{detect_deck_tags, tag_fit_score, tag_names_for_card, ArchetypeTag},
+    archetype::{detect_deck_tags, tag_fit_score, tag_names_for_card, theme_list, ArchetypeTag},
     bracket::{estimate_bracket, refine_with_combo_report, BracketEstimate},
     commander::{combined_identity, resolve_generation_commanders},
     data::{Card, CardDb},
@@ -871,20 +871,23 @@ where
         }
     }
 
-    if let Some(existing) = tags
-        .iter_mut()
-        .find(|tag| tag.name.eq_ignore_ascii_case(selected_theme))
-    {
-        existing.score += 80;
-    } else {
-        tags.insert(
-            0,
-            ArchetypeTag {
-                name: selected_theme.to_string(),
-                score: 100,
-                matched_cards: 1,
-            },
-        );
+    let selected_themes = theme_list(selected_theme);
+    for theme in selected_themes.iter().rev() {
+        if let Some(existing) = tags
+            .iter_mut()
+            .find(|tag| tag.name.eq_ignore_ascii_case(theme))
+        {
+            existing.score += 80;
+        } else {
+            tags.insert(
+                0,
+                ArchetypeTag {
+                    name: theme.clone(),
+                    score: 100,
+                    matched_cards: 1,
+                },
+            );
+        }
     }
 
     tags.sort_by(|a, b| {
@@ -900,8 +903,8 @@ where
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => {
-                let a_selected = a.name.eq_ignore_ascii_case(selected_theme);
-                let b_selected = b.name.eq_ignore_ascii_case(selected_theme);
+                let a_selected = selected_themes.iter().any(|t| a.name.eq_ignore_ascii_case(t));
+                let b_selected = selected_themes.iter().any(|t| b.name.eq_ignore_ascii_case(t));
 
                 b_selected
                     .cmp(&a_selected)
@@ -1040,7 +1043,7 @@ where
 
     // Theme fit influences score but never excludes otherwise useful cards.
     let theme_preference_target =
-        if selected_theme.eq_ignore_ascii_case("stax") {
+        if theme_list(selected_theme).iter().any(|t| t.eq_ignore_ascii_case("stax")) {
             match target_bracket.bracket {
                 1 => 16,
                 2 => 20,
@@ -2767,9 +2770,10 @@ fn build_game_plan_summary(
         .collect::<Vec<_>>()
         .join(" + ");
 
+    let chosen = theme_list(selected_theme);
     let supporting = primary_tags
         .iter()
-        .filter(|tag| !tag.eq_ignore_ascii_case(selected_theme))
+        .filter(|tag| !chosen.iter().any(|t| tag.eq_ignore_ascii_case(t)))
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
@@ -2871,7 +2875,14 @@ fn land_build_score(
     score
 }
 
+/// True when the card fits any of the selected play styles.
 fn card_matches_theme(card: &Card, selected_theme: &str) -> bool {
+    theme_list(selected_theme)
+        .iter()
+        .any(|theme| card_matches_single_theme(card, theme))
+}
+
+fn card_matches_single_theme(card: &Card, selected_theme: &str) -> bool {
     if tag_names_for_card(card)
         .iter()
         .any(|tag| tag.eq_ignore_ascii_case(selected_theme))

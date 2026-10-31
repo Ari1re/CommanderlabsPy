@@ -6,6 +6,7 @@ export type Route =
   | { page: 'library' }
   | { page: 'deck'; name: string; tab: string }
   | { page: 'build' }
+  | { page: 'game' }
   | { page: 'settings' };
 
 function parseHash(): Route {
@@ -17,6 +18,7 @@ function parseHash(): Route {
     return { page: 'deck', name, tab };
   }
   if (page === 'build') return { page: 'build' };
+  if (page === 'game') return { page: 'game' };
   if (page === 'settings') return { page: 'settings' };
   return { page: 'library' };
 }

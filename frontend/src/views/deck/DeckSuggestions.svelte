@@ -22,6 +22,56 @@
   let role = $state<string>('all');
   let maxPrice = $state<number | null>(null);
   let added = $state<Set<string>>(new Set());
+  let source = $state<string>('all');
+
+  const SOURCE_LABEL: Record<string, string> = {
+    combos: 'Combo',
+    synergy: 'Synergy',
+    popular: 'Popular',
+    gaps: 'Fills a gap',
+  };
+
+  interface Mixed {
+    card: Suggestion['card'];
+    reasons: { source: string; text: string }[];
+  }
+
+  /** All suggestions in one list, interleaved across sources so the grid is
+   * mixed, with duplicates merged into one card carrying every reason. */
+  let mixed = $derived.by<Mixed[]>(() => {
+    if (!sections) return [];
+    const byName = new Map<string, Mixed>();
+    const queues = sections.map((sec) => sec.items.map((it) => ({ ...it, source: sec.id })));
+    const order: Mixed[] = [];
+    const longest = Math.max(0, ...queues.map((q) => q.length));
+    for (let i = 0; i < longest; i++) {
+      for (const q of queues) {
+        const it = q[i];
+        if (!it) continue;
+        const key = it.card.name.toLowerCase();
+        const existing = byName.get(key);
+        if (existing) {
+          existing.reasons.push({ source: it.source, text: it.reason });
+        } else {
+          const m = { card: it.card, reasons: [{ source: it.source, text: it.reason }] };
+          byName.set(key, m);
+          order.push(m);
+        }
+      }
+    }
+    return order;
+  });
+
+  let shown = $derived(
+    mixed.filter(
+      (m) =>
+        (added.has(m.card.name) || (!inDeck.has(m.card.name.toLowerCase()) && matches({ card: m.card, reason: '' }))) &&
+        (source === 'all' || m.reasons.some((r) => r.source === source)),
+    ),
+  );
+  let sourceCounts = $derived(
+    Object.fromEntries(Object.keys(SOURCE_LABEL).map((id) => [id, mixed.filter((m) => m.reasons.some((r) => r.source === id)).length])),
+  );
 
   const roles = [
     ['all', 'Everything'],
@@ -96,7 +146,17 @@
 </div>
 
 <div class="filters">
-  <div class="chips" role="group" aria-label="Show">
+  <div class="chips" role="group" aria-label="Why it's suggested">
+    <button class="chip" aria-pressed={source === 'all'} onclick={() => (source = 'all')}>All suggestions</button>
+    {#each Object.entries(SOURCE_LABEL) as [id, label] (id)}
+      {#if sourceCounts[id]}
+        <button class="chip src-{id}" aria-pressed={source === id} onclick={() => (source = id)}>{label}</button>
+      {/if}
+    {/each}
+  </div>
+</div>
+<div class="filters">
+  <div class="chips" role="group" aria-label="Card role">
     {#each roles as [id, label] (id)}
       <button class="chip" aria-pressed={role === id} onclick={() => (role = id)}>{label}</button>
     {/each}
@@ -125,39 +185,41 @@
   {#if sections.length === 0}
     <p class="muted">No suggestions found. Make sure the deck has a commander.</p>
   {/if}
-  {#each sections as sec (sec.id)}
-    {@const items = sec.items.filter((s) => matches(s) && !inDeck.has(s.card.name.toLowerCase()) || added.has(s.card.name))}
-    {#if items.length}
-      <section class="section">
-        <h3>{sec.title} <span class="muted num">{items.length}</span></h3>
-        <div class="grid">
-          {#each items as s (s.card.oracle_id)}
-            <article class="sugg" class:done={added.has(s.card.name)}>
-              <button class="img" onclick={() => app.open(s.card)} aria-label="View {s.card.name}">
-                <img class="card-img" src={s.card.image_uri} alt={s.card.name} loading="lazy" />
-              </button>
-              <div class="meta">
-                <div class="name-row">
-                  <span class="name">{s.card.name}</span>
-                  <Mana cost={s.card.mana_cost} size={13} />
-                </div>
-                <p class="small muted reason">{s.reason}</p>
-                <div class="row">
-                  <span class="small num dim">{money(price(s.card, app.currency), app.currency)}</span>
-                  <span class="spacer"></span>
-                  {#if added.has(s.card.name)}
-                    <span class="small added"><Icon name="check" size={15} /> Added</span>
-                  {:else}
-                    <button class="btn small primary" onclick={() => add(s)}><Icon name="plus" size={15} /> Add</button>
-                  {/if}
-                </div>
-              </div>
-            </article>
-          {/each}
+  {#if sections.length && !shown.length}
+    <p class="muted">No suggestions match these filters.</p>
+  {/if}
+  <div class="grid">
+    {#each shown as m (m.card.oracle_id)}
+      <article class="sugg" class:done={added.has(m.card.name)}>
+        <button class="img" onclick={() => app.open(m.card)} aria-label="View {m.card.name}">
+          {#if m.card.image_uri}
+            <img class="card-img" src={m.card.image_uri} alt={m.card.name} loading="lazy" />
+          {:else}
+            <span class="card-img placeholder">{m.card.name}</span>
+          {/if}
+          <span class="tags">
+            {#each m.reasons as r (r.source)}<span class="tag src-{r.source}">{SOURCE_LABEL[r.source] ?? r.source}</span>{/each}
+          </span>
+        </button>
+        <div class="meta">
+          <div class="name-row">
+            <span class="name">{m.card.name}</span>
+            <Mana cost={m.card.mana_cost} size={13} />
+          </div>
+          <p class="small muted reason" title={m.reasons.map((r) => r.text).join('\n')}>{m.reasons[0].text}</p>
+          <div class="row">
+            <span class="small num dim">{money(price(m.card, app.currency), app.currency)}</span>
+            <span class="spacer"></span>
+            {#if added.has(m.card.name)}
+              <span class="small added"><Icon name="check" size={15} /> Added</span>
+            {:else}
+              <button class="btn small primary" onclick={() => add({ card: m.card, reason: '' })}><Icon name="plus" size={15} /> Add</button>
+            {/if}
+          </div>
         </div>
-      </section>
-    {/if}
-  {/each}
+      </article>
+    {/each}
+  </div>
 {/if}
 
 <style>
@@ -210,18 +272,9 @@
     min-height: 34px;
     padding: 0.2rem 0.5rem;
   }
-  .section {
-    margin-bottom: 2rem;
-  }
-  .section h3 {
-    margin-bottom: 0.8rem;
-    display: flex;
-    gap: 0.5rem;
-    align-items: baseline;
-  }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(168px, 42vw), 1fr));
     gap: 1rem;
   }
   .sugg {
@@ -233,10 +286,59 @@
     opacity: 0.55;
   }
   .img {
+    position: relative;
+    display: block;
+    width: 100%;
     padding: 0;
     border: 0;
     background: none;
     cursor: zoom-in;
+  }
+  .img :global(.card-img) {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 63 / 88;
+    object-fit: cover;
+  }
+  .placeholder {
+    display: grid;
+    place-items: center;
+    padding: 0.5rem;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .tags {
+    position: absolute;
+    left: 6px;
+    bottom: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+  .tag {
+    padding: 0.05rem 0.45rem;
+    border-radius: 99px;
+    background: rgba(14, 10, 20, 0.85);
+    color: #fff;
+    font-size: 0.68rem;
+    font-weight: 700;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+  .tag.src-combos,
+  .chip.src-combos[aria-pressed='true'] {
+    border-color: #d0605a;
+  }
+  .tag.src-synergy,
+  .chip.src-synergy[aria-pressed='true'] {
+    border-color: var(--brass);
+  }
+  .tag.src-gaps,
+  .chip.src-gaps[aria-pressed='true'] {
+    border-color: #4fa36a;
+  }
+  .sugg {
+    min-width: 0;
   }
   .name-row {
     display: flex;
@@ -252,8 +354,13 @@
     white-space: nowrap;
   }
   .reason {
-    min-height: 2.6em;
+    height: 2.6em;
     line-height: 1.3;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
   .added {
     display: inline-flex;

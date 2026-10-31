@@ -15,7 +15,9 @@
 
   let commanders = $state<CardView[]>([]);
   let themes = $state<Theme[] | null>(null);
-  let theme = $state('');
+  /** Selected play styles, in the order picked. The first is the main one. */
+  let picked = $state<string[]>([]);
+  const MAX_THEMES = 3;
   let bracket = $state(3);
   let job = $state<Job | null>(null);
   let failed = $state<string | null>(null);
@@ -30,12 +32,12 @@
 
   async function loadThemes() {
     themes = null;
-    theme = '';
+    picked = [];
     if (!commanders.length) return;
     try {
       const res = await api<{ themes: Theme[] }>('generation_themes', { commander: spec });
       themes = res.themes;
-      theme = themes[0]?.name ?? '';
+      picked = themes[0] ? [themes[0].name] : [];
     } catch (err) {
       app.error(err);
       themes = [];
@@ -52,11 +54,21 @@
     loadThemes();
   }
 
+  function toggleTheme(name: string) {
+    if (picked.includes(name)) {
+      picked = picked.filter((t) => t !== name);
+    } else if (picked.length < MAX_THEMES) {
+      picked = [...picked, name];
+    } else {
+      app.toast(`Pick up to ${MAX_THEMES} play styles. Tap one to remove it first.`);
+    }
+  }
+
   async function build() {
     failed = null;
     job = { id: 0, kind: 'generate', subject: spec, status: 'running', percent: 0, step: 'Starting', detail: '', log: [], result: null, error: null };
     try {
-      const res = await runJob<{ name: string }>('generate', { commander: spec, theme, bracket }, (j) => (job = j), 800);
+      const res = await runJob<{ name: string }>('generate', { commander: spec, theme: picked.join(' + '), bracket }, (j) => (job = j), 800);
       app.toast(`Built ${res.name}.`, 'success');
       go({ page: 'deck', name: res.name, tab: 'cards' });
     } catch (err) {
@@ -128,7 +140,10 @@
         {/each}
       </div>
 
-      <h2>Play style</h2>
+      <div class="label-row">
+        <h2>Play style</h2>
+        {#if themes?.length}<span class="small muted">Pick up to {MAX_THEMES}. The first is the main focus.</span>{/if}
+      </div>
       {#if !commanders.length}
         <p class="muted">Choose a commander to see its most popular play styles.</p>
       {:else if themes === null}
@@ -138,13 +153,29 @@
       {:else}
         <div class="themes">
           {#each themes as t (t.name)}
-            <button class="theme" aria-pressed={theme === t.name} onclick={() => (theme = t.name)} title={t.reason}>
+            {@const order = picked.indexOf(t.name)}
+            <button
+              class="theme"
+              aria-pressed={order >= 0}
+              disabled={order < 0 && picked.length >= MAX_THEMES}
+              onclick={() => toggleTheme(t.name)}
+              title={t.reason}
+            >
+              {#if order >= 0}<span class="order num">{order + 1}</span>{/if}
               {t.name}
             </button>
           {/each}
         </div>
-        {#if theme}
-          <p class="small dim">{themes.find((t) => t.name === theme)?.reason}</p>
+        {#if picked.length}
+          <p class="small dim">
+            {#if picked.length === 1}
+              {themes.find((t) => t.name === picked[0])?.reason}
+            {:else}
+              Built around {picked[0]}, blended with {picked.slice(1).join(' and ')}.
+            {/if}
+          </p>
+        {:else}
+          <p class="small muted">No style picked: the deck follows the commander's usual build.</p>
         {/if}
       {/if}
 
@@ -248,6 +279,33 @@
   .theme[aria-pressed='true'] {
     border-color: var(--brass);
     color: var(--brass-strong);
+  }
+  .theme:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .theme {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: 36px;
+  }
+  .order {
+    display: inline-grid;
+    place-items: center;
+    width: 1.2rem;
+    height: 1.2rem;
+    border-radius: 50%;
+    background: var(--brass);
+    color: var(--brass-ink);
+    font-size: 0.72rem;
+  }
+  .label-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
   }
   .big {
     min-height: 46px;

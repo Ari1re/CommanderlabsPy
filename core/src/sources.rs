@@ -100,38 +100,40 @@ pub fn standard_sources(
         ),
     ];
 
+    let themes = crate::archetype::theme_list(selected_theme);
+    let pages: Vec<Option<String>> = if themes.is_empty() {
+        vec![None]
+    } else {
+        themes.iter().cloned().map(Some).collect()
+    };
+
     for commander in commanders {
         let slug = slugify(&commander.name);
 
-        let url = if selected_theme.trim().is_empty() {
-            format!(
-                "https://edhrec.com/commanders/{slug}"
-            )
-        } else {
-            format!(
-                "https://edhrec.com/commanders/{}/{}",
-                slug,
-                slugify(selected_theme),
-            )
-        };
+        for page in &pages {
+            let url = match page {
+                None => format!("https://edhrec.com/commanders/{slug}"),
+                Some(theme) => format!("https://edhrec.com/commanders/{}/{}", slug, slugify(theme)),
+            };
+            let label = page.as_deref().unwrap_or("base commander page");
 
-        push_unique(
-            &mut out,
-            DeckSource::automatic(
-                "EDHREC",
-                format!("{} — EDHREC", commander.name),
-                url,
-                format!(
-                    "Commander-specific themes, inclusion rates, synergy signals, and normal-build card data. Selected play-style preference: {}.",
-                    if selected_theme.trim().is_empty() {
-                        "base commander page"
-                    } else {
-                        selected_theme
+            push_unique(
+                &mut out,
+                DeckSource::automatic(
+                    "EDHREC",
+                    match page {
+                        None => format!("{} — EDHREC", commander.name),
+                        Some(theme) => format!("{} — EDHREC ({theme})", commander.name),
                     },
+                    url,
+                    format!(
+                        "Commander-specific themes, inclusion rates, synergy signals, and normal-build card data. Selected play-style preference: {label}."
+                    ),
                 ),
-            ),
-        );
+            );
+        }
     }
+
 
     push_unique(
         &mut out,
