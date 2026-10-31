@@ -1006,19 +1006,23 @@ where
         "Learning EDHREC shell, public references, engine terms, and normal role distribution",
     ));
 
-    let intelligence = learn_commander_intelligence(
-        &commanders,
-        selected_theme,
-        target_bracket.bracket,
-        db,
-        |detail| {
-            progress(GenerationProgress::new(
-                26,
-                "Deep Learn commander model",
-                detail,
-            ));
-        },
-    )?;
+    // Research the commander in the format's own sources (PDHREC and
+    // Archidekt's Pauper EDH decks for PDH).
+    let intelligence = crate::format_sources::with_format(format, || {
+        learn_commander_intelligence(
+            &commanders,
+            selected_theme,
+            target_bracket.bracket,
+            db,
+            |detail| {
+                progress(GenerationProgress::new(
+                    26,
+                    "Deep Learn commander model",
+                    detail,
+                ));
+            },
+        )
+    })?;
 
     // Generation and AI Agent share the learned commander model.
     let reference_snapshot = intelligence.references.clone();
@@ -1447,7 +1451,7 @@ for template in relevant_templates
             // Pauper Commander has no EDHREC build data, so a card's overall
             // play rate stands in for "format staple" (Gray Merchant, Sign in
             // Blood…), balancing the theme and engine bonuses.
-            let staple_bonus = if format.is_commander() {
+            let staple_bonus = if format.is_commander() || !thin_evidence {
                 0
             } else {
                 match card.edhrec_rank {
@@ -2053,6 +2057,21 @@ notes.insert(
     );
 
     if format == Format::Pdh {
+        notes.insert(
+            1,
+            if edhrec_build_cards.is_empty() {
+                format!(
+                    "PDHREC has no data for this commander yet, so cards came from {} Pauper EDH decklist(s) on Archidekt, rules text and overall play rate.",
+                    reference_snapshot.deck_count()
+                )
+            } else {
+                format!(
+                    "Built from Pauper Commander sources: PDHREC inclusion and synergy for {} cards, plus {} Pauper EDH decklist(s) from Archidekt.",
+                    edhrec_build_cards.len(),
+                    reference_snapshot.deck_count()
+                )
+            },
+        );
         notes.insert(
             0,
             "Pauper Commander: the commander was printed at uncommon and every other card at common (paper or MTGO printings). Built for 30 life and 16 commander damage. Mystic Remora, Rhystic Study, ante cards, Conspiracies and cards removed from constructed play are excluded.".to_string(),

@@ -374,12 +374,16 @@ where
 
     let identity = combined_identity(commanders);
 
+    let pdh = crate::format_sources::active_format() == crate::format::Format::Pdh;
+
     progress(format!(
-        "[EVIDENCE] Reading EDHREC normal-build tags for {}",
+        "[EVIDENCE] Reading {} normal-build tags for {}",
+        if pdh { "PDHREC" } else { "EDHREC" },
         commander_names.join(" + ")
     ));
 
-    let theme_rows = commander_themes(commanders, 10);
+    // EDHREC doesn't cover Pauper Commander; PDHREC has no theme pages.
+    let theme_rows = if pdh { Vec::new() } else { commander_themes(commanders, 10) };
     let normal_themes = theme_rows
         .iter()
         .map(|theme| theme.name.clone())
@@ -403,13 +407,26 @@ where
         }
     ));
 
-    let mut edhrec_cards =
-        commander_build_cards(commanders, selected_theme, 650);
+    // Pauper Commander: PDHREC's per-commander inclusion and synergy take
+    // EDHREC's place.
+    let pdhrec = if pdh { crate::format_sources::pdhrec_commander(&commander_names) } else { None };
+    if pdh {
+        progress(match &pdhrec {
+            Some(page) => format!("[EVIDENCE] PDHREC: {} cards across {} decks", page.cards.len(), page.decks),
+            None => "[EVIDENCE] PDHREC has no page for this commander".to_string(),
+        });
+    }
+
+    let mut edhrec_cards = if pdh {
+        pdhrec.as_ref().map(|p| p.signals()).unwrap_or_default()
+    } else {
+        commander_build_cards(commanders, selected_theme, 650)
+    };
 
     // Merge the base commander shell too. This is important when the user picks
     // a niche play-style theme: the selected theme should modify the normal
     // commander build rather than erase it.
-    let base_cards = commander_build_cards(commanders, "", 650);
+    let base_cards = if pdh { Vec::new() } else { commander_build_cards(commanders, "", 650) };
 
     let mut merged = HashMap::<String, EdhrecCardSignal>::new();
 

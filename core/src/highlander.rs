@@ -239,6 +239,25 @@ where
         }
     }
 
+    // Canadian Highlander's own decklists: MTGTop8 tournament results and
+    // popular Moxfield lists in these colors.
+    progress(GenerationProgress::new_pub(22, "Reading Canadian Highlander decklists", "MTGTop8 and Moxfield".to_string()));
+    let evidence = crate::format_sources::highlander_evidence(&colors, &themes, db, 40, |detail| {
+        progress(GenerationProgress::new_pub(26, "Reading Canadian Highlander decklists", detail));
+    });
+    // How strongly decklist play rate counts. With few decks it's a nudge;
+    // with a real sample it leads.
+    let ref_weight = match evidence.decks.len() {
+        0 => 0.0,
+        1..=4 => 120.0,
+        5..=14 => 200.0,
+        _ => 260.0,
+    };
+    let ref_bonus = |name: &str| {
+        let share = evidence.share_of(name);
+        (share * ref_weight) as i32 + if share >= 0.5 && ref_weight > 0.0 { 30 } else { 0 }
+    };
+
     progress(GenerationProgress::new_pub(30, "Choosing spells", format!(
         "{} legal cards • point budget {point_budget}/{CANLANDER_MAX_POINTS}",
         pool.len()
@@ -264,7 +283,7 @@ where
             let deep = deep_finds.get(&c.name.to_ascii_lowercase());
             let on_theme = fit >= 2 || deep.is_some();
             // Theme fit nudges; card quality and the deck's needs decide.
-            let mut score = power_score(c, roles, style) + fit.min(8) * 3;
+            let mut score = power_score(c, roles, style) + fit.min(8) * 3 + ref_bonus(&c.name);
             if let Some(f) = deep {
                 score += 6 + f.score / 15;
             }
@@ -401,6 +420,7 @@ where
             if c.vintage_legal == "restricted" {
                 score += 10;
             }
+            score += ref_bonus(&c.name) / 2;
             (i, score, canlander_points(&c.name))
         })
         .collect();
@@ -476,7 +496,24 @@ where
             have.draw,
             have.theme,
         ),
-        "There are no Canadian Highlander decklist databases the app can read, so cards were chosen from their rules text, mana value and how widely they're played overall.".to_string(),
+        if evidence.decks.is_empty() {
+            "No Canadian Highlander decklists could be read this time (MTGTop8 and Moxfield unreachable?), so cards were chosen from their rules text, mana value and how widely they're played overall.".to_string()
+        } else {
+            let mtgtop8 = evidence.decks.iter().filter(|d| d.source == "MTGTop8").count();
+            let moxfield = evidence.decks.len() - mtgtop8;
+            let mut top: Vec<(&String, &f64)> = evidence.share.iter().collect();
+            top.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let top: Vec<String> = top
+                .iter()
+                .filter_map(|(n, sh)| db.get_card(n).ok().flatten().map(|c| format!("{} ({:.0}%)", c.name, **sh * 100.0)))
+                .take(10)
+                .collect();
+            format!(
+                "Built from Canadian Highlander decklists in these colors: {mtgtop8} tournament list(s) from MTGTop8 and {moxfield} popular Moxfield list(s), weighted toward {}. Most played there: {}.",
+                if themes.is_empty() { "exact color matches".to_string() } else { format!("{} decks", themes.join(" / ")) },
+                top.join(", ")
+            )
+        },
     ];
     if use_deep_search && !card_themes.is_empty() {
         let picked: Vec<String> = main
@@ -522,9 +559,42 @@ where
             ),
             combos: Vec::new(),
             notes,
-            sources: Vec::new(),
+            sources: highlander_sources(&evidence),
         },
     })
+}
+
+fn highlander_sources(evidence: &crate::format_sources::HighlanderEvidence) -> Vec<crate::sources::DeckSource> {
+    use crate::sources::DeckSource;
+    let mut out = vec![
+        DeckSource::automatic(
+            "MTGTop8",
+            "Canadian Highlander events and metagame",
+            "https://www.mtgtop8.com/format?f=CHL",
+            "Tournament decklists by archetype.",
+        ),
+        DeckSource::automatic(
+            "Moxfield",
+            "Canadian Highlander decks on Moxfield",
+            "https://moxfield.com/decks/public?fmt=highlanderCanadian",
+            "The most viewed public lists in the format.",
+        ),
+        DeckSource::automatic(
+            "Canadian Highlander",
+            "Points list",
+            "https://canadianhighlander.ca/points-list/",
+            "The 10-point limit and each card's points.",
+        ),
+    ];
+    for d in &evidence.decks {
+        out.push(DeckSource::automatic(
+            d.source.clone(),
+            d.title.clone(),
+            d.url.clone(),
+            format!("Reference list ({} cards, colors {}) used for card play rates.", d.cards.len(), if d.colors.is_empty() { "C" } else { &d.colors }),
+        ));
+    }
+    out
 }
 
 fn add_weighted_basics(main: &mut Vec<DeckEntry>, weight: &[(char, usize)], total: usize) {
