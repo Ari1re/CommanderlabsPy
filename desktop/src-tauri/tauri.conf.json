@@ -10,8 +10,9 @@
     "windows": [
       {
         "title": "Commander Lab",
-        "width": 1360,
-        "height": 880,
+        "width": 1240,
+        "height": 820,
+        "center": true,
         "minWidth": 380,
         "minHeight": 560,
         "backgroundColor": "#1a1622"

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.30.2
+
+- **Linux ships the desktop app.** The `.sh` opens the desktop app on every distro, NixOS included, and adds **Commander Lab** to your app launcher. On NixOS it runs through `appimage-run`, and gets that from Nix for the run if it isn't installed. The browser edition is only used with `--web`, or when the desktop app can't start.
+- **Building from source:** `./run-linux.sh` builds the desktop app by default (`--web` for the browser edition). On NixOS it builds inside `shell.nix`, which now includes the GTK settings files the desktop app needs. If the WebKitGTK libraries are missing, it lists the packages to install.
+- **Fixed:** a desktop app built from source with `cargo` opened a blank window. It was a development build looking for a dev server; the script now builds the release version with the interface built in.
+- The window no longer comes up blank on NVIDIA and some Wayland setups: the Linux launchers set `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+- The desktop window opens centered at a size that fits smaller laptop screens.
+
 ## 0.30.1
 
 - **Fixed: new builds didn't show up as updates.** The app reused its last update check for up to six hours and only checked when it started, so a build published after that check stayed hidden. Now:
