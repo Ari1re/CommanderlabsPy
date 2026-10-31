@@ -1,0 +1,21 @@
+name: e2e-format-sources
+on: { push: { branches: [probe/e2e] } }
+permissions: { contents: write }
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm --prefix frontend ci && npm --prefix frontend run build
+      - run: cargo build --release -p commander-lab-web
+      - run: |
+          mkdir -p run
+          (./target/release/commander-lab-web --port 7878 --data run --no-browser > server.log 2>&1 &)
+          sleep 3
+          ./e2e.sh > e2e-output.txt 2>&1 || true
+          tail -50 server.log >> e2e-output.txt
+      - run: |
+          git config user.name probe; git config user.email probe@users.noreply.github.com
+          git add -f e2e-output.txt; git commit -m "e2e output [skip ci]"; git push
