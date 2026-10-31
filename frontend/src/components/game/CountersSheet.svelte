@@ -1,11 +1,22 @@
 <script lang="ts">
+  import { api } from '../../lib/api';
   import { COUNTERS, CMD_LETHAL, game, type Player } from '../../lib/game.svelte';
+  import type { CardView } from '../../lib/types';
+  import { artCrop } from '../../lib/util';
   import Icon from '../Icon.svelte';
 
-  // Full-screen counters for one player, turned to face them.
-  let { player, flipped = false, onclose }: { player: Player; flipped?: boolean; onclose: () => void } = $props();
+  // A player's menu, full screen and turned to face them.
+  let {
+    player,
+    flipped = false,
+    onclose,
+    onedit,
+  }: { player: Player; flipped?: boolean; onclose: () => void; onedit: () => void } = $props();
 
   let customName = $state('');
+  let artQuery = $state('');
+  let art = $state<CardView[]>([]);
+  let artTimer: ReturnType<typeof setTimeout> | undefined;
   let s = $derived(game.state!);
   let opponents = $derived(s.players.filter((p) => p.id !== player.id));
 
@@ -13,90 +24,151 @@
     game.addCustom(player.id, customName);
     customName = '';
   }
+
+  function searchArt() {
+    clearTimeout(artTimer);
+    const q = artQuery.trim();
+    if (q.length < 2) {
+      art = [];
+      return;
+    }
+    artTimer = setTimeout(async () => {
+      try {
+        art = (await api<CardView[]>('search_cards', { query: q, limit: 18 })).filter((c) => c.image_uri);
+      } catch {
+        art = [];
+      }
+    }, 250);
+  }
+
+  function dealDamage(partner: 0 | 1) {
+    game.cmdFrom = { player: player.id, partner };
+    onclose();
+  }
 </script>
 
-    <div class="sheet" class:flipped role="dialog" aria-modal="true" aria-label="Counters for {player.name}" style:--pc={player.color}>
-      <div class="sheet-head">
-        <b>{player.name}</b>
-        <span class="num life-mini">{player.life} life</span>
-        <button class="close" onclick={onclose} aria-label="Done"><Icon name="check" size={18} /> Done</button>
-      </div>
-      <div class="rows">
-        <p class="group">Commander damage taken</p>
-        {#each opponents as o (o.id)}
-          {#each o.partner ? [0, 1] : [0] as k (k)}
-            {@const v = player.cmd[`${o.id}:${k}`] ?? 0}
-            <div class="row" class:danger={v >= CMD_LETHAL - 5}>
-              <span class="dot" style:background={o.color}></span>
-              <span class="lbl">{o.name}{o.partner ? (k ? ' · partner' : ' · commander') : ''}</span>
-              <button class="step" aria-label="Less damage from {o.name}" onclick={() => game.changeCmd(player.id, o.id, k as 0 | 1, -1)}>−</button>
-              <span class="val num">{v}</span>
-              <button class="step" aria-label="More damage from {o.name}" onclick={() => game.changeCmd(player.id, o.id, k as 0 | 1, 1)}>+</button>
-            </div>
-          {/each}
-        {/each}
-        {#if s.cmdLowersLife}<p class="hint">Commander damage also lowers life.</p>{/if}
+<div class="sheet" class:flipped role="dialog" aria-modal="true" aria-label="Menu for {player.name}" style:--pc={player.color}>
+  <div class="sheet-head">
+    <b>{player.name}</b>
+    <span class="num life-mini">{player.life} life</span>
+    <button class="close" onclick={onclose} aria-label="Done"><Icon name="check" size={18} /> Done</button>
+  </div>
 
-        <p class="group">Counters</p>
-        {#each COUNTERS as c (c.id)}
-          {@const v = player.counters[c.id] ?? 0}
-          <div class="row" class:danger={c.lethal != null && v >= c.lethal - 2}>
-            <span class="lbl">{c.label}{c.id === 'tax' && v ? ` (+${v * 2})` : ''}</span>
-            <button class="step" aria-label="Less {c.label}" onclick={() => game.changeCounter(player.id, c.id, -1)}>−</button>
-            <span class="val num">{v}</span>
-            <button class="step" aria-label="More {c.label}" onclick={() => game.changeCounter(player.id, c.id, 1)}>+</button>
-          </div>
-        {/each}
-        {#each player.custom as c, i (c.name)}
-          <div class="row">
-            <span class="lbl">{c.name}</span>
-            <button class="step" aria-label="Less {c.name}" onclick={() => game.changeCustom(player.id, i, -1)}>−</button>
-            <span class="val num">{c.value}</span>
-            <button class="step" aria-label="More {c.name}" onclick={() => game.changeCustom(player.id, i, 1)}>+</button>
-            <button class="step rm" aria-label="Remove {c.name}" onclick={() => game.removeCustom(player.id, i)}><Icon name="close" size={14} /></button>
-          </div>
-        {/each}
-        <form class="row add" onsubmit={(e) => { e.preventDefault(); addCustom(); }}>
-          <input bind:value={customName} placeholder="Add a counter (e.g. Storm)" aria-label="New counter name" />
-          <button class="step" disabled={!customName.trim()} aria-label="Add counter">+</button>
-        </form>
-
-        <p class="group">Designations</p>
-        <div class="toggles">
-          <button aria-pressed={s.monarch === player.id} onclick={() => game.setDesignation('monarch', player.id)}>♛ Monarch</button>
-          <button aria-pressed={s.initiative === player.id} onclick={() => game.setDesignation('initiative', player.id)}>⚔ Initiative</button>
-          <button aria-pressed={s.blessing.includes(player.id)} onclick={() => game.toggleBlessing(player.id)}>✦ City's blessing</button>
-        </div>
-      </div>
+  <div class="rows">
+    <div class="actions">
+      <button class="action primary" onclick={() => dealDamage(0)}>⚔ Deal commander damage</button>
+      <button class="action" onclick={() => { onedit(); onclose(); }}>Set life total</button>
+      {#if player.partner}
+        <button class="action" onclick={() => dealDamage(1)}>⚔ With partner</button>
+      {/if}
+      {#if s.turns}
+        <button class="action" onclick={() => { game.startTurns(player.id); onclose(); }}>▶ Make it my turn</button>
+      {/if}
+      <button class="action" onclick={() => game.concede(player.id)}>{player.conceded ? 'Rejoin game' : 'Concede'}</button>
     </div>
+
+    <p class="group">Commander damage taken</p>
+    {#each opponents as o (o.id)}
+      {#each o.partner ? [0, 1] : [0] as k (k)}
+        {@const v = player.cmd[`${o.id}:${k}`] ?? 0}
+        <div class="row" class:danger={v >= CMD_LETHAL - 5}>
+          <span class="dot" style:background={o.color}></span>
+          <span class="lbl">{o.name}{o.partner ? (k ? ' · partner' : ' · commander') : ''}</span>
+          <button class="step" aria-label="Less damage from {o.name}" onclick={() => game.changeCmd(player.id, o.id, k as 0 | 1, -1)}>−</button>
+          <span class="val num">{v}</span>
+          <button class="step" aria-label="More damage from {o.name}" onclick={() => game.changeCmd(player.id, o.id, k as 0 | 1, 1)}>+</button>
+        </div>
+      {/each}
+    {/each}
+    {#if s.cmdLowersLife}<p class="hint">Commander damage also lowers life.</p>{/if}
+
+    <p class="group">Counters</p>
+    {#each COUNTERS as c (c.id)}
+      {@const v = player.counters[c.id] ?? 0}
+      <div class="row" class:danger={c.lethal != null && v >= c.lethal - 2}>
+        <span class="lbl">{c.label}{c.id === 'tax' && v ? ` (+${v * 2})` : ''}</span>
+        <button class="step" aria-label="Less {c.label}" onclick={() => game.changeCounter(player.id, c.id, -1)}>−</button>
+        <span class="val num">{v}</span>
+        <button class="step" aria-label="More {c.label}" onclick={() => game.changeCounter(player.id, c.id, 1)}>+</button>
+      </div>
+    {/each}
+    {#each player.custom as c, i (c.name)}
+      <div class="row">
+        <span class="lbl">{c.name}</span>
+        <button class="step" aria-label="Less {c.name}" onclick={() => game.changeCustom(player.id, i, -1)}>−</button>
+        <span class="val num">{c.value}</span>
+        <button class="step" aria-label="More {c.name}" onclick={() => game.changeCustom(player.id, i, 1)}>+</button>
+        <button class="step rm" aria-label="Remove {c.name}" onclick={() => game.removeCustom(player.id, i)}><Icon name="close" size={14} /></button>
+      </div>
+    {/each}
+    <form class="row add" onsubmit={(e) => { e.preventDefault(); addCustom(); }}>
+      <input bind:value={customName} placeholder="Add a counter (e.g. Storm)" aria-label="New counter name" />
+      <button class="step" disabled={!customName.trim()} aria-label="Add counter">+</button>
+    </form>
+
+    <p class="group">Designations</p>
+    <div class="toggles">
+      <button aria-pressed={s.monarch === player.id} onclick={() => game.setDesignation('monarch', player.id)}>♛ Monarch</button>
+      <button aria-pressed={s.initiative === player.id} onclick={() => game.setDesignation('initiative', player.id)}>⚔ Initiative</button>
+      <button aria-pressed={s.blessing.includes(player.id)} onclick={() => game.toggleBlessing(player.id)}>✦ City's blessing</button>
+    </div>
+    <p class="hint">Drag the ♛ or ⚔ token on a player's panel to hand it to someone else.</p>
+
+    <p class="group">Background art</p>
+    <input class="search" bind:value={artQuery} oninput={searchArt} placeholder="Search any card for its art" aria-label="Search card art" />
+    {#if art.length}
+      <div class="art">
+        {#each art as c (c.oracle_id)}
+          <button class="art-pick" class:on={player.image === c.image_uri} onclick={() => game.setImage(player.id, c.image_uri)} style:background-image={`url("${artCrop(c.image_uri)}")`} aria-label="Use {c.name} art">
+            <span>{c.name}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+    {#if player.image}
+      <button class="link" onclick={() => game.setImage(player.id, '')}>Remove background art</button>
+    {/if}
+  </div>
+</div>
 
 <style>
   .sheet {
-    position: absolute;
+    position: fixed;
     inset: 0;
-    z-index: 3;
+    z-index: 74;
     display: grid;
     grid-template-rows: auto 1fr;
     background: #120d1a;
+    color: #fff;
+    padding: var(--safe-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    border-top: 4px solid var(--pc);
+  }
+  .sheet.flipped {
+    transform: rotate(180deg);
   }
   .sheet-head {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem 0.6rem 0.4rem 0.8rem;
+    width: 100%;
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 0.8rem 1rem 0.6rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   }
+  .sheet-head b {
+    font-size: 1.15rem;
+  }
   .life-mini {
-    color: rgba(255, 255, 255, 0.65);
-    font-size: 0.85rem;
     flex: 1;
+    color: rgba(255, 255, 255, 0.65);
   }
   .close {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
-    min-height: 34px;
-    padding: 0 0.7rem;
+    min-height: 40px;
+    padding: 0 0.9rem;
     border: 0;
     border-radius: 99px;
     background: var(--pc);
@@ -105,26 +177,51 @@
     cursor: pointer;
   }
   .rows {
+    width: 100%;
+    max-width: 560px;
+    margin: 0 auto;
     overflow: auto;
-    padding: 0.2rem 0.6rem 0.8rem;
+    padding: 0.5rem 1rem 1.5rem;
     overscroll-behavior: contain;
   }
+  .actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+  }
+  .action {
+    min-height: 46px;
+    padding: 0 0.8rem;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.06);
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.92rem;
+    cursor: pointer;
+  }
+  .action.primary {
+    background: var(--pc);
+    border-color: var(--pc);
+    color: #14101b;
+  }
   .group {
-    margin: 0.7rem 0 0.25rem;
-    font-size: 0.75rem;
+    margin: 1rem 0 0.25rem;
+    font-size: 0.78rem;
     font-weight: 700;
     color: rgba(255, 255, 255, 0.55);
   }
   .hint {
-    font-size: 0.72rem;
+    font-size: 0.75rem;
     color: rgba(255, 255, 255, 0.45);
-    margin: 0.15rem 0 0;
+    margin: 0.25rem 0 0;
   }
   .row {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    min-height: 40px;
+    gap: 0.5rem;
+    min-height: 54px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   }
   .row.danger .val {
@@ -139,63 +236,65 @@
   .lbl {
     flex: 1;
     min-width: 0;
-    font-size: 0.86rem;
+    font-size: 0.95rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .val {
-    min-width: 2ch;
+    min-width: 2.2ch;
     text-align: center;
     font-weight: 700;
-    font-size: 1.05rem;
+    font-size: 1.1rem;
   }
   .step {
     display: grid;
     place-items: center;
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     flex-shrink: 0;
     border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 10px;
+    border-radius: 12px;
     background: rgba(255, 255, 255, 0.06);
     color: #fff;
-    font-size: 1.15rem;
+    font-size: 1.3rem;
     cursor: pointer;
   }
   .step:active {
     background: rgba(255, 255, 255, 0.16);
   }
   .step.rm {
-    width: 30px;
+    width: 34px;
     border-color: transparent;
     color: rgba(255, 255, 255, 0.55);
   }
-  .add input {
+  .add input,
+  .search {
     flex: 1;
     min-width: 0;
-    min-height: 36px;
-    padding: 0 0.6rem;
-    border-radius: 10px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 0.75rem;
+    border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.2);
     background: rgba(0, 0, 0, 0.3);
     color: #fff;
-    font-size: 0.86rem;
+    font-size: 0.95rem;
   }
   .toggles {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.35rem;
+    gap: 0.4rem;
   }
   .toggles button {
-    min-height: 34px;
-    padding: 0 0.7rem;
+    min-height: 40px;
+    padding: 0 0.85rem;
     border-radius: 99px;
     border: 1px solid rgba(255, 255, 255, 0.25);
     background: transparent;
     color: #fff;
     font-weight: 700;
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     cursor: pointer;
   }
   .toggles button[aria-pressed='true'] {
@@ -203,44 +302,45 @@
     border-color: var(--pc);
     color: #14101b;
   }
-  .sheet {
-    position: fixed;
-    inset: 0;
-    z-index: 74;
+  .art {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+  }
+  .art-pick {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background: #2a2236 center / cover;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .art-pick.on {
+    border-color: var(--pc);
+  }
+  .art-pick span {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 0.2rem 0.4rem;
+    background: rgba(0, 0, 0, 0.6);
     color: #fff;
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-    border-top: 4px solid var(--pc);
+    font-size: 0.72rem;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .sheet.flipped {
-    transform: rotate(180deg);
-  }
-  .rows {
-    width: 100%;
-    max-width: 560px;
-    margin: 0 auto;
-    padding-inline: 1rem;
-  }
-  .sheet-head {
-    width: 100%;
-    max-width: 560px;
-    margin: 0 auto;
-    padding: 0.8rem 1rem 0.6rem;
-  }
-  .sheet-head b {
-    font-size: 1.15rem;
-  }
-  .life-mini {
-    font-size: 1rem;
-  }
-  .lbl {
-    font-size: 0.95rem;
-  }
-  .step {
-    width: 44px;
-    height: 44px;
-    font-size: 1.3rem;
-  }
-  .row {
-    min-height: 52px;
+  .link {
+    margin-top: 0.6rem;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: rgba(255, 255, 255, 0.65);
+    text-decoration: underline;
+    cursor: pointer;
   }
 </style>

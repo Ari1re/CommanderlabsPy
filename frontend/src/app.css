@@ -61,6 +61,9 @@
   --r-md: 10px;
   --r-card: 4.75% / 3.5%; /* real card corner ratio */
 
+  /* Status-bar height. Android WebView reports 0 for env(), so the app
+     measures and overrides this on Android (see App.svelte). */
+  --safe-top: env(safe-area-inset-top, 0px);
   --rail: 76px;
   --tabbar: 64px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);

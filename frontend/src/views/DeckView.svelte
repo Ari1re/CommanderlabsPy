@@ -276,8 +276,8 @@
     min-height: 300px;
     margin: calc(-1 * clamp(1rem, 3vw, 2.25rem));
     margin-bottom: 0;
-    overflow: hidden;
     align-items: end;
+    z-index: 20;
   }
   .hero.skeleton {
     background: var(--panel);
@@ -285,6 +285,7 @@
   .hero-art {
     position: absolute;
     inset: 0;
+    overflow: hidden;
     background: var(--panel) center 25% / cover no-repeat;
   }
   .hero-art::after {
@@ -299,7 +300,7 @@
     position: relative;
     display: grid;
     gap: 0.4rem;
-    padding: 4rem clamp(1rem, 3vw, 2.25rem) 1.25rem;
+    padding: calc(3.5rem + var(--safe-top)) clamp(1rem, 3vw, 2.25rem) 1.25rem;
     max-width: 60rem;
   }
   .back {
@@ -335,7 +336,7 @@
   }
   .menu {
     position: absolute;
-    left: 0;
+    right: 0;
     top: calc(100% + 6px);
     z-index: 30;
     display: grid;

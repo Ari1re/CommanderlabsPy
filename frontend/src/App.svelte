@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app, go } from './lib/store.svelte';
-  import { runJob } from './lib/api';
+  import { runJob, runtime } from './lib/api';
   import Icon from './components/Icon.svelte';
   import CardSheet from './components/CardSheet.svelte';
   import Library from './views/Library.svelte';
@@ -12,7 +12,21 @@
 
   let ready = $state(false);
 
+  /** Android draws the app under the status bar but WebView reports no
+   * safe-area inset, so reserve the standard status-bar height ourselves. */
+  function fixStatusBar() {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;top:0;padding-top:env(safe-area-inset-top,0px);visibility:hidden';
+    document.body.appendChild(probe);
+    const inset = parseFloat(getComputedStyle(probe).paddingTop) || 0;
+    probe.remove();
+    if (inset === 0 && runtime.isAndroid && runtime.isTauri) {
+      document.documentElement.style.setProperty('--safe-top', '36px');
+    }
+  }
+
   onMount(async () => {
+    fixStatusBar();
     await app.load();
     ready = true;
   });
@@ -169,7 +183,7 @@
   .main {
     min-width: 0;
     padding: clamp(1rem, 3vw, 2.25rem);
-    padding-top: max(clamp(1rem, 3vw, 2.25rem), env(safe-area-inset-top, 0px));
+    padding-top: max(clamp(1rem, 3vw, 2.25rem), var(--safe-top));
     padding-bottom: 4rem;
   }
 

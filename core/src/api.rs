@@ -59,6 +59,7 @@ pub const DB_PATH: &str = "./data/cards.sqlite";
 const DECKS_DIR: &str = "./decks";
 const EXPORTS_DIR: &str = "./exports";
 const SETTINGS_PATH: &str = "./data/ui_settings.json";
+const GAMES_PATH: &str = "./data/games.json";
 
 pub struct Engine {
     root: PathBuf,
@@ -243,6 +244,29 @@ impl Engine {
             "recommendations" => Ok(json!({ "job": self.start_recommendations(arg(a, "name")?) })),
             "upgrade" => Ok(json!({ "job": self.start_upgrade(arg(a, "name")?, opt(a, "bracket").unwrap_or(3))? })),
             "win_speed" => Ok(json!({ "job": self.start_win_speed(arg(a, "name")?) })),
+
+            // --- game tracker -------------------------------------------------
+            "games" => Ok(read_games()),
+            "game_record" => {
+                let mut games = read_games();
+                let mut record = args.get("game").cloned().ok_or_else(|| anyhow!("Missing game"))?;
+                record["id"] = json!(chrono::Utc::now().timestamp_millis());
+                if let Some(list) = games.as_array_mut() {
+                    list.insert(0, record);
+                    list.truncate(1000);
+                }
+                fs::write(GAMES_PATH, serde_json::to_string(&games)?)?;
+                Ok(json!({ "saved": true }))
+            }
+            "game_delete" => {
+                let id: i64 = arg(a, "id")?;
+                let mut games = read_games();
+                if let Some(list) = games.as_array_mut() {
+                    list.retain(|g| g.get("id").and_then(Value::as_i64) != Some(id));
+                }
+                fs::write(GAMES_PATH, serde_json::to_string(&games)?)?;
+                Ok(games)
+            }
 
             // --- analysis ---------------------------------------------------------
             "analyze" => self.analyze(&arg::<String>(a, "name")?),
@@ -1564,6 +1588,15 @@ impl Engine {
             to_value(summary)
         })
     }
+}
+
+/// Finished games from the Game tab, newest first.
+fn read_games() -> Value {
+    fs::read_to_string(GAMES_PATH)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .filter(Value::is_array)
+        .unwrap_or_else(|| Value::Array(Vec::new()))
 }
 
 fn read_settings() -> Value {
