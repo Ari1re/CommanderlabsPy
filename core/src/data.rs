@@ -621,14 +621,15 @@ impl CardDb {
         .to_string();
         let mut names = Vec::<String>::new();
 
+        let mut failure = None;
         for _page in 0..80 {
-            let body: Value = client
-                .get(&url)
-                .header(USER_AGENT, USER_AGENT_VALUE)
-                .header(ACCEPT, "application/json")
-                .send()?
-                .error_for_status()?
-                .json()?;
+            let body: Value = match scryfall_get(client, &url) {
+                Ok(body) => body,
+                Err(err) => {
+                    failure = Some(err);
+                    break;
+                }
+            };
             if let Some(cards) = body.get("data").and_then(Value::as_array) {
                 for card in cards {
                     if let Some(name) = card.get("name").and_then(Value::as_str) {
@@ -639,19 +640,24 @@ impl CardDb {
             match body.get("next_page").and_then(Value::as_str) {
                 Some(next) if body.get("has_more").and_then(Value::as_bool) == Some(true) => {
                     url = next.to_string();
-                    // Scryfall asks for 50–100 ms between requests.
-                    std::thread::sleep(std::time::Duration::from_millis(110));
+                    // Scryfall allows about two searches a second.
+                    std::thread::sleep(std::time::Duration::from_millis(600));
                 }
                 _ => break,
             }
         }
 
-        if names.len() < 1000 {
-            return Err(anyhow!("Scryfall returned only {} PDH commanders", names.len()));
+        let complete = failure.is_none() && names.len() >= 1000;
+        if names.is_empty() {
+            return Err(failure.unwrap_or_else(|| anyhow!("Scryfall returned no PDH commanders")));
         }
 
         let tx = self.conn.transaction()?;
-        tx.execute("UPDATE cards SET pdh_commander = 0", [])?;
+        // A partial answer still adds commanders; only a complete one may
+        // clear the first guesses.
+        if complete {
+            tx.execute("UPDATE cards SET pdh_commander = 0", [])?;
+        }
         {
             let mut stmt = tx.prepare(
                 "UPDATE cards SET pdh_commander = 1 WHERE name_lower = ?1 \
@@ -662,6 +668,9 @@ impl CardDb {
             }
         }
         tx.commit()?;
+        if let Some(err) = failure {
+            return Err(err.context(format!("stopped after {} commanders", names.len())));
+        }
         Ok(names.len())
     }
 
@@ -680,8 +689,7 @@ impl CardDb {
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .ok()
-            .and_then(|c| c.get(url).header(USER_AGENT, USER_AGENT_VALUE).header(ACCEPT, "application/json").send().ok())
-            .and_then(|r| r.json::<Value>().ok())
+            .and_then(|c| scryfall_get(&c, url.as_str()).ok())
             .and_then(|v| v.get("total_cards").and_then(Value::as_u64))
             .unwrap_or(0)
             > 0;
@@ -771,6 +779,34 @@ impl CardDb {
 
         Ok(inserted)
     }
+}
+
+/// GET a Scryfall API URL, waiting and retrying when it asks us to slow
+/// down (429). A search with no results (404) returns an empty answer.
+fn scryfall_get(client: &Client, url: &str) -> Result<Value> {
+    for attempt in 0..4 {
+        let response = client
+            .get(url)
+            .header(USER_AGENT, USER_AGENT_VALUE)
+            .header(ACCEPT, "application/json")
+            .send()?;
+        let status = response.status();
+        if status.as_u16() == 429 {
+            let wait = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(2 + attempt * 3);
+            std::thread::sleep(std::time::Duration::from_secs(wait.min(30)));
+            continue;
+        }
+        if status.as_u16() == 404 {
+            return Ok(serde_json::json!({ "total_cards": 0, "data": [] }));
+        }
+        return Ok(response.error_for_status()?.json()?);
+    }
+    Err(anyhow!("Scryfall kept asking to slow down (429) for {url}"))
 }
 
 fn download_metadata(client: &Client) -> Result<Vec<u8>> {

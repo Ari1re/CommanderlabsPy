@@ -247,15 +247,17 @@ where
     });
     // How strongly decklist play rate counts. With few decks it's a nudge;
     // with a real sample it leads.
+    // One or two matching lists only nudge; a real sample leads.
     let ref_weight = match evidence.strength {
         s if s < 0.5 => 0.0,
-        s if s < 3.0 => 90.0,
-        s if s < 8.0 => 170.0,
+        s if s < 2.5 => 35.0,
+        s if s < 6.0 => 110.0,
+        s if s < 12.0 => 180.0,
         _ => 250.0,
     };
     let ref_bonus = |name: &str| {
         let share = evidence.share_of(name);
-        (share * ref_weight) as i32 + if share >= 0.5 && ref_weight > 0.0 { 30 } else { 0 }
+        (share * ref_weight) as i32 + if share >= 0.5 && ref_weight >= 110.0 { 30 } else { 0 }
     };
 
     progress(GenerationProgress::new_pub(30, "Choosing spells", format!(
