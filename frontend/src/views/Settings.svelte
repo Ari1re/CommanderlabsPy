@@ -14,6 +14,9 @@
 
   onMount(async () => {
     await app.refreshStatus();
+    // Opening Settings always asks GitHub, so a new build shows up right away.
+    checking = true;
+    app.checkUpdate(true, false).finally(() => (checking = false));
     try {
       ai = await api('ai_status');
     } catch (err) {
@@ -88,6 +91,8 @@
         Commander Lab {app.update.latest_version} is available. You have {app.update.current_version}{app.update.current_build ? ` (build ${app.update.current_build})` : ''}.
       {:else if app.update}
         {app.update.install === 'none' ? app.update.how : `You have the latest version (${app.update.current_version}${app.update.current_build ? `, build ${app.update.current_build}` : ''}).`}
+      {:else if app.updateError}
+        Couldn't check GitHub for updates: {app.updateError}
       {:else}
         Commander Lab {app.status?.version}{app.status?.build ? ` (build ${app.status.build})` : ''}. It checks GitHub for new builds when it starts.
       {/if}
@@ -96,6 +101,9 @@
       <button class="btn" disabled={checking} onclick={async () => { checking = true; const u = await app.checkUpdate(true); checking = false; if (u && !u.available) app.toast(u.install === 'none' ? 'Development build: no automatic updates.' : 'You have the latest version.', 'success'); }}>
         <Icon name="refresh" size={16} /> {checking ? 'Checking…' : 'Check for updates'}
       </button>
+      <a class="btn ghost" href="https://github.com/Ari1re/CommanderlabsPy/releases/latest" target="_blank" rel="noreferrer">
+        Releases <Icon name="external" size={14} />
+      </a>
       {#if app.update?.available}
         <button class="btn primary" onclick={() => (app.updateOpen = true)}><Icon name="download" size={16} /> Update now</button>
       {/if}
