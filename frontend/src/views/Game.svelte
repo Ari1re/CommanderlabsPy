@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { api } from '../lib/api';
   import { app } from '../lib/store.svelte';
-  import { fmtClock, game, isOut, LAYOUTS, layoutOf, MANA_COLORS, newPlayer, panelRotation, PLAYER_COLORS, type GameRecord, type Layout, type Player } from '../lib/game.svelte';
+  import { cmdLethalOf, fmtClock, game, GAME_MODES, gameMode, isOut, LAYOUTS, layoutOf, MANA_COLORS, newPlayer, panelRotation, PLAYER_COLORS, type GameRecord, type Layout, type Player } from '../lib/game.svelte';
   import type { CardView, DeckSummary } from '../lib/types';
   import { symbolUrl } from '../lib/util';
   import Icon from '../components/Icon.svelte';
@@ -12,6 +12,7 @@
   // --- Setup ----------------------------------------------------------------
   const saved = game.state;
   let count = $state(saved?.players.length ?? 4);
+  let mode = $state(saved?.mode ?? 'commander');
   let startLife = $state(saved?.startLife ?? 40);
   let customLife = $state('');
   let layout = $state<Layout>(saved ? layoutOf(saved) : 'table');
@@ -53,6 +54,15 @@
     }
   }
 
+  let modeInfo = $derived(gameMode(mode));
+
+  function pickMode(id: string) {
+    const m = gameMode(id);
+    mode = m.id;
+    startLife = m.life;
+    count = m.players;
+  }
+
   function start() {
     const life = startLife === 0 ? Math.max(1, parseInt(customLife) || 40) : startLife;
     game.start({
@@ -60,6 +70,8 @@
       startLife: life,
       tableMode: layout !== 'facing',
       layout,
+      mode,
+      cmdLethal: modeInfo.cmd,
       cmdLowersLife,
       lowLifeFx,
       turns,
@@ -179,7 +191,7 @@
   }
 
   function beginEnd() {
-    const alive = s?.players.filter((p) => !isOut(p, clockOn)) ?? [];
+    const alive = s?.players.filter((p) => !isOut(p, clockOn, cmdLethalOf(s))) ?? [];
     winner = alive.length === 1 ? alive[0].id : null;
     ending = true;
   }
@@ -302,7 +314,7 @@
       <div class="menu-head">
         {#if panel !== 'main'}<button class="btn ghost icon" onclick={() => (panel = 'main')} aria-label="Back"><Icon name="back" /></button>{/if}
         <h2>{panel === 'log' ? 'Life log' : panel === 'lookup' ? 'Look up a card' : 'Game'}</h2>
-        {#if panel === 'main'}<span class="small muted">{elapsed(s.startedAt)}{s.turns && s.turn ? ` · turn ${s.turn}` : ''}</span>{/if}
+        {#if panel === 'main'}<span class="small muted">{gameMode(s.mode).label} · {elapsed(s.startedAt)}{s.turns && s.turn ? ` · turn ${s.turn}` : ''}</span>{/if}
         <span class="spacer"></span>
         <button class="btn ghost icon" onclick={() => (menu = false)} aria-label="Close"><Icon name="close" /></button>
       </div>
@@ -353,7 +365,9 @@
 
           <div class="opts">
             <label><input type="checkbox" checked={s.turns} onchange={(e) => game.setOption('turns', (e.target as HTMLInputElement).checked)} /> Track turns{clockOn ? ' and chess clock' : ''}</label>
+            {#if cmdLethalOf(s) != null}
             <label><input type="checkbox" checked={s.cmdLowersLife} onchange={(e) => game.setOption('cmdLowersLife', (e.target as HTMLInputElement).checked)} /> Commander damage also lowers life</label>
+            {/if}
             <label><input type="checkbox" checked={s.lowLifeFx} onchange={(e) => game.setOption('lowLifeFx', (e.target as HTMLInputElement).checked)} /> Pulse when a player is at 10 life or less</label>
           </div>
 
@@ -420,7 +434,7 @@
   {#if game.state && !game.playing}
     <div class="resume panel">
       <div>
-        <b>Game in progress</b>
+        <b>{gameMode(game.state.mode).label} game in progress</b>
         <p class="small dim">{game.state.players.map((p) => `${p.name} ${p.life}`).join(' · ')}</p>
       </div>
       <button class="btn primary" onclick={enterPlay}><Icon name="play" size={16} /> Resume</button>
@@ -428,6 +442,15 @@
   {/if}
 
   <section class="setup">
+    <div class="field-row">
+      <span class="lbl">Game mode</span>
+      <div class="segmented modes" role="group" aria-label="Game mode">
+        {#each GAME_MODES as m (m.id)}
+          <button aria-pressed={mode === m.id} onclick={() => pickMode(m.id)}>{m.label}</button>
+        {/each}
+      </div>
+      <span class="small dim mode-hint">{modeInfo.hint}</span>
+    </div>
     <div class="field-row">
       <span class="lbl">Players</span>
       <div class="segmented" role="group" aria-label="Number of players">
@@ -492,7 +515,9 @@
 
     <div class="opts">
       <label><input type="checkbox" bind:checked={turns} /> Track turns (whose turn it is, turn count)</label>
+      {#if modeInfo.cmd != null}
       <label><input type="checkbox" bind:checked={cmdLowersLife} /> Commander damage also lowers life</label>
+      {/if}
       <label><input type="checkbox" bind:checked={lowLifeFx} /> Pulse when a player is at 10 life or less</label>
     </div>
 
@@ -525,7 +550,7 @@
           <li>
             <span class="small muted">{when(g.date)}</span>
             <span>{g.winner ? `${g.winner} won` : 'No winner'}</span>
-            <span class="small dim">{g.players.map((p) => p.name).join(', ')} · {g.minutes} min{g.turns ? ` · ${g.turns} turns` : ''}</span>
+            <span class="small dim">{g.mode ? `${g.mode} · ` : ''}{g.players.map((p) => p.name).join(', ')} · {g.minutes} min{g.turns ? ` · ${g.turns} turns` : ''}</span>
             <button class="btn ghost small icon" aria-label="Delete this game" onclick={async () => (history = await api('game_delete', { id: g.id }))}><Icon name="trash" size={14} /></button>
           </li>
         {/each}
@@ -1077,5 +1102,11 @@
     .games li {
       grid-template-columns: 3.5rem 1fr auto;
     }
+  }
+  .segmented.modes {
+    flex-wrap: wrap;
+  }
+  .mode-hint {
+    flex-basis: 100%;
   }
 </style>

@@ -142,10 +142,10 @@ pub fn audit_and_repair(
             continue;
         };
 
-        if !card.commander_legal {
+        if let Err(why) = deck.format.card_allowed(&card) {
             report
                 .repairs
-                .push(format!("Removed {} (not Commander-legal).", card.name));
+                .push(format!("Removed {} ({why}).", card.name));
             continue;
         }
 
@@ -407,6 +407,7 @@ mod tests {
                 .map(|(q, n)| DeckEntry { quantity: *q, name: (*n).into(), ..Default::default() })
                 .collect(),
             sideboard: vec![],
+            format: Default::default(),
         }
     }
 

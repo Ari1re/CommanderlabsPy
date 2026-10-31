@@ -49,7 +49,24 @@ pub struct Card {
     pub cardmarket_uri: String,
     pub cardhoarder_uri: String,
     pub game_changer: bool,
+    /// Rarity of Scryfall's default printing (common, uncommon, …).
+    pub rarity: String,
+    /// Scryfall's Pauper Commander legality for the 99: legal / banned / not_legal.
+    pub pdh_legal: String,
+    /// Scryfall's Vintage legality (legal / restricted / banned / not_legal),
+    /// the card pool Canadian Highlander uses.
+    pub vintage_legal: String,
+    /// Printed at uncommon in paper or MTGO as a creature, Vehicle,
+    /// Spacecraft or Background: may lead a Pauper Commander deck.
+    pub pdh_commander: bool,
 }
+
+/// Columns every card query selects, in `row_to_card` order.
+const CARD_COLUMNS: &str = "oracle_id, name, mana_cost, cmc, type_line, oracle_text, \
+    color_identity, produced_mana, commander_legal, edhrec_rank, keywords, is_basic, \
+    commander_eligible, image_uri, price_usd, price_usd_foil, price_eur, price_eur_foil, \
+    price_tix, tcgplayer_uri, cardmarket_uri, cardhoarder_uri, game_changer, rarity, \
+    pdh_legal, vintage_legal, pdh_commander";
 
 pub struct CardDb {
     conn: Connection,
@@ -151,6 +168,9 @@ struct ScryfallCard {
 
     #[serde(default)]
     collector_number: String,
+
+    #[serde(default)]
+    rarity: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,7 +226,11 @@ impl CardDb {
                 tcgplayer_uri TEXT NOT NULL DEFAULT '',
                 cardmarket_uri TEXT NOT NULL DEFAULT '',
                 cardhoarder_uri TEXT NOT NULL DEFAULT '',
-                game_changer INTEGER NOT NULL DEFAULT 0
+                game_changer INTEGER NOT NULL DEFAULT 0,
+                rarity TEXT NOT NULL DEFAULT '',
+                pdh_legal TEXT NOT NULL DEFAULT '',
+                vintage_legal TEXT NOT NULL DEFAULT '',
+                pdh_commander INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_cards_name_lower
@@ -253,6 +277,10 @@ impl CardDb {
             "ALTER TABLE cards ADD COLUMN cardhoarder_uri TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE cards ADD COLUMN game_changer INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE printings ADD COLUMN double_faced INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE cards ADD COLUMN rarity TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE cards ADD COLUMN pdh_legal TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE cards ADD COLUMN vintage_legal TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE cards ADD COLUMN pdh_commander INTEGER NOT NULL DEFAULT 0",
         ] {
             let _ = conn.execute(sql, []);
         }
@@ -354,7 +382,8 @@ impl CardDb {
                        edhrec_rank, keywords, is_basic, commander_eligible,
                        image_uri, price_usd, price_usd_foil, price_eur,
                        price_eur_foil, price_tix, tcgplayer_uri,
-                       cardmarket_uri, cardhoarder_uri, game_changer
+                       cardmarket_uri, cardhoarder_uri, game_changer, rarity,
+                   pdh_legal, vintage_legal, pdh_commander
                 FROM cards
                 WHERE name_lower = ?1
                 LIMIT 1
@@ -376,7 +405,8 @@ impl CardDb {
                        c.is_basic, c.commander_eligible, c.image_uri,
                        c.price_usd, c.price_usd_foil, c.price_eur,
                        c.price_eur_foil, c.price_tix, c.tcgplayer_uri,
-                       c.cardmarket_uri, c.cardhoarder_uri, c.game_changer
+                       c.cardmarket_uri, c.cardhoarder_uri, c.game_changer, c.rarity,
+                       c.pdh_legal, c.vintage_legal, c.pdh_commander
                 FROM aliases a
                 JOIN cards c ON c.oracle_id = a.oracle_id
                 WHERE a.alias_lower = ?1
@@ -422,7 +452,8 @@ impl CardDb {
                    edhrec_rank, keywords, is_basic, commander_eligible,
                    image_uri, price_usd, price_usd_foil, price_eur,
                    price_eur_foil, price_tix, tcgplayer_uri,
-                   cardmarket_uri, cardhoarder_uri, game_changer
+                   cardmarket_uri, cardhoarder_uri, game_changer, rarity,
+                   pdh_legal, vintage_legal, pdh_commander
             FROM cards
             WHERE commander_legal = 1
               AND edhrec_rank IS NOT NULL
@@ -455,7 +486,8 @@ impl CardDb {
                    edhrec_rank, keywords, is_basic, commander_eligible,
                    image_uri, price_usd, price_usd_foil, price_eur,
                    price_eur_foil, price_tix, tcgplayer_uri,
-                   cardmarket_uri, cardhoarder_uri, game_changer
+                   cardmarket_uri, cardhoarder_uri, game_changer, rarity,
+                   pdh_legal, vintage_legal, pdh_commander
             FROM cards
             WHERE commander_legal = 1
               AND name_lower LIKE ?1
@@ -508,7 +540,8 @@ impl CardDb {
                    edhrec_rank, keywords, is_basic, commander_eligible,
                    image_uri, price_usd, price_usd_foil, price_eur,
                    price_eur_foil, price_tix, tcgplayer_uri,
-                   cardmarket_uri, cardhoarder_uri, game_changer
+                   cardmarket_uri, cardhoarder_uri, game_changer, rarity,
+                   pdh_legal, vintage_legal, pdh_commander
             FROM cards
             WHERE name_lower LIKE ?1
             ORDER BY
@@ -551,7 +584,119 @@ impl CardDb {
 
         download_gzip(&client, &download_uri, Path::new(BULK_GZIP_PATH))?;
 
-        self.rebuild_from_jsonl_gzip(Path::new(BULK_GZIP_PATH))
+        let inserted = self.rebuild_from_jsonl_gzip(Path::new(BULK_GZIP_PATH))?;
+
+        // Pauper Commander eligibility depends on every printing, not just the
+        // default one in the Oracle file. Ask Scryfall; keep the first guess if
+        // it can't be reached.
+        if let Err(err) = self.refresh_pdh_commanders(&client) {
+            crate::logging::record("cards", format!("PDH commander refresh skipped: {err:#}"));
+        }
+
+        Ok(inserted)
+    }
+
+    /// Rebuild the database from a Scryfall card file saved on this device
+    /// (Oracle Cards bulk data, `.jsonl.gz`). For networks that block
+    /// Scryfall's bulk download host.
+    pub fn import_file(&mut self, path: &Path) -> Result<usize> {
+        let inserted = self.rebuild_from_jsonl_gzip(path)?;
+        let client = Client::builder().build()?;
+        if let Err(err) = self.refresh_pdh_commanders(&client) {
+            crate::logging::record("cards", format!("PDH commander refresh skipped: {err:#}"));
+        }
+        Ok(inserted)
+    }
+
+    /// Mark every card printed at uncommon in paper or on MTGO as a creature,
+    /// Vehicle, Spacecraft or Background (the PDH commander rule), using
+    /// Scryfall's search across all printings.
+    pub fn refresh_pdh_commanders(&mut self, client: &Client) -> Result<usize> {
+        let query = "r:u (t:creature or t:vehicle or t:spacecraft or t:background) \
+                     -t:land -t:conspiracy not:funny (game:paper or game:mtgo)";
+        let mut url = reqwest::Url::parse_with_params(
+            "https://api.scryfall.com/cards/search",
+            &[("q", query), ("unique", "cards"), ("order", "name")],
+        )?
+        .to_string();
+        let mut names = Vec::<String>::new();
+
+        for _page in 0..80 {
+            let body: Value = client
+                .get(&url)
+                .header(USER_AGENT, USER_AGENT_VALUE)
+                .header(ACCEPT, "application/json")
+                .send()?
+                .error_for_status()?
+                .json()?;
+            if let Some(cards) = body.get("data").and_then(Value::as_array) {
+                for card in cards {
+                    if let Some(name) = card.get("name").and_then(Value::as_str) {
+                        names.push(name.to_ascii_lowercase());
+                    }
+                }
+            }
+            match body.get("next_page").and_then(Value::as_str) {
+                Some(next) if body.get("has_more").and_then(Value::as_bool) == Some(true) => {
+                    url = next.to_string();
+                    // Scryfall asks for 50–100 ms between requests.
+                    std::thread::sleep(std::time::Duration::from_millis(110));
+                }
+                _ => break,
+            }
+        }
+
+        if names.len() < 1000 {
+            return Err(anyhow!("Scryfall returned only {} PDH commanders", names.len()));
+        }
+
+        let tx = self.conn.transaction()?;
+        tx.execute("UPDATE cards SET pdh_commander = 0", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE cards SET pdh_commander = 1 WHERE name_lower = ?1 \
+                 OR oracle_id IN (SELECT oracle_id FROM aliases WHERE alias_lower = ?1)",
+            )?;
+            for name in &names {
+                stmt.execute([name])?;
+            }
+        }
+        tx.commit()?;
+        Ok(names.len())
+    }
+
+    /// Visit every playable card (optionally only those inside a color
+    /// identity). Used by deep card search, which reads Oracle text across the
+    /// whole database rather than only popular cards.
+    pub fn scan_cards(&self, mut visit: impl FnMut(Card)) -> Result<()> {
+        let sql = format!("SELECT {CARD_COLUMNS} FROM cards");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], row_to_card)?;
+        for row in rows {
+            visit(row?);
+        }
+        Ok(())
+    }
+
+    /// Cards that may lead a Pauper Commander deck, most played first.
+    pub fn search_pdh_commanders(&self, query: &str, limit: usize) -> Result<Vec<Card>> {
+        let sql = format!(
+            "SELECT {CARD_COLUMNS} FROM cards WHERE pdh_commander = 1 AND name_lower LIKE ?1 \
+             ORDER BY CASE WHEN name_lower = ?2 THEN 0 ELSE 1 END, edhrec_rank IS NULL, edhrec_rank, name LIMIT ?3"
+        );
+        let needle = query.trim().to_ascii_lowercase();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![format!("%{needle}%"), needle, limit as i64], row_to_card)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// True once the database has the format columns filled (card data
+    /// downloaded by Commander Lab 0.27 or later).
+    pub fn has_format_data(&self) -> bool {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM cards WHERE vintage_legal <> ''", [], |r| r.get::<_, i64>(0))
+            .map(|n| n > 1000)
+            .unwrap_or(false)
     }
 
 
@@ -789,12 +934,13 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
             commander_legal, edhrec_rank, keywords, is_basic,
             commander_eligible, image_uri, price_usd, price_usd_foil,
             price_eur, price_eur_foil, price_tix, tcgplayer_uri,
-            cardmarket_uri, cardhoarder_uri, game_changer
+            cardmarket_uri, cardhoarder_uri, game_changer, rarity,
+            pdh_legal, vintage_legal, pdh_commander
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
             ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-            ?18, ?19, ?20, ?21, ?22, ?23, ?24
+            ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
         )
         "#,
     )?;
@@ -962,6 +1108,10 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
             cardmarket_uri,
             cardhoarder_uri,
             raw.game_changer.unwrap_or(false) as i32,
+            raw.rarity,
+            raw.legalities.get("paupercommander").cloned().unwrap_or_default(),
+            raw.legalities.get("vintage").cloned().unwrap_or_default(),
+            pdh_commander_from_print(&raw.rarity, &lower_type) as i32,
         ])?;
 
         if !raw.set.is_empty() && !raw.collector_number.is_empty() {
@@ -1120,7 +1270,28 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
         cardmarket_uri: row.get(20)?,
         cardhoarder_uri: row.get(21)?,
         game_changer: row.get::<_, i64>(22)? != 0,
+        rarity: row.get(23)?,
+        pdh_legal: row.get(24)?,
+        vintage_legal: row.get(25)?,
+        pdh_commander: row.get::<_, i64>(26)? != 0,
     })
+}
+
+/// First guess at Pauper Commander eligibility from one printing. The card
+/// data update replaces it with Scryfall's answer across every paper and MTGO
+/// printing (`refresh_pdh_commanders`).
+fn pdh_commander_from_print(rarity: &str, lower_type: &str) -> bool {
+    rarity.eq_ignore_ascii_case("uncommon") && pdh_commander_type(lower_type)
+}
+
+/// PDH commanders are uncommon creatures, Vehicles or Spacecraft (and
+/// uncommon Backgrounds as the second commander); never lands.
+pub fn pdh_commander_type(lower_type: &str) -> bool {
+    !lower_type.contains("land")
+        && (lower_type.contains("creature")
+            || lower_type.contains("vehicle")
+            || lower_type.contains("spacecraft")
+            || lower_type.contains("background"))
 }
 
 fn parse_price(value: Option<&str>) -> Option<f64> {

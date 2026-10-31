@@ -25,9 +25,12 @@ use crate::{
     deep_learn::{simulate_deep_learn_games, TestingIntensity},
     edhrec::commander_build_cards,
     generator::{
-        game_plan_markdown, generate_ai_upgrade, generate_optimized_deck, suggest_generation_themes,
-        GamePlan, GeneratedDeck, GenerationBracket,
+        game_plan_markdown, generate_ai_upgrade, generate_deck_with_options, resolve_pdh_commanders,
+        suggest_generation_themes, GamePlan, GeneratedDeck, GenerationBracket, GenerationOptions,
     },
+    format::{check_deck, Format, CANLANDER_MAX_POINTS, CANLANDER_POINTS, CANLANDER_POINTS_DATE},
+    highlander::{generate_highlander, HIGHLANDER_THEMES},
+    oracle_search::deep_search,
     guide::build_guide,
     printings::printings,
     share,
@@ -122,6 +125,7 @@ pub struct DeckSummary {
     pub modified_ms: u128,
     pub has_plan: bool,
     pub price_usd: f64,
+    pub format: String,
 }
 
 /// Primary card type used for grouping, Moxfield-style.
@@ -200,9 +204,22 @@ impl Engine {
 
             // --- card data ------------------------------------------------------
             "update_cards" => Ok(json!({ "job": self.start_update_cards() })),
+            "import_cards_file" => {
+                let path: String = arg(a, "path")?;
+                let engine = self.clone();
+                Ok(json!({ "job": self.jobs.spawn("update_cards", "", move |job| {
+                    job.progress(10, "Importing card file", path.clone());
+                    let mut db = CardDb::open(DB_PATH)?;
+                    let count = db.import_file(Path::new(&path))?;
+                    *engine.db.lock().unwrap() = CardDb::open(DB_PATH)?;
+                    Ok(json!({ "cards": count }))
+                }) }))
+            }
             "card" => self.card(&arg::<String>(a, "name")?),
             "search_cards" => self.search_cards(&arg::<String>(a, "query")?, opt(a, "limit").unwrap_or(20)),
-            "commander_suggestions" => self.commander_suggestions(&arg::<String>(a, "query")?),
+            "commander_suggestions" => self.commander_suggestions(&arg::<String>(a, "query")?, &opt::<String>(a, "format").unwrap_or_default()),
+            "deep_search" => self.deep_search_cards(a),
+            "formats" => Ok(formats_json()),
 
             // --- deck library --------------------------------------------------
             "list_decks" => self.list_decks(),
@@ -283,8 +300,18 @@ impl Engine {
             "remove_reference" => self.remove_reference(&arg::<String>(a, "name")?, &arg::<String>(a, "url")?),
 
             // --- generation -------------------------------------------------------
-            "generation_themes" => self.generation_themes(&arg::<String>(a, "commander")?),
-            "generate" => Ok(json!({ "job": self.start_generate(arg(a, "commander")?, opt(a, "theme").unwrap_or_default(), opt(a, "bracket").unwrap_or(3))? })),
+            "generation_themes" => self.generation_themes(&opt::<String>(a, "commander").unwrap_or_default(), &opt::<String>(a, "format").unwrap_or_default()),
+            "generate" => Ok(json!({ "job": self.start_generate(
+                opt(a, "commander").unwrap_or_default(),
+                opt(a, "theme").unwrap_or_default(),
+                opt(a, "bracket").unwrap_or(3),
+                GenerationOptions {
+                    format: Format::parse(&opt::<String>(a, "format").unwrap_or_default()),
+                    deep_search: opt(a, "deep_search").unwrap_or(false),
+                },
+                opt(a, "colors").unwrap_or_default(),
+            )? })),
+            "set_format" => self.set_format(&arg::<String>(a, "name")?, &arg::<String>(a, "format")?),
 
             // --- exports ----------------------------------------------------------
             "export_moxfield" => self.export_moxfield(&arg::<String>(a, "name")?),
@@ -374,9 +401,16 @@ impl Engine {
         to_value(cards.into_iter().map(|c| self.card_view(&db, c)).collect::<Vec<_>>())
     }
 
-    fn commander_suggestions(&self, query: &str) -> Result<Value> {
+    fn commander_suggestions(&self, query: &str, format: &str) -> Result<Value> {
         let db = self.db.lock().unwrap();
-        let cards = commander_name_suggestions(query, &db, 12)?;
+        let cards = if Format::parse(format) == Format::Pdh {
+            if !db.has_format_data() {
+                bail!("Update card data (Settings → Update card data) to search Pauper Commander commanders.");
+            }
+            db.search_pdh_commanders(query, 12)?
+        } else {
+            commander_name_suggestions(query, &db, 12)?
+        };
         to_value(cards.into_iter().map(|c| self.card_view(&db, c)).collect::<Vec<_>>())
     }
 
@@ -398,6 +432,90 @@ impl Engine {
     // -----------------------------------------------------------------------
     // Deck library
     // -----------------------------------------------------------------------
+
+    /// Check a deck against its format's construction rules.
+    fn format_check(&self, db: &CardDb, deck: &ParsedDeck) -> crate::format::FormatCheck {
+        let commanders: Vec<Card> = deck
+            .commanders
+            .iter()
+            .filter_map(|e| db.get_card(&e.name).ok().flatten())
+            .collect();
+        let identity = crate::commander::combined_identity(&commanders);
+        let main: Vec<(u32, Card)> = deck
+            .main
+            .iter()
+            .filter_map(|e| db.get_card(&e.name).ok().flatten().map(|c| (e.quantity, c)))
+            .collect();
+        let mut check = check_deck(deck.format, &commanders, &main, &identity);
+        if deck.format.needs_format_data() && !db.has_format_data() {
+            check.problems.insert(0, "Update card data to check this format's rules exactly.".into());
+        }
+        check
+    }
+
+    fn set_format(&self, name: &str, format: &str) -> Result<Value> {
+        let mut deck = self.load(name)?;
+        let format = Format::parse(format);
+        if deck.format == format {
+            return self.deck(name);
+        }
+        if format == Format::Canlander {
+            // No command zone: the commander joins the deck.
+            let moved = std::mem::take(&mut deck.commanders);
+            deck.main.splice(0..0, moved);
+        }
+        deck.format = format;
+        self.save(name, &deck, &format!("Changed format to {}", format.label()))?;
+        self.deck(name)
+    }
+
+    /// Search every card's rules text for cards that fit themes.
+    fn deep_search_cards(&self, a: &Value) -> Result<Value> {
+        let db = self.db.lock().unwrap();
+        let themes: Vec<String> = match a.get("themes") {
+            Some(Value::Array(list)) => list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+            _ => crate::archetype::theme_list(&opt::<String>(a, "theme").unwrap_or_default()),
+        };
+        if themes.is_empty() {
+            bail!("Name a play style or card ability to search for.");
+        }
+        let mut format = Format::parse(&opt::<String>(a, "format").unwrap_or_default());
+        let mut identity: Option<String> = opt(a, "identity");
+        let mut exclude = std::collections::HashSet::<String>::new();
+        if let Some(name) = opt::<String>(a, "deck") {
+            let deck = self.load(&name)?;
+            format = deck.format;
+            let commanders: Vec<Card> = deck.commanders.iter().filter_map(|e| db.get_card(&e.name).ok().flatten()).collect();
+            if format.has_commander() && !commanders.is_empty() {
+                identity = Some(crate::commander::combined_identity(&commanders));
+            } else if identity.is_none() {
+                let mut colors = String::new();
+                for e in &deck.main {
+                    if let Ok(Some(c)) = db.get_card(&e.name) {
+                        for ch in c.color_identity.chars() {
+                            if !colors.contains(ch) {
+                                colors.push(ch);
+                            }
+                        }
+                    }
+                }
+                identity = Some(colors);
+            }
+            exclude.extend(deck.commanders.iter().chain(deck.main.iter()).map(|e| e.name.to_ascii_lowercase()));
+        }
+        let limit: usize = opt(a, "limit").unwrap_or(40);
+        let finds = deep_search(&db, &themes, identity.as_deref(), format, limit + exclude.len().min(200))?;
+        let out: Vec<Value> = finds
+            .into_iter()
+            .filter(|f| !exclude.contains(&f.name.to_ascii_lowercase()))
+            .take(limit)
+            .filter_map(|f| {
+                let card = db.get_card(&f.name).ok().flatten()?;
+                Some(json!({ "find": f, "card": self.card_view(&db, card) }))
+            })
+            .collect();
+        Ok(json!({ "themes": themes, "results": out }))
+    }
 
     fn deck_path(&self, name: &str) -> Result<PathBuf> {
         load_deck_files(DECKS_DIR)?
@@ -458,15 +576,28 @@ impl Engine {
                 .filter_map(|e| db.get_card(&e.name).ok().flatten())
                 .collect();
             let mut identity = String::new();
-            for c in ['W', 'U', 'B', 'R', 'G'] {
-                if commanders.iter().any(|card| card.color_identity.contains(c)) {
-                    identity.push(c);
-                }
-            }
             let mut price = 0.0;
+            let mut cover: Option<String> = None;
+            let mut main_colors = String::new();
             for entry in deck.commanders.iter().chain(deck.main.iter()) {
                 if let Ok(Some(card)) = db.get_card(&entry.name) {
                     price += card.price_usd.unwrap_or(0.0) * entry.quantity as f64;
+                    main_colors.push_str(&card.color_identity);
+                    // Highlander decks have no commander: show the priciest
+                    // nonland card as the cover.
+                    if cover.is_none() && !card.type_line.contains("Land") && !card.image_uri.is_empty() {
+                        cover = Some(card.image_uri.clone());
+                    }
+                }
+            }
+            for c in ['W', 'U', 'B', 'R', 'G'] {
+                let has = if commanders.is_empty() {
+                    main_colors.contains(c)
+                } else {
+                    commanders.iter().any(|card| card.color_identity.contains(c))
+                };
+                if has {
+                    identity.push(c);
                 }
             }
             let modified_ms = fs::metadata(&file.path)
@@ -480,7 +611,8 @@ impl Engine {
                 commanders: deck.commanders.iter().map(|e| e.name.clone()).collect(),
                 identity,
                 cards: deck.commanders.iter().chain(deck.main.iter()).map(|e| e.quantity).sum(),
-                image: commanders.first().map(|c| c.image_uri.clone()).unwrap_or_default(),
+                image: commanders.first().map(|c| c.image_uri.clone()).or(cover).unwrap_or_default(),
+                format: deck.format.id().to_string(),
                 modified_ms,
                 has_plan: file.path.with_extension("plan.json").exists(),
                 price_usd: (price * 100.0).round() / 100.0,
@@ -515,11 +647,16 @@ impl Engine {
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok());
 
+        let check = self.format_check(&db, &deck);
+
         Ok(json!({
             "name": name,
             "entries": entries,
             "plan": plan,
             "plan_markdown": fs::read_to_string(path.with_extension("plan.md")).ok(),
+            "format": deck.format.id(),
+            "format_label": deck.format.label(),
+            "format_check": check,
         }))
     }
 
@@ -846,34 +983,82 @@ impl Engine {
     // Generation
     // -----------------------------------------------------------------------
 
-    fn generation_themes(&self, commander: &str) -> Result<Value> {
+    fn generation_themes(&self, commander: &str, format: &str) -> Result<Value> {
         let db = self.db.lock().unwrap();
-        let commanders = resolve_generation_commanders(commander, &db)?;
-        let themes = suggest_generation_themes(&commanders, &db)?;
+        let format = Format::parse(format);
+        if format == Format::Canlander {
+            let themes: Vec<Value> = HIGHLANDER_THEMES
+                .iter()
+                .enumerate()
+                .map(|(i, t)| json!({ "name": t, "score": 100 - i as i32, "reason": "Canadian Highlander play style" }))
+                .collect();
+            return Ok(json!({ "commanders": [], "themes": themes }));
+        }
+        let commanders = if format == Format::Pdh {
+            resolve_pdh_commanders(commander, &db)?
+        } else {
+            resolve_generation_commanders(commander, &db)?
+        };
+        let mut themes = suggest_generation_themes(&commanders, &db)?;
+        if format == Format::Pdh && themes.len() < 8 {
+            // EDHREC has little Pauper Commander data; offer common PDH plans.
+            for name in ["Tokens", "+1/+1 Counters", "-1/-1 Counters", "Sacrifice", "Lifegain", "Graveyard", "Spellslinger", "Artifacts", "Flying", "Blink", "Ninjutsu", "Landfall"] {
+                if themes.len() >= 12 {
+                    break;
+                }
+                if !themes.iter().any(|t| t.name.eq_ignore_ascii_case(name)) {
+                    themes.push(crate::generator::GenerationTheme {
+                        name: name.to_string(),
+                        score: 10,
+                        reason: "Common Pauper Commander strategy".to_string(),
+                    });
+                }
+            }
+        }
         Ok(json!({
             "commanders": commanders.into_iter().map(|c| self.card_view(&db, c)).collect::<Vec<_>>(),
             "themes": themes,
         }))
     }
 
-    fn start_generate(self: &Arc<Self>, commander: String, theme: String, bracket: u8) -> Result<u64> {
+    fn start_generate(
+        self: &Arc<Self>,
+        commander: String,
+        theme: String,
+        bracket: u8,
+        options: GenerationOptions,
+        colors: String,
+    ) -> Result<u64> {
         if !self.db.lock().unwrap().has_cards() {
             bail!("Download the card database first (Update card data).");
         }
+        if options.format != Format::Canlander && commander.trim().is_empty() {
+            bail!("Choose a commander first.");
+        }
         let engine = self.clone();
-        Ok(self.jobs.spawn("generate", &commander.clone(), move |job| {
+        let label = if options.format == Format::Canlander { format!("Highlander {colors}") } else { commander.clone() };
+        Ok(self.jobs.spawn("generate", &label, move |job| {
             let db = CardDb::open(DB_PATH)?;
-            let generated = generate_optimized_deck(
-                &commander,
-                &theme,
-                GenerationBracket::new(bracket),
-                &db,
-                |p| job.progress(p.percent, p.step, p.detail),
-            )?;
-            let message = if theme.trim().is_empty() {
-                format!("Generated at Bracket {bracket}")
+            let generated = if options.format == Format::Canlander {
+                generate_highlander(&colors, &theme, bracket, options.deep_search, &db, |p| {
+                    job.progress(p.percent, p.step, p.detail)
+                })?
             } else {
-                format!("Generated at Bracket {bracket} ({theme})")
+                generate_deck_with_options(
+                    &commander,
+                    &theme,
+                    GenerationBracket::new(bracket),
+                    options,
+                    &db,
+                    |p| job.progress(p.percent, p.step, p.detail),
+                )?
+            };
+            let power = if options.format.is_commander() { format!("Bracket {bracket}") } else { format!("{} power {bracket}", options.format.label()) };
+            let deep = if options.deep_search { ", deep search" } else { "" };
+            let message = if theme.trim().is_empty() {
+                format!("Generated at {power}{deep}")
+            } else {
+                format!("Generated at {power} ({theme}{deep})")
             };
             let name = engine.save_generated(generated, &message)?;
             Ok(json!({ "name": name }))
@@ -1468,11 +1653,18 @@ impl Engine {
             let db = CardDb::open(DB_PATH)?;
             let commanders: Vec<Card> = deck.commanders.iter().filter_map(|e| db.get_card(&e.name).ok().flatten()).collect();
             let mut identity = String::new();
+            let main_cards: Vec<Card> = deck.main.iter().filter_map(|e| db.get_card(&e.name).ok().flatten()).collect();
             for c in ['W', 'U', 'B', 'R', 'G'] {
-                if commanders.iter().any(|card| card.color_identity.contains(c)) {
+                let has = if commanders.is_empty() {
+                    main_cards.iter().any(|card| card.color_identity.contains(c))
+                } else {
+                    commanders.iter().any(|card| card.color_identity.contains(c))
+                };
+                if has {
                     identity.push(c);
                 }
             }
+            let format = deck.format;
             let in_deck: std::collections::HashSet<String> = deck
                 .commanders
                 .iter()
@@ -1480,10 +1672,10 @@ impl Engine {
                 .filter_map(|e| db.get_card(&e.name).ok().flatten().map(|c| c.name.to_ascii_lowercase()))
                 .collect();
             let fits = |card: &Card| {
-                card.commander_legal
+                format.card_allowed(card).is_ok()
                     && !card.is_basic
                     && !in_deck.contains(&card.name.to_ascii_lowercase())
-                    && (commanders.is_empty() || identity_subset(&card.color_identity, &identity))
+                    && (identity.is_empty() && commanders.is_empty() || identity_subset(&card.color_identity, &identity))
             };
 
             let mut sections = Vec::new();
@@ -1547,6 +1739,33 @@ impl Engine {
                 sections.push(json!({ "id": "popular", "title": "Popular in decks like yours", "items": popular }));
             }
 
+            // Deep card search: cards whose rules text fits the deck's play
+            // styles, including ones no decklist runs.
+            job.progress(85, "Reading rules text for your play styles", "");
+            let mut themes: Vec<String> = engine.cached_plan(&name).map(|p| p.primary_tags).unwrap_or_default();
+            if themes.is_empty() {
+                themes = crate::archetype::detect_deck_tags(&deck, &db)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(2)
+                    .map(|t| t.name)
+                    .collect();
+            }
+            themes.truncate(3);
+            if !themes.is_empty() {
+                let finds = deep_search(&db, &themes, Some(&identity), format, 80).unwrap_or_default();
+                let items: Vec<Value> = finds
+                    .into_iter()
+                    .filter_map(|f| db.get_card(&f.name).ok().flatten().map(|c| (f, c)))
+                    .filter(|(_, c)| fits(c))
+                    .take(30)
+                    .map(|(f, c)| json!({ "card": engine.card_view(&db, c), "reason": f.reason }))
+                    .collect();
+                if !items.is_empty() {
+                    sections.push(json!({ "id": "deep", "title": "Found by rules text", "items": items }));
+                }
+            }
+
             // Role gaps from the deck analysis.
             if let Ok(analysis) = analyze_deck(&deck, &db) {
                 let items: Vec<Value> = analysis
@@ -1600,6 +1819,20 @@ impl Engine {
 }
 
 /// Finished games from the Game tab, newest first.
+/// Formats the app builds, with their rules, for the Build screen.
+fn formats_json() -> Value {
+    let points: Vec<Value> = CANLANDER_POINTS.iter().map(|(n, p)| json!({ "name": n, "points": p })).collect();
+    json!([
+        { "id": "commander", "label": "Commander", "life": 40, "commander_damage": 21, "has_commander": true,
+          "summary": "100 cards with a legendary commander, singleton, Commander banned list, brackets 1–5." },
+        { "id": "pdh", "label": "Pauper Commander", "life": 30, "commander_damage": 16, "has_commander": true,
+          "summary": "An uncommon creature commander and 99 commons (paper or MTGO printings). 30 life, 16 commander damage. Mystic Remora and Rhystic Study banned." },
+        { "id": "canlander", "label": "Canadian Highlander", "life": 20, "commander_damage": null, "has_commander": false,
+          "max_points": CANLANDER_MAX_POINTS, "points_date": CANLANDER_POINTS_DATE, "points": points,
+          "summary": "100+ cards, singleton, no commander or sideboard, one-on-one at 20 life. Vintage banned list and at most 10 points from the points list." },
+    ])
+}
+
 fn read_games() -> Value {
     fs::read_to_string(GAMES_PATH)
         .ok()

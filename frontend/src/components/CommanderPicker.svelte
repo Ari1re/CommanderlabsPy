@@ -7,8 +7,9 @@
   let {
     label = 'Commander',
     placeholder = 'Search for a commander',
+    format = 'commander',
     onpick,
-  }: { label?: string; placeholder?: string; onpick: (card: CardView) => void } = $props();
+  }: { label?: string; placeholder?: string; format?: string; onpick: (card: CardView) => void } = $props();
 
   let query = $state('');
   let results = $state<CardView[]>([]);
@@ -25,7 +26,7 @@
     }
     timer = setTimeout(async () => {
       try {
-        results = await api<CardView[]>('commander_suggestions', { query: q });
+        results = await api<CardView[]>('commander_suggestions', { query: q, format });
         active = 0;
         open = true;
       } catch {

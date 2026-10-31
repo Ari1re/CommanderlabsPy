@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from '../../lib/api';
-  import { COUNTERS, CMD_LETHAL, game, type Player, type Rotation } from '../../lib/game.svelte';
+  import { COUNTERS, cmdLethalOf, game, type Player, type Rotation } from '../../lib/game.svelte';
   import type { CardView } from '../../lib/types';
   import { artCrop } from '../../lib/util';
   import Icon from '../Icon.svelte';
@@ -19,6 +19,10 @@
   let artTimer: ReturnType<typeof setTimeout> | undefined;
   let s = $derived(game.state!);
   let opponents = $derived(s.players.filter((p) => p.id !== player.id));
+  let lethal = $derived(cmdLethalOf(s));
+  let CMD_LETHAL = $derived(lethal ?? 21);
+  // Commander tax only matters in commander modes.
+  let counters = $derived(lethal == null ? COUNTERS.filter((c) => c.id !== 'tax') : COUNTERS);
 
   function addCustom() {
     game.addCustom(player.id, customName);
@@ -56,9 +60,11 @@
 
   <div class="rows">
     <div class="actions">
+      {#if lethal != null}
       <button class="action primary" onclick={() => dealDamage(0)}>⚔ Deal commander damage</button>
+      {/if}
       <button class="action" onclick={() => { onedit(); onclose(); }}>Set life total</button>
-      {#if player.partner}
+      {#if player.partner && lethal != null}
         <button class="action" onclick={() => dealDamage(1)}>⚔ With partner</button>
       {/if}
       {#if s.turns}
@@ -67,7 +73,8 @@
       <button class="action" onclick={() => game.concede(player.id)}>{player.conceded ? 'Rejoin game' : 'Concede'}</button>
     </div>
 
-    <p class="group">Commander damage taken</p>
+    {#if lethal != null}
+    <p class="group">Commander damage taken ({lethal} loses)</p>
     {#each opponents as o (o.id)}
       {#each o.partner ? [0, 1] : [0] as k (k)}
         {@const v = player.cmd[`${o.id}:${k}`] ?? 0}
@@ -81,9 +88,10 @@
       {/each}
     {/each}
     {#if s.cmdLowersLife}<p class="hint">Commander damage also lowers life.</p>{/if}
+    {/if}
 
     <p class="group">Counters</p>
-    {#each COUNTERS as c (c.id)}
+    {#each counters as c (c.id)}
       {@const v = player.counters[c.id] ?? 0}
       <div class="row" class:danger={c.lethal != null && v >= c.lethal - 2}>
         <span class="lbl">{c.label}{c.id === 'tax' && v ? ` (+${v * 2})` : ''}</span>

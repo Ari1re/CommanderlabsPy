@@ -3,7 +3,7 @@
   import { api, copyText, download, runtime } from '../lib/api';
   import { app, go } from '../lib/store.svelte';
   import type { Analysis, Deck } from '../lib/types';
-  import { artCrop, money, price } from '../lib/util';
+  import { artCrop, FORMATS, money, price } from '../lib/util';
   import Icon from '../components/Icon.svelte';
   import Identity from '../components/Identity.svelte';
   import Modal from '../components/Modal.svelte';
@@ -24,7 +24,7 @@
   let analysis = $state<Analysis | null>(null);
   let loadError = $state<string | null>(null);
   let menu = $state(false);
-  let dialog = $state<null | 'rename' | 'duplicate' | 'delete' | 'text' | 'export' | 'share'>(null);
+  let dialog = $state<null | 'rename' | 'duplicate' | 'delete' | 'text' | 'export' | 'share' | 'format'>(null);
   /** Bumped on every change so tabs that summarise the deck reload. */
   let version = $state(0);
   let input = $state('');
@@ -78,7 +78,26 @@
   }
 
   let commanders = $derived(deck?.entries.filter((e) => e.zone === 'commander') ?? []);
-  let hero = $derived(commanders.find((e) => e.card?.image_uri)?.card?.image_uri ?? '');
+  let hero = $derived(
+    commanders.find((e) => e.card?.image_uri)?.card?.image_uri ??
+      deck?.entries.find((e) => e.zone === 'main' && e.card?.image_uri && !e.card.type_line.includes('Land'))?.card?.image_uri ??
+      '',
+  );
+  let fmt = $derived(deck?.format ?? 'commander');
+  let check = $derived(deck?.format_check);
+  let legal = $derived(fmt === 'commander' ? (analysis?.legal ?? true) : !check?.problems.length);
+  let problems = $derived(fmt === 'commander' ? (analysis?.legality_issues ?? []) : (check?.problems ?? []));
+
+  async function setFormat(f: string) {
+    try {
+      const next = await api<Deck>('set_format', { name, format: f });
+      dialog = null;
+      updated(next);
+      app.toast(`Now a ${next.format_label} deck.`, 'success');
+    } catch (err) {
+      app.error(err);
+    }
+  }
   let count = $derived(
     deck?.entries.filter((e) => e.zone !== 'sideboard').reduce((n, e) => n + e.quantity, 0) ?? 0,
   );
@@ -87,7 +106,14 @@
       .filter((e) => e.zone !== 'sideboard')
       .reduce((sum, e) => sum + (price(e.card, app.currency) ?? 0) * e.quantity, 0) ?? 0,
   );
-  let identity = $derived(analysis?.identity ?? [...new Set(commanders.flatMap((c) => (c.card?.color_identity ?? '').split('')))].join(''));
+  let identity = $derived.by(() => {
+    // No commander (Canadian Highlander): the deck's colors come from its cards.
+    if (deck?.format === 'canlander' || !commanders.length) {
+      const used = new Set(deck?.entries.flatMap((e) => (e.card?.color_identity ?? '').split('')) ?? []);
+      return ['W', 'U', 'B', 'R', 'G'].filter((c) => used.has(c)).join('');
+    }
+    return analysis?.identity ?? [...new Set(commanders.flatMap((c) => (c.card?.color_identity ?? '').split('')))].join('');
+  });
 
   async function exportMoxfield() {
     try {
@@ -159,17 +185,26 @@
     <div class="hero-body">
       <a class="back small" href="#/"><Icon name="back" size={16} /> Decks</a>
       <h1>{deck.name}</h1>
-      <p class="dim">{commanders.map((c) => c.name).join(' + ') || 'No commander set'}</p>
+      <p class="dim">
+        {#if fmt === 'canlander'}Canadian Highlander · no commander{:else}{commanders.map((c) => c.name).join(' + ') || 'No commander set'}{/if}
+      </p>
       <div class="facts">
         <Identity identity={identity} size={14} />
-        <span class:warn={count !== 100}>{count} / 100 cards</span>
+        <span class:warn={fmt === 'canlander' ? count < 100 : count !== 100}>{count}{fmt === 'canlander' ? '' : ' / 100'} cards</span>
         {#if total > 0}<span class="num">{money(total, app.currency)}</span>{/if}
-        {#if analysis}
+        {#if fmt !== 'commander'}
+          <button class="badge format" onclick={() => (dialog = 'format')} title="Change format">{deck.format_label}</button>
+        {/if}
+        {#if fmt === 'canlander' && check}
+          <span class="badge brass" class:danger={check.points > (check.max_points ?? 10)} title={check.pointed_cards.map(([n, p]) => `${n}: ${p}`).join('\n') || 'No pointed cards'}>
+            {check.points} / {check.max_points} points
+          </span>
+        {:else if analysis && fmt === 'commander'}
           <span class="badge brass" title={analysis.bracket.reasons.join('\n')}>
             Bracket {analysis.bracket.bracket} · {analysis.bracket.label}
           </span>
-          {#if !analysis.legal}<span class="badge danger">Not legal</span>{/if}
         {/if}
+        {#if !legal}<span class="badge danger" title={problems.join('\n')}>Not legal</span>{/if}
       </div>
       <div class="row actions">
         <button class="btn primary" onclick={exportMoxfield}><Icon name="copy" size={17} /> Export to Moxfield</button>
@@ -181,6 +216,7 @@
           {#if menu}
             <div class="menu" role="menu">
               <button role="menuitem" onclick={openText}><Icon name="edit" size={16} /> Edit as text</button>
+              <button role="menuitem" onclick={() => { menu = false; dialog = 'format'; }}><Icon name="cards" size={16} /> Format: {deck.format_label}</button>
               <button role="menuitem" onclick={() => { menu = false; input = deck!.name; dialog = 'rename'; }}><Icon name="edit" size={16} /> Rename</button>
               <button role="menuitem" onclick={() => { menu = false; input = `${deck!.name} copy`; dialog = 'duplicate'; }}><Icon name="copy" size={16} /> Duplicate</button>
               <button role="menuitem" class="danger" onclick={() => { menu = false; dialog = 'delete'; }}><Icon name="trash" size={16} /> Delete</button>
@@ -224,6 +260,26 @@
 
 {#if dialog === 'share'}
   <ShareDialog {name} onclose={() => (dialog = null)} />
+{:else if dialog === 'format'}
+  <Modal title="Deck format" onclose={() => (dialog = null)}>
+    <div class="stack">
+      <p class="dim">The format sets which rules the deck is checked against. Your cards don't change.</p>
+      {#each FORMATS as f (f.id)}
+        <button class="format-pick" class:on={fmt === f.id} onclick={() => setFormat(f.id)}>
+          <b>{f.label}</b>
+          <span class="small dim">{f.summary}</span>
+        </button>
+      {/each}
+      {#if problems.length}
+        <div class="problems">
+          <b class="small">Problems for {deck?.format_label}</b>
+          <ul class="small">{#each problems.slice(0, 12) as p (p)}<li>{p}</li>{/each}</ul>
+          {#if problems.length > 12}<p class="small muted">…and {problems.length - 12} more.</p>{/if}
+        </div>
+      {/if}
+      <p class="small muted">Canadian Highlander has no commander, so switching to it moves the commander into the deck.</p>
+    </div>
+  </Modal>
 {:else if dialog === 'export'}
   <Modal title="Export to Moxfield" onclose={() => (dialog = null)} wide>
     <div class="stack">
@@ -407,5 +463,33 @@
     .hero-body {
       padding-top: 3rem;
     }
+  }
+  .badge.format {
+    cursor: pointer;
+    border: 1px solid var(--brass);
+    background: transparent;
+    color: var(--brass-strong);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+  .format-pick {
+    display: grid;
+    gap: 0.2rem;
+    text-align: left;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--panel);
+    cursor: pointer;
+  }
+  .format-pick.on {
+    border-color: var(--brass);
+    background: color-mix(in srgb, var(--brass) 10%, var(--panel));
+  }
+  .problems ul {
+    margin: 0.3rem 0 0;
+    padding-left: 1.1rem;
+    color: var(--danger);
   }
 </style>

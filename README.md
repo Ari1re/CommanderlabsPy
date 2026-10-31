@@ -1,8 +1,8 @@
 # Commander Lab
 
-Commander Lab is an all-in-one app for Magic: The Gathering **Commander** decks. You can:
+Commander Lab is an all-in-one app for Magic: The Gathering **Commander** decks, including **Pauper Commander (PDH)** and **Canadian Highlander**. You can:
 
-- **generate** a deck from a commander, a bracket and a play style
+- **generate** a deck from a commander (or colors, for Highlander), a power level and a play style
 - **build** one card by card
 - **import** a list, a Moxfield or Archidekt link, or a deck a friend shared by QR code
 
@@ -106,7 +106,7 @@ On NixOS, open a shell first: `nix-shell -p cargo rustc gcc nodejs`.
 
 ## First launch
 
-1. Click **Download card data**. Commander Lab fetches Scryfall's card database (about a minute). Refresh it any time from **Settings** for new sets and prices.
+1. Click **Download card data**. Commander Lab fetches Scryfall's card database (about a minute). Refresh it any time from **Settings** for new sets and prices. If you used a version before 0.27, update the card data once to use Pauper Commander and Canadian Highlander.
 2. Add a deck: **Build a deck** to generate one, or **Add a deck** to paste, link or scan one.
 
 ---
@@ -115,7 +115,21 @@ On NixOS, open a shell first: `nix-shell -p cargo rustc gcc nodejs`.
 
 ### Generate a deck
 
-**Build** → pick a commander (partners and backgrounds supported), a **bracket from 1 to 5** and up to three **play styles** taken from that commander's most popular EDHREC themes. The first style you pick is the main focus. Commander Lab researches how the commander is usually built and assembles a 100-card deck.
+**Build** → choose a **format**, then pick a commander (partners and backgrounds supported), a **power level from 1 to 5** and up to three **play styles** taken from that commander's most popular EDHREC themes. The first style you pick is the main focus. Type your own play style in the box under the list ("-1/-1 Counters", "Elves", "Landfall") to build around anything. Commander Lab researches how the commander is usually built and assembles a 100-card deck.
+
+Formats:
+
+| | Commander | Pauper Commander (PDH) | Canadian Highlander |
+|---|---|---|---|
+| Leader | Legendary commander | Creature, Vehicle or Spacecraft printed at uncommon | None: pick colors |
+| Other cards | Commander-legal | Printed at common (paper or MTGO printings) | Vintage card pool, at most 10 points |
+| Deck | Exactly 100, singleton | Exactly 100, singleton | 100 or more, singleton, no sideboard |
+| Life | 40, 21 commander damage | 30, 16 commander damage | 20, one-on-one |
+| Banned | Commander banned list | Mystic Remora, Rhystic Study, ante, Conspiracies, cards removed from constructed | Vintage banned list |
+
+Commander brackets only apply to Commander. For PDH the power level sets how hard the build pushes. For Canadian Highlander it sets how many points the deck may spend (levels 1–2 none, 3 up to 4, 4 up to 7, 5 all 10).
+
+**Deep card search** (a switch on the Build screen) reads the rules text of every card in Scryfall's database for cards that fit your play styles, including older cards no decklist runs. A -1/-1 counters deck picks up wither and persist creatures, for example. The deck's notes say which cards came from the search and why.
 
 At **Bracket 5 (cEDH)**, the generator builds from cEDH Decklist Database lists first; casual decklists and EDHREC only break ties. The deck's notes say which sources were used.
 
@@ -148,7 +162,11 @@ The **Suggestions** tab shows card images you can add with one tap. They're grou
 - **Popular in decks like yours**.
 - **Fills a gap**: ramp, draw or removal your deck is short on.
 
-Filter by role (ramp, draw, removal, creatures, lands, …) and by maximum price.
+- **Found by rules text**: cards whose rules text fits the deck's play styles.
+
+Filter by role (ramp, draw, removal, creatures, lands, …) and by maximum price. To dig for anything else, type an ability or play style in **Dig deeper** ("flash", "wither", "Elves"). Suggestions only include cards legal in the deck's format.
+
+The deck's format shows next to its card count. Change it from **⋯ → Format**; the deck is then checked against that format's rules.
 
 ### Analyze
 
@@ -215,6 +233,17 @@ Without one, the agent still runs its research and simulations.
 ### Game: life and counters
 
 The **Game** tab turns your phone into a life counter for 2–6 players.
+
+- **Game mode** sets starting life, commander damage and the usual player count:
+  - Commander: 40 life, 21 commander damage
+  - Pauper Commander: 30 life, 16 commander damage
+  - PDH one-on-one: 25 life, 21 commander damage
+  - Canadian Highlander: 20 life, one-on-one
+  - Brawl: 25 life
+  - Oathbreaker: 20 life
+  - 60-card formats: 20 life
+
+  Modes without commander damage hide it.
 
 - **Panels face** sets the layout: **Across** (the top row faces the players opposite), **Sides** (the left and right columns face the long edges of the table) or **All me**. Change it any time from the center button, and anyone can turn just their own panel with **Rotate my panel** in their menu.
 

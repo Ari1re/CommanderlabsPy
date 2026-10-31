@@ -343,6 +343,26 @@ for entry in &deck.sideboard {
         &tags,
     )?;
 
+    // Pauper Commander and Canadian Highlander have their own rules; the
+    // Commander checks above don't apply to them.
+    if !deck.format.is_commander() {
+        let commanders: Vec<Card> = deck
+            .commanders
+            .iter()
+            .filter_map(|e| db.get_card(&e.name).ok().flatten())
+            .collect();
+        let main: Vec<(u32, Card)> = deck
+            .main
+            .iter()
+            .filter_map(|e| db.get_card(&e.name).ok().flatten().map(|c| (e.quantity, c)))
+            .collect();
+        let identity = crate::commander::combined_identity(&commanders);
+        legality_issues = crate::format::check_deck(deck.format, &commanders, &main, &identity).problems;
+        for name in &unknown_cards {
+            legality_issues.push(format!("Unknown card: {name}."));
+        }
+    }
+
     legality_issues.sort();
     legality_issues.dedup();
 

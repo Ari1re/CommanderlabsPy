@@ -51,6 +51,7 @@ pub fn essentials(deck: &ParsedDeck, extras: bool) -> ParsedDeck {
         commanders: strip(&deck.commanders),
         main: strip(&deck.main),
         sideboard: if extras { strip(&deck.sideboard) } else { Vec::new() },
+        format: deck.format,
     }
 }
 
@@ -136,12 +137,20 @@ fn parse_v2(bytes: &[u8]) -> Result<(String, String)> {
     if deck.trim().is_empty() {
         bail!("The shared deck is empty.");
     }
+    // A leading "// Format: …" line (non-Commander decks) stays in front.
+    let (prefix, deck) = match deck.strip_prefix("//") {
+        Some(_) => match deck.split_once('\n') {
+            Some((line, rest)) => (format!("{line}\n"), rest),
+            None => (String::new(), deck),
+        },
+        None => (String::new(), deck),
+    };
     // Restore the "Deck" header removed when encoding.
     let deck = match deck.find("\n\n") {
         Some(i) if deck.starts_with("Commander\n") => format!("{}\n\nDeck\n{}\n", &deck[..i], &deck[i + 2..]),
         _ => format!("{deck}\n"),
     };
-    Ok((name.to_string(), deck))
+    Ok((name.to_string(), format!("{prefix}{deck}")))
 }
 
 fn base45_encode(bytes: &[u8]) -> String {
@@ -305,5 +314,18 @@ mod tests {
         assert!(decode("hello").is_err());
         assert!(decode("CLD1.!!!").is_err());
         assert!(decode("CLD2:@@@").is_err());
+    }
+
+    #[test]
+    fn format_survives_sharing() {
+        let mut deck = crate::deck::parse_deck_text("P", "Commander\n1 Murmuring Mystic\n\nDeck\n1 Ponder\n98 Island\n").unwrap();
+        deck.format = crate::format::Format::Pdh;
+        let codes = encode_deck("P", &deck, false).unwrap();
+        for code in [codes.text, codes.qr] {
+            let (_, text) = decode(&code).unwrap();
+            let back = crate::deck::parse_deck_text("P", &text).unwrap();
+            assert_eq!(back.format, crate::format::Format::Pdh);
+            assert_eq!(back.commanders.len(), 1);
+        }
     }
 }

@@ -46,6 +46,7 @@ pub fn import_moxfield(url: &str) -> Result<ParsedDeck> {
                         commanders,
                         main,
                         sideboard,
+                        format: Default::default(),
                     });
                 }
 

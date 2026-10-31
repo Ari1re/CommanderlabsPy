@@ -172,6 +172,7 @@ mod tests {
             commanders: vec![DeckEntry::new(1, "Kefka, Court Mage")],
             main: main.iter().map(|(q, n)| DeckEntry::new(*q, *n)).collect(),
             sideboard: vec![],
+            format: Default::default(),
         }
     }
 
