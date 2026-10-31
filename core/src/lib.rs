@@ -38,6 +38,8 @@ pub mod share;
 pub mod simulation;
 pub mod sources;
 pub mod spellbook;
+pub mod tts;
+pub mod updater;
 pub mod user_reference;
 pub mod versions;
 pub mod web_research;

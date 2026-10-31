@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { api, copyText, download, runtime } from '../lib/api';
+  import { api, copyText, download, openExternal, runtime } from '../lib/api';
   import { app, go } from '../lib/store.svelte';
   import type { Analysis, Deck } from '../lib/types';
   import { artCrop, FORMATS, money, price } from '../lib/util';
@@ -30,6 +30,32 @@
   let input = $state('');
   let exportText = $state('');
   let exportPath = $state('');
+  let exportTarget = $state<'moxfield' | 'archidekt' | 'tts'>('moxfield');
+  let tts = $state<{ json: string; file_name: string; path: string; installed_path: string | null; cards: number } | null>(null);
+
+  const SITES = {
+    moxfield: { label: 'Moxfield', url: 'https://moxfield.com/decks/personal', steps: 'In Moxfield, choose Create deck, then Import, and paste.' },
+    archidekt: { label: 'Archidekt', url: 'https://archidekt.com/', steps: 'In Archidekt, make a New deck, open Import cards and paste. The commander goes straight into the Commander category.' },
+  } as const;
+
+  async function exportTo(target: 'moxfield' | 'archidekt' | 'tts') {
+    exportTarget = target;
+    dialog = 'export';
+    exportText = '';
+    tts = null;
+    try {
+      if (target === 'tts') {
+        tts = await api('export_tts', { name });
+        return;
+      }
+      const res = await api<{ text: string; path: string }>(target === 'moxfield' ? 'export_moxfield' : 'export_archidekt', { name });
+      exportText = res.text;
+      exportPath = res.path;
+      if (await copyText(res.text)) app.toast(`Copied for ${SITES[target].label}.`, 'success');
+    } catch (err) {
+      app.error(err);
+    }
+  }
 
   const tabs = [
     { id: 'cards', label: 'Cards', icon: 'cards' },
@@ -207,7 +233,7 @@
         {#if !legal}<span class="badge danger" title={problems.join('\n')}>Not legal</span>{/if}
       </div>
       <div class="row actions">
-        <button class="btn primary" onclick={exportMoxfield}><Icon name="copy" size={17} /> Export to Moxfield</button>
+        <button class="btn primary" onclick={() => exportTo(exportTarget === 'tts' ? 'moxfield' : exportTarget)}><Icon name="download" size={17} /> Export</button>
         <button class="btn" onclick={() => (dialog = 'share')}><Icon name="link" size={17} /> Share</button>
         <div class="menu-wrap">
           <button class="btn icon" aria-label="More deck actions" aria-expanded={menu} onclick={() => (menu = !menu)}>
@@ -281,20 +307,54 @@
     </div>
   </Modal>
 {:else if dialog === 'export'}
-  <Modal title="Export to Moxfield" onclose={() => (dialog = null)} wide>
+  <Modal title="Export {deck?.name ?? ''}" onclose={() => (dialog = null)} wide>
     <div class="stack">
-      <p class="dim">
-        Copied to your clipboard. In Moxfield, choose <b>Create deck → Import</b> and paste. Each
-        line keeps its set and collector number, so Moxfield shows the same printings.
-      </p>
-      <textarea class="input" rows="12" readonly value={exportText}></textarea>
-      <p class="small muted">Also saved to {exportPath}</p>
+      <div class="segmented export-tabs" role="group" aria-label="Export to">
+        <button aria-pressed={exportTarget === 'moxfield'} onclick={() => exportTo('moxfield')}>Moxfield</button>
+        <button aria-pressed={exportTarget === 'archidekt'} onclick={() => exportTo('archidekt')}>Archidekt</button>
+        <button aria-pressed={exportTarget === 'tts'} onclick={() => exportTo('tts')}>Tabletop Simulator</button>
+      </div>
+      {#if exportTarget === 'tts'}
+        {#if !tts}
+          <p class="muted">Making the Tabletop Simulator deck…</p>
+        {:else}
+          {#if tts.installed_path}
+            <p class="ok-line"><Icon name="check" size={16} /> Saved straight into Tabletop Simulator.</p>
+            <p class="dim">In Tabletop Simulator, open <b>Objects → Saved Objects</b> and click <b>{tts.file_name.replace(/\.json$/, '')}</b> to spawn the deck ({tts.cards} cards) with its commander face up beside it.</p>
+          {:else}
+            <p class="dim">
+              Put <b>{tts.file_name}</b> in Tabletop Simulator's <b>Saved Objects</b> folder, then spawn it from <b>Objects → Saved Objects</b>.
+              The deck ({tts.cards} cards) appears with its commander face up beside it.
+            </p>
+            <ul class="small dim">
+              <li>Windows: Documents\My Games\Tabletop Simulator\Saves\Saved Objects</li>
+              <li>Linux: ~/.local/share/Tabletop Simulator/Saves/Saved Objects</li>
+              <li>Mac: ~/Library/Tabletop Simulator/Saves/Saved Objects</li>
+            </ul>
+          {/if}
+          <p class="small muted">Card images load from Scryfall, using the printings you picked. Double-faced cards flip with the number keys. Also saved to {tts.path}</p>
+        {/if}
+      {:else}
+        <p class="dim">
+          Copied to your clipboard. {SITES[exportTarget].steps} Each line keeps its set and collector number, so you get the same printings.
+          Neither site lets other apps create decks in your account, so this is the quickest way in.
+        </p>
+        <textarea class="input" rows="10" readonly value={exportText}></textarea>
+        <p class="small muted">Also saved to {exportPath}</p>
+      {/if}
     </div>
     {#snippet footer()}
-      {#if !runtime.isTauri}
-        <button class="btn" onclick={() => download(`${name}.moxfield.txt`, exportText)}><Icon name="download" size={16} /> Download</button>
+      {#if exportTarget === 'tts'}
+        {#if tts && (!runtime.isTauri || runtime.isAndroid)}
+          <button class="btn primary" onclick={() => download(tts!.file_name, tts!.json, 'application/json')}><Icon name="download" size={16} /> Download {tts.file_name}</button>
+        {/if}
+      {:else}
+        {#if !runtime.isTauri}
+          <button class="btn" onclick={() => download(`${name}.${exportTarget}.txt`, exportText)}><Icon name="download" size={16} /> Download</button>
+        {/if}
+        <button class="btn" onclick={async () => { await copyText(exportText); app.toast('Copied.', 'success'); }}><Icon name="copy" size={16} /> Copy again</button>
+        <button class="btn primary" onclick={() => openExternal(SITES[exportTarget as 'moxfield' | 'archidekt'].url)}>Open {SITES[exportTarget as 'moxfield' | 'archidekt'].label} <Icon name="external" size={14} /></button>
       {/if}
-      <button class="btn primary" onclick={async () => { await copyText(exportText); app.toast('Copied.', 'success'); }}><Icon name="copy" size={16} /> Copy again</button>
     {/snippet}
   </Modal>
 {:else if dialog === 'text'}
@@ -491,5 +551,16 @@
     margin: 0.3rem 0 0;
     padding-left: 1.1rem;
     color: var(--danger);
+  }
+  .export-tabs {
+    flex-wrap: wrap;
+    justify-self: start;
+  }
+  .ok-line {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--ok);
+    font-weight: 700;
   }
 </style>

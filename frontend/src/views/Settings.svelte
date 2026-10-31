@@ -4,6 +4,8 @@
   import { app } from '../lib/store.svelte';
   import Icon from '../components/Icon.svelte';
 
+  let checking = $state(false);
+
   let { onUpdateCards }: { onUpdateCards: () => void } = $props();
 
   let ai = $state<any>(null);
@@ -76,6 +78,27 @@
         <button aria-pressed={app.currency === 'eur'} onclick={() => setCurrency('eur')}>Euros</button>
         <button aria-pressed={app.currency === 'tix'} onclick={() => setCurrency('tix')}>MTGO tix</button>
       </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Updates {#if app.update?.available}<span class="badge brass">New</span>{/if}</h2>
+    <p class="dim">
+      {#if app.update?.available}
+        Commander Lab {app.update.latest_version} is available. You have {app.update.current_version}{app.update.current_build ? ` (build ${app.update.current_build})` : ''}.
+      {:else if app.update}
+        {app.update.install === 'none' ? app.update.how : `You have the latest version (${app.update.current_version}${app.update.current_build ? `, build ${app.update.current_build}` : ''}).`}
+      {:else}
+        Commander Lab {app.status?.version}{app.status?.build ? ` (build ${app.status.build})` : ''}. It checks GitHub for new builds when it starts.
+      {/if}
+    </p>
+    <div class="row">
+      <button class="btn" disabled={checking} onclick={async () => { checking = true; const u = await app.checkUpdate(true); checking = false; if (u && !u.available) app.toast(u.install === 'none' ? 'Development build: no automatic updates.' : 'You have the latest version.', 'success'); }}>
+        <Icon name="refresh" size={16} /> {checking ? 'Checking…' : 'Check for updates'}
+      </button>
+      {#if app.update?.available}
+        <button class="btn primary" onclick={() => (app.updateOpen = true)}><Icon name="download" size={16} /> Update now</button>
+      {/if}
     </div>
   </section>
 

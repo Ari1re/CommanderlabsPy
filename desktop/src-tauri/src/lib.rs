@@ -19,6 +19,8 @@ async fn api(engine: State<'_, Arc<Engine>>, cmd: String, args: Option<Value>) -
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Opens web links and update downloads in the system browser / installer.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let platform = if cfg!(target_os = "android") { "android" } else { "desktop" };
             // Desktop keeps using the same folder as the browser edition so

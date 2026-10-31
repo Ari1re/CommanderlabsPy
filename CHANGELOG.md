@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.28.0
+
+- **Updates inside the app.** Commander Lab checks GitHub for a newer build when it starts. When one is out, an **Update** button appears (in the sidebar on desktop, a banner, and a dot on Settings), and **Settings → Updates** can check any time.
+  - Windows installer: downloads and installs the update, then reopens the app.
+  - Windows portable exe and Linux (the .sh install or an AppImage, including NixOS' browser edition): replaces itself and restarts.
+  - Android: downloads the new APK; Android asks to install it over the current app and keeps your decks.
+  - What's new is shown from the changelog before you update.
+- **Export** (replaces "Export to Moxfield"):
+  - **Moxfield** and **Archidekt**: copies the list in that site's import format (printings kept; the commander lands in Archidekt's Commander category) and opens the site to paste it. Neither site lets other apps create decks in your account, so this is the most direct route.
+  - **Tabletop Simulator**: a saved deck object with every card's image, the commander face up beside the deck, and double-faced cards as two-state cards. On a computer with TTS installed it's saved straight into TTS' Saved Objects; otherwise download the file and put it there.
+- **Commander search** no longer stays blank when something's wrong. It says why: for example, "Update card data to search Pauper Commander commanders" when the card data predates 0.27, or that no eligible commander matches. Picking a result from the list is more reliable on touch screens.
+- A prompt to update the card data appears when it's too old for Pauper Commander and Canadian Highlander.
+- Links to Scryfall, TCGplayer, mpcfill.com and others open in your browser from the desktop and Android apps.
+- **Run from source on Linux:** `./run-linux.sh` builds and starts the browser edition from a git checkout (`--desktop` for the window, `--update` to pull and rebuild). On NixOS it uses the included `shell.nix` automatically.
+
 ## 0.27.2
 
 - **Proxies: every art choice.**

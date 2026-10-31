@@ -16,21 +16,35 @@
   let open = $state(false);
   let active = $state(0);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** Why the list is empty, shown under the box instead of silence. */
+  let message = $state('');
+  let seq = 0;
 
   function search() {
     clearTimeout(timer);
     const q = query.trim();
     if (q.length < 2) {
       results = [];
+      message = '';
       return;
     }
+    const mine = ++seq;
     timer = setTimeout(async () => {
       try {
-        results = await api<CardView[]>('commander_suggestions', { query: q, format });
+        const found = await api<CardView[]>('commander_suggestions', { query: q, format });
+        if (mine !== seq) return; // a newer search is on its way
+        results = found;
         active = 0;
         open = true;
-      } catch {
+        message = found.length
+          ? ''
+          : format === 'pdh'
+            ? `No eligible commander matches "${q}". PDH commanders are creatures printed at uncommon.`
+            : `No commander matches "${q}".`;
+      } catch (err) {
+        if (mine !== seq) return;
         results = [];
+        message = (err as Error).message;
       }
     }, 250);
   }
@@ -39,6 +53,7 @@
     onpick(card);
     query = '';
     results = [];
+    message = '';
     open = false;
   }
 
@@ -79,7 +94,8 @@
     <ul id="cmd-results" role="listbox">
       {#each results as card, i (card.oracle_id)}
         <li role="option" aria-selected={i === active}>
-          <button onmousedown={() => pick(card)} class:active={i === active}>
+          <!-- mousedown keeps focus in the box; click picks (works for taps too). -->
+          <button onmousedown={(e) => e.preventDefault()} onclick={() => pick(card)} class:active={i === active}>
             <span class="thumb" style:background-image={card.image_uri ? `url("${artCrop(card.image_uri)}")` : 'none'}></span>
             <span class="name">{card.name}</span>
             <Identity identity={card.color_identity} size={10} />
@@ -87,6 +103,8 @@
         </li>
       {/each}
     </ul>
+  {:else if message}
+    <p class="small msg">{message}</p>
   {/if}
 </div>
 
@@ -135,5 +153,9 @@
   }
   .name {
     flex: 1;
+  }
+  .msg {
+    margin: 0.4rem 0 0;
+    color: var(--muted);
   }
 </style>

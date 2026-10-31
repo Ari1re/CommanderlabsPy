@@ -25,7 +25,7 @@ It runs on Windows, Linux (NixOS included) and Android. Your decks stay on your 
 
 ## Install and run
 
-Download the latest build from the [Releases](../../releases) page. Every update to the app is built and published automatically.
+Download the latest build from the [Releases](../../releases) page. Every update to the app is built and published automatically, and once it's installed Commander Lab updates itself (see [Updates](#updates)).
 
 | Platform | Download |
 |---|---|
@@ -86,11 +86,21 @@ New builds install over the old one without losing your decks. Everything works 
 
 ### Build from source
 
-You need [Rust](https://rustup.rs), [Node.js 20+](https://nodejs.org), and a C compiler.
+On Linux (NixOS included), clone the repository and run the script:
 
 ```sh
 git clone https://github.com/Ari1re/CommanderlabsPy
 cd CommanderlabsPy
+./run-linux.sh              # browser edition
+./run-linux.sh --desktop    # desktop window (needs webkit2gtk)
+./run-linux.sh --update     # git pull, rebuild and start
+```
+
+It needs [Rust](https://rustup.rs), [Node.js 20+](https://nodejs.org) and a C compiler. On NixOS without them it runs inside the included `shell.nix` by itself. Decks are shared with any installed copy.
+
+By hand, on any system:
+
+```sh
 npm --prefix frontend ci && npm --prefix frontend run build
 
 # Browser edition (works everywhere):
@@ -207,9 +217,15 @@ Every change is saved automatically, whether it's an added card, a new printing,
 
 **Share** shows a QR code and a share code holding just what rebuilds the deck: the commander and every card with its count. Tick **Include printings and sideboard** to add those too; this makes a bigger code. On another device, scan it or paste the code. No account or server is involved.
 
-### Export to Moxfield
+### Export
 
-**Export to Moxfield** copies the list in Moxfield's import format, with each card's chosen set and collector number. In Moxfield: **Create deck → Import → paste**.
+**Export** sends the deck to:
+
+- **Moxfield**: copies the list in Moxfield's import format with each card's set and collector number, and opens Moxfield. Choose **Create deck → Import → paste**.
+- **Archidekt**: copies the list in Archidekt's format (the commander goes into the Commander category) and opens Archidekt. Make a **New deck**, then **Import cards → paste**.
+- **Tabletop Simulator**: a saved deck object with every card's image, the commander face up beside the deck, and double-faced cards that flip. If Tabletop Simulator is installed on the computer, it's saved straight into its **Saved Objects** folder; in TTS open **Objects → Saved Objects** and spawn it. Otherwise download the file and put it in `Documents/My Games/Tabletop Simulator/Saves/Saved Objects` (Windows) or `~/.local/share/Tabletop Simulator/Saves/Saved Objects` (Linux).
+
+Moxfield and Archidekt don't let other apps create decks in your account, so copy-and-paste is the most direct route.
 
 ### Print proxies
 
@@ -256,6 +272,15 @@ The **Game** tab turns your phone into a life counter for 2–6 players.
 - Turn on **Track turns** to see whose turn it is and pass with **Next turn**. Add a **chess clock** of 10–45 minutes per player.
 - The center button has undo, dice, coin, first player, day/night, a life log, a floating mana pool, card lookup, and **End game**. Choosing the winner saves the game; your win rates by player and deck appear under the setup.
 - **Leave table** (top of the screen on desktop, or in the center menu) goes back to the app; Esc does the same on desktop. The game is kept if you leave or close the app, and **Resume** brings it back.
+
+### Updates
+
+When a new build is published, Commander Lab shows an **Update** button (in the sidebar on desktop, plus a banner and a dot on Settings). **Settings → Updates** checks any time.
+
+- **Windows** installer: downloads and installs the update, then reopens the app. The portable exe swaps itself for the new one and restarts.
+- **Linux** (installed with the `.sh`, or an AppImage) and the **NixOS** browser edition: installs the update and restarts.
+- **Android**: downloads the new APK; tap it and Android installs it over the current app, keeping your decks.
+- The `.deb` and copies built from source don't replace themselves. For source builds, run `./run-linux.sh --update`.
 
 ### Settings
 
