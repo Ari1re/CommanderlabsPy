@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.24.0
+
+- Game tab reworked to play like Mythic Tools:
+  - Tap a side for ±1, hold for ±10; set an exact life total (with ±1/5/10/100) from the player menu.
+  - Swipe up or down on a panel (or tap ⋯) for that player's menu.
+  - "Deal commander damage" turns every other panel into a damage counter for that commander; one tap per point, "Done with combat" to finish.
+  - Drag the Monarch or Initiative token from one player to another.
+  - Card-art backgrounds from any card, low-life pulse at 10 or less, concede.
+  - Turn tracking in clockwise seat order with an optional chess clock (10–45 min per player).
+  - Life log of every change, floating mana pool, in-game card lookup, dice/coin/first player.
+  - End a game by choosing the winner; saved games show win rates per player and deck.
+- Deck page: the ⋯ menu (rename, duplicate, delete, edit as text) is no longer hidden behind the tabs.
+- Android: content no longer sits under the status bar.
+
 ## 0.23.0
 
 - New Game tab: life totals for 2–6 players on one phone, with the top row turned to face players across the table. Tap or hold to change life; per-player commander damage from each opponent (partners tracked separately), poison, commander tax, energy, experience, rad, tickets and custom counters; Monarch, Initiative, City's blessing and day/night; dice, coin flip, random first player, undo, lethal detection, and the game is kept if you close the app. Link a deck to show its commander art.
