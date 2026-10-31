@@ -55,15 +55,19 @@ class AppState {
   update = $state<UpdateInfo | null>(null);
   /** The update dialog is open. */
   updateOpen = $state(false);
+  /** Why the last update check failed, if it did. */
+  updateError = $state<string | null>(null);
   private toastId = 0;
 
   /** Check GitHub for a newer build. Quiet unless `force` (Settings). */
-  async checkUpdate(force = false) {
+  async checkUpdate(force = false, loud = force) {
     try {
       this.update = await api<UpdateInfo>('update_check', { force });
+      this.updateError = null;
       return this.update;
     } catch (err) {
-      if (force) this.error(err);
+      this.updateError = err instanceof Error ? err.message : String(err);
+      if (loud) this.error(err);
       return null;
     }
   }

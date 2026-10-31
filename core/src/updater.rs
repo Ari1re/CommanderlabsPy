@@ -27,7 +27,8 @@ use std::{
 
 pub const REPO: &str = "Ari1re/CommanderlabsPy";
 const CACHE_PATH: &str = "./data/update.json";
-const RECHECK_SECS: u64 = 6 * 3600;
+/// A quick relaunch reuses the last answer; anything older asks GitHub again.
+const RECHECK_SECS: u64 = 10 * 60;
 
 /// Build number of this binary (None for local development builds).
 pub fn current_build() -> Option<u32> {
@@ -128,7 +129,7 @@ fn asset_for(platform: &str, install: &Install) -> &'static str {
     }
 }
 
-/// Latest release, at most every six hours unless `force`.
+/// Latest release, at most every ten minutes unless `force`.
 pub fn check(platform: &str, force: bool) -> Result<UpdateInfo> {
     if !force {
         if let Ok(cached) = fs::read_to_string(CACHE_PATH).map(|t| serde_json::from_str::<UpdateInfo>(&t)) {

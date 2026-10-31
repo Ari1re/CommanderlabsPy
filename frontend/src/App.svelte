@@ -32,6 +32,16 @@
     ready = true;
     // Look for a newer build once things have settled.
     setTimeout(() => app.checkUpdate(), 4000);
+    // Keep looking while the app stays open (Android keeps apps alive for days),
+    // and whenever it comes back to the foreground.
+    setInterval(() => app.checkUpdate(), 60 * 60 * 1000);
+    let lastFocusCheck = Date.now();
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastFocusCheck > 15 * 60 * 1000) {
+        lastFocusCheck = Date.now();
+        app.checkUpdate();
+      }
+    });
     // In the desktop/Android app, open outside links in the system browser.
     if (runtime.isTauri) {
       document.addEventListener('click', (e) => {

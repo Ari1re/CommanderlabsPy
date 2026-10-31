@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.30.1
+
+- **Fixed: new builds didn't show up as updates.** The app reused its last update check for up to six hours and only checked when it started, so a build published after that check stayed hidden. Now:
+  - opening **Settings** always checks GitHub;
+  - the app checks again every hour while it's open, and when you come back to it after a while (useful on Android, which keeps apps running for days);
+  - a quick relaunch reuses the last answer for at most ten minutes.
+- If the update check fails, Settings now says why instead of quietly saying you're up to date. A **Releases** link there opens the GitHub downloads page.
+
 ## 0.30.0
 
 - **Search tab: find cards with Scryfall syntax and add them, like Moxfield.**
