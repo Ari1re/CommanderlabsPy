@@ -331,7 +331,7 @@
     width: 100%;
     height: auto;
     aspect-ratio: 63 / 88;
-    object-fit: cover;
+    object-fit: contain;
   }
   .placeholder {
     display: grid;

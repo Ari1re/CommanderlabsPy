@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.27.1
+
+- Card images are fitted, never cropped. Battles, planes, split cards and proxy art with bleed used to lose their edges or look zoomed in.
+- Game: a **Leave table** button at the top of the table on desktop (and in the game menu everywhere), and Esc leaves on desktop. The game is kept; Resume brings you back.
+
 ## 0.27.0
 
 - **Pauper Commander (PDH):** build, check and track PDH decks under the PDH Home Base rules.

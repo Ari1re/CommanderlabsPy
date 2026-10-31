@@ -332,10 +332,16 @@ textarea.input {
 .card-img {
   display: block;
   width: 100%;
+  height: auto;
   aspect-ratio: 63 / 88;
   border-radius: var(--r-card);
   background: var(--panel-2);
-  object-fit: cover;
+  /* Fit, never crop: battles, planes, split cards and proxy art with bleed
+     aren't the standard card shape, and cropping cut their edges off. */
+  object-fit: contain;
+}
+img.card-img {
+  background: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {
