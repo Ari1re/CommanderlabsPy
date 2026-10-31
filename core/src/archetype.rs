@@ -324,3 +324,34 @@ fn tags_for_card(card: &Card) -> Vec<String> {
 
     tags
 }
+
+/// Separator used when a deck is built around several play styles,
+/// e.g. "Tokens + Treasure". Theme names themselves never contain " + "
+/// (EDHREC's "+1/+1 Counters" has no space before the plus).
+pub const THEME_SEPARATOR: &str = " + ";
+
+/// Split a theme spec ("Tokens + Treasure") into its individual themes.
+pub fn theme_list(spec: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in spec.split(THEME_SEPARATOR) {
+        let part = part.trim();
+        if !part.is_empty() && !out.iter().any(|t| t.eq_ignore_ascii_case(part)) {
+            out.push(part.to_string());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod theme_list_tests {
+    use super::theme_list;
+
+    #[test]
+    fn splits_multiple_themes_and_keeps_counter_names() {
+        assert_eq!(theme_list("Tokens + Treasure"), vec!["Tokens", "Treasure"]);
+        assert_eq!(theme_list("+1/+1 Counters + Lifegain"), vec!["+1/+1 Counters", "Lifegain"]);
+        assert_eq!(theme_list("Stax"), vec!["Stax"]);
+        assert_eq!(theme_list(" Tokens +  tokens "), vec!["Tokens"]);
+        assert!(theme_list("").is_empty());
+    }
+}

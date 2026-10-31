@@ -52,11 +52,17 @@ pub fn commander_build_cards(
 
     let mut merged = HashMap::<String, EdhrecCardSignal>::new();
 
+    let themes = crate::archetype::theme_list(selected_theme);
+
     for commander in commanders {
-        let themed = load_or_fetch_build_json(commander, Some(selected_theme))
-            .ok()
-            .map(|value| extract_build_cards(&value))
-            .filter(|cards| !cards.is_empty());
+        // One EDHREC theme page per selected play style, merged.
+        let mut themed_cards = Vec::new();
+        for theme in &themes {
+            if let Ok(value) = load_or_fetch_build_json(commander, Some(theme)) {
+                themed_cards.extend(extract_build_cards(&value));
+            }
+        }
+        let themed = Some(themed_cards).filter(|cards| !cards.is_empty());
 
         let cards = themed.unwrap_or_else(|| {
             load_or_fetch_build_json(commander, None)

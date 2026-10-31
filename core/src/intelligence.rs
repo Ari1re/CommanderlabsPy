@@ -774,6 +774,12 @@ fn card_matches_tag(card: &Card, tag: &str) -> bool {
         return false;
     }
 
+    // Several selected play styles ("Tokens + Treasure"): match any of them.
+    let themes = crate::archetype::theme_list(tag);
+    if themes.len() > 1 {
+        return themes.iter().any(|t| card_matches_tag(card, t));
+    }
+
     tag_names_for_card(card)
         .iter()
         .any(|candidate| candidate.eq_ignore_ascii_case(tag))

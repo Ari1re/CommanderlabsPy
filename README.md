@@ -115,7 +115,7 @@ On NixOS, open a shell first: `nix-shell -p cargo rustc gcc nodejs`.
 
 ### Generate a deck
 
-**Build** → pick a commander (partners and backgrounds supported), a **bracket from 1 to 5** and a **play style** taken from that commander's most popular EDHREC themes. Commander Lab researches how the commander is usually built and assembles a 100-card deck.
+**Build** → pick a commander (partners and backgrounds supported), a **bracket from 1 to 5** and up to three **play styles** taken from that commander's most popular EDHREC themes. The first style you pick is the main focus. Commander Lab researches how the commander is usually built and assembles a 100-card deck.
 
 Every generated deck is checked before it's saved: exactly 100 cards, singleton, inside the commander's colors, Commander-legal, and locked to the bracket you picked.
 
@@ -209,6 +209,15 @@ The AI model is optional. Pick it in **Settings → AI model**:
 - any OpenAI-compatible API
 
 Without one, the agent still runs its research and simulations.
+
+### Game: life and counters
+
+The **Game** tab turns your phone into a life counter for 2–6 players. The top row faces the players across the table.
+
+- Tap the left or right side of a panel to lose or gain 1 life. Hold to keep counting.
+- **Counters** opens a full-screen list facing that player, with commander damage from each opponent (partners separately), poison, commander tax, energy, experience, rad, tickets, and any counter you add.
+- The center button has undo, dice, a coin flip, a random first player, day/night, Monarch/Initiative options, restart and end game.
+- Link a deck to a player to show their commander's art. The game is kept if you close the app.
 
 ### Settings
 

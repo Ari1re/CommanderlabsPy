@@ -20,6 +20,11 @@ use std::{collections::HashMap, fs, path::Path, time::Duration};
 
 pub const CONFIG_PATH: &str = "./data/mpc_config.json";
 
+/// The MPC Autofill search server behind mpcautofill.github.io. (The old
+/// mpcautofill.com address now answers every search with 405.)
+pub const DEFAULT_BACKEND: &str = "https://mpcfill.com";
+const RETIRED_BACKENDS: [&str; 2] = ["mpcautofill.com", "www.mpcautofill.com"];
+
 /// MakePlayingCards bracket sizes. An order is rounded up to the smallest
 /// bracket that fits every slot.
 pub const MPC_BRACKETS: [u32; 16] = [
@@ -56,7 +61,7 @@ pub struct MpcConfig {
 impl Default for MpcConfig {
     fn default() -> Self {
         Self {
-            backend_url: "https://mpcautofill.com".to_string(),
+            backend_url: DEFAULT_BACKEND.to_string(),
             cardback_id: String::new(),
             preferred_sources: Vec::new(),
             minimum_dpi: 300,
@@ -71,7 +76,19 @@ impl Default for MpcConfig {
 impl MpcConfig {
     pub fn load_or_create() -> Self {
         if let Ok(text) = fs::read_to_string(CONFIG_PATH) {
-            if let Ok(config) = serde_json::from_str::<Self>(&text) {
+            if let Ok(mut config) = serde_json::from_str::<Self>(&text) {
+                // Move saved settings off the retired server address.
+                let host = config
+                    .backend_url
+                    .trim()
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase();
+                if config.backend_url.trim().is_empty() || RETIRED_BACKENDS.contains(&host.as_str()) {
+                    config.backend_url = DEFAULT_BACKEND.to_string();
+                    let _ = config.save();
+                }
                 return config;
             }
         }
@@ -428,6 +445,12 @@ impl MpcClient {
             .with_context(|| format!("Could not reach MPC Autofill at {url}"))?;
         let status = response.status();
         let text = response.text().unwrap_or_default();
+        if status.as_u16() == 405 || status.as_u16() == 404 {
+            return Err(anyhow!(
+                "{} isn't an MPC Autofill search server (it answered {status}). Set the server to {DEFAULT_BACKEND} in Order options.",
+                self.base
+            ));
+        }
         if !status.is_success() {
             let snippet: String = text.chars().take(200).collect();
             return Err(anyhow!("MPC Autofill {path} returned {status}: {snippet}"));
@@ -477,24 +500,25 @@ impl MpcClient {
         mut progress: impl FnMut(usize, usize),
     ) -> Result<SearchOutcome> {
         let sources = self.sources();
+        let search_settings = json!({
+            "searchTypeSettings": { "fuzzySearch": false, "filterCardbacks": false },
+            "sourceSettings": { "sources": sources },
+            "filterSettings": {
+                "minimumDPI": config.minimum_dpi,
+                "maximumDPI": 1500,
+                "maximumSize": 30,
+                "languages": [],
+                "includesTags": [],
+                "excludesTags": ["NSFW"]
+            }
+        });
         let mut identifiers_by_query = HashMap::<String, Vec<String>>::new();
 
         // The backend caps queries per request; batch conservatively.
         let total = queries.len();
         for (batch_index, batch) in queries.chunks(20).enumerate() {
             let body = json!({
-                "searchSettings": {
-                    "searchTypeSettings": { "fuzzySearch": false, "filterCardbacks": false },
-                    "sourceSettings": { "sources": sources },
-                    "filterSettings": {
-                        "minimumDPI": config.minimum_dpi,
-                        "maximumDPI": 1500,
-                        "maximumSize": 30,
-                        "languages": [],
-                        "includesTags": [],
-                        "excludesTags": ["NSFW"]
-                    }
-                },
+                "searchSettings": search_settings,
                 "queries": batch
                     .iter()
                     .map(|query| json!({ "query": query, "cardType": "CARD" }))
@@ -534,7 +558,7 @@ impl MpcClient {
 
         let mut metadata = HashMap::<String, MpcImage>::new();
         for chunk in wanted.chunks(100) {
-            let body = json!({ "cardIdentifiers": chunk, "card_identifiers": chunk });
+            let body = json!({ "cardIdentifiers": chunk });
             let response = self.post("/2/cards/", &body)?;
             if let Some(Value::Object(map)) = response.get("results") {
                 for (id, card) in map {
@@ -566,8 +590,9 @@ impl MpcClient {
             outcome.results.insert(query.clone(), images);
         }
 
+        // Cardbacks are a POST that takes the same search settings.
         outcome.default_cardback = self
-            .get("/2/cardbacks/")
+            .post("/2/cardbacks/", &json!({ "searchSettings": search_settings }))
             .ok()
             .and_then(|value| value.get("cardbacks").cloned())
             .and_then(|list| list.as_array().and_then(|l| l.first().cloned()))
@@ -622,6 +647,11 @@ mod tests {
             extension: "png".into(),
             thumbnail_url: String::new(),
         }
+    }
+
+    #[test]
+    fn default_server_is_mpcfill() {
+        assert_eq!(MpcConfig::default().backend_url, "https://mpcfill.com");
     }
 
     #[test]

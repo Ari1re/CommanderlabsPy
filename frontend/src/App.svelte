@@ -8,6 +8,7 @@
   import Build from './views/Build.svelte';
   import DeckView from './views/DeckView.svelte';
   import Settings from './views/Settings.svelte';
+  import Game from './views/Game.svelte';
 
   let ready = $state(false);
 
@@ -34,6 +35,7 @@
   const nav = [
     { page: 'library', label: 'Decks', icon: 'library' },
     { page: 'build', label: 'Build', icon: 'build' },
+    { page: 'game', label: 'Game', icon: 'life' },
     { page: 'settings', label: 'Settings', icon: 'settings' },
   ] as const;
 
@@ -86,6 +88,8 @@
       <Library />
     {:else if app.route.page === 'build'}
       <Build />
+    {:else if app.route.page === 'game'}
+      <Game />
     {:else if app.route.page === 'settings'}
       <Settings onUpdateCards={updateCards} />
     {:else if app.route.page === 'deck'}
@@ -165,6 +169,7 @@
   .main {
     min-width: 0;
     padding: clamp(1rem, 3vw, 2.25rem);
+    padding-top: max(clamp(1rem, 3vw, 2.25rem), env(safe-area-inset-top, 0px));
     padding-bottom: 4rem;
   }
 
@@ -235,7 +240,7 @@
     }
     .tabbar {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       position: fixed;
       left: 0;
       right: 0;

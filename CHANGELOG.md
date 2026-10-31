@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.0
+
+- New Game tab: life totals for 2–6 players on one phone, with the top row turned to face players across the table. Tap or hold to change life; per-player commander damage from each opponent (partners tracked separately), poison, commander tax, energy, experience, rad, tickets and custom counters; Monarch, Initiative, City's blessing and day/night; dice, coin flip, random first player, undo, lethal detection, and the game is kept if you close the app. Link a deck to show its commander art.
+- Build: pick up to three play styles; the first is the main focus and the others are blended in.
+- Suggestions: one mixed grid with every card the same size, tagged with why it's suggested (combo, synergy, popular, fills a gap), plus a filter by reason.
+- Proxies: searches now go to mpcfill.com, the current MPC Autofill server (the old address returned "405 Method Not Allowed"); saved settings move over automatically, and cardbacks load correctly.
+- Phones: checked at 360–412px wide and landscape; larger tap targets, safe-area padding for status bars.
+
 ## 0.22.0 — the graphical app
 
 Commander Lab is now a graphical app for Windows, Linux and Android instead of a terminal program. The deck engine is unchanged underneath and shared by every platform.

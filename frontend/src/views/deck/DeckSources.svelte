@@ -118,6 +118,8 @@
     color: var(--muted);
   }
   .sources a {
+    display: inline-block;
+    padding: 0.55rem 0;
     color: var(--text);
     text-decoration: none;
     font-weight: 700;
