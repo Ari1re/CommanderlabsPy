@@ -322,7 +322,8 @@ impl Engine {
             "mpc_order" => self.mpc_order(&arg::<String>(a, "name")?, opt(a, "rebuild").unwrap_or(false)),
             "mpc_search" => Ok(json!({ "job": self.start_mpc_search(arg(a, "name")?)? })),
             "mpc_select" => self.mpc_select(&arg::<String>(a, "name")?, arg(a, "index")?, opt(a, "back").unwrap_or(false), arg(a, "selected")?),
-            "mpc_export" => self.mpc_export(&arg::<String>(a, "name")?),
+            "mpc_export" => Ok(json!({ "job": self.start_mpc_export(arg(a, "name")?) })),
+            "mpc_more" => self.mpc_more(&arg::<String>(a, "name")?, arg(a, "index")?, opt(a, "back").unwrap_or(false)),
 
             // --- AI -----------------------------------------------------------------
             "ai_status" => self.ai_status(),
@@ -1155,11 +1156,9 @@ impl Engine {
                         _ => None,
                     }
                 });
-                let name = if faces.is_none() && canonical.contains(" // ") {
-                    canonical.split(" // ").next().unwrap_or(&canonical).to_string()
-                } else {
-                    canonical
-                };
+                // Split, adventure and flip cards print on one face: search the
+                // full name; the search also tries "fire ice" and the first half.
+                let name = canonical;
                 OrderLine { name, quantity: entry.quantity, faces }
             })
             .collect();
@@ -1207,25 +1206,114 @@ impl Engine {
         let queries = self.mpc_orders.lock().unwrap().get(&name).map(|o| o.queries()).unwrap_or_default();
         let config = MpcConfig::load_or_create();
         let engine = self.clone();
+        // Card and face names for the official-art lookup.
+        let faces: Vec<(String, String)> = {
+            let orders = self.mpc_orders.lock().unwrap();
+            let db = self.db.lock().unwrap();
+            orders
+                .get(&name)
+                .map(|o| {
+                    o.cards
+                        .iter()
+                        .flat_map(|c| {
+                            let full = db.get_card(&c.name).ok().flatten().map(|card| card.name).unwrap_or_else(|| c.name.clone());
+                            let mut v = vec![(full.clone(), c.front.query.clone())];
+                            if let Some(b) = &c.back {
+                                v.push((full, b.query.clone()));
+                            }
+                            v
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         Ok(self.jobs.spawn("mpc_search", &name.clone(), move |job| {
             job.progress(2, "Searching MPC Autofill", format!("{} faces at {}", queries.len(), config.backend_url));
-            let client = MpcClient::new(&config)?;
-            let outcome = client.search(&queries, &config, |done, total| {
-                let pct = 5 + (done * 90 / total.max(1)) as u16;
-                job.progress(pct, "Searching MPC Autofill", format!("{done}/{total}"));
-            })?;
+            // Community scans. If the server can't be reached, carry on with
+            // official art and say so.
+            let mut warning = None;
+            let outcome = match MpcClient::new(&config).and_then(|client| {
+                client.search(&queries, &config, |done, total| {
+                    let pct = 5 + (done * 55 / total.max(1)) as u16;
+                    job.progress(pct, "Searching MPC Autofill", format!("{done}/{total}"));
+                })
+            }) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    warning = Some(format!("MPC Autofill search failed ({err:#}); showing official art only."));
+                    crate::mpc::SearchOutcome::default()
+                }
+            };
+
+            // Official scans: every distinct artwork from Scryfall.
+            let mut official: HashMap<String, Vec<crate::mpc::MpcImage>> = HashMap::new();
+            if config.include_official {
+                let total = faces.len();
+                for (i, (card, face)) in faces.iter().enumerate() {
+                    let key = crate::mpc::search_query(face);
+                    if !official.contains_key(&key) {
+                        official.insert(key, crate::mpc::official_images(card, face));
+                    }
+                    job.progress(60 + (i * 38 / total.max(1)) as u16, "Finding official art on Scryfall", format!("{}/{total}", i + 1));
+                }
+            }
+
             let mut orders = engine.mpc_orders.lock().unwrap();
             let order = orders.get_mut(&name).ok_or_else(|| anyhow!("Order was closed"))?;
-            order.apply_results(&outcome.results);
+            order.apply_results(&outcome.results, &outcome.pending, &official, config.prefer_official);
             if order.cardback_id.is_empty() {
                 if let Some(cb) = outcome.default_cardback {
                     order.cardback_id = cb;
                 }
             }
+            let not_found: Vec<String> = order
+                .cards
+                .iter()
+                .flat_map(|c| std::iter::once(&c.front).chain(c.back.iter()))
+                .filter(|f| f.candidates.is_empty() && f.pending_ids.is_empty())
+                .map(|f| f.query.clone())
+                .collect();
             let mut view = Self::mpc_order_view(order)?;
-            view["not_found"] = json!(outcome.not_found);
+            view["not_found"] = json!(not_found);
+            view["warning"] = json!(warning);
             Ok(view)
         }))
+    }
+
+    /// Load the rest of a face's MPC Autofill results.
+    fn mpc_more(&self, name: &str, index: usize, back: bool) -> Result<Value> {
+        let pending = {
+            let orders = self.mpc_orders.lock().unwrap();
+            let order = orders.get(name).ok_or_else(|| anyhow!("Open the MPC order first."))?;
+            let card = order.cards.get(index).ok_or_else(|| anyhow!("No card at {index}"))?;
+            let face = if back { card.back.as_ref().unwrap_or(&card.front) } else { &card.front };
+            face.pending_ids.clone()
+        };
+        let config = MpcConfig::load_or_create();
+        let metadata = if pending.is_empty() { HashMap::new() } else { MpcClient::new(&config)?.images(&pending)? };
+        let mut orders = self.mpc_orders.lock().unwrap();
+        let order = orders.get_mut(name).ok_or_else(|| anyhow!("Open the MPC order first."))?;
+        let card = order.cards.get_mut(index).ok_or_else(|| anyhow!("No card at {index}"))?;
+        let face = match (back, card.back.as_mut()) {
+            (true, Some(b)) => b,
+            _ => &mut card.front,
+        };
+        let mut more: Vec<crate::mpc::MpcImage> = pending.iter().filter_map(|id| metadata.get(id).cloned()).collect();
+        crate::mpc::rank_images(&mut more, &config.preferred_sources);
+        // Keep official scans where they were; add community images after
+        // the community images already shown.
+        let insert_at = face.candidates.iter().rposition(|c| !c.official).map(|i| i + 1).unwrap_or(if config.prefer_official { face.candidates.len() } else { 0 });
+        let added = more.len();
+        let had_any = !face.candidates.is_empty();
+        for (k, img) in more.into_iter().enumerate() {
+            face.candidates.insert(insert_at + k, img);
+        }
+        // Keep the same image selected when images were inserted before it.
+        if had_any && insert_at <= face.selected {
+            face.selected += added;
+        }
+        face.pending_ids.clear();
+        Self::mpc_order_view(order)
     }
 
     fn mpc_select(&self, name: &str, index: usize, back: bool, selected: usize) -> Result<Value> {
@@ -1242,15 +1330,29 @@ impl Engine {
         Self::mpc_order_view(order)
     }
 
-    fn mpc_export(&self, name: &str) -> Result<Value> {
+    fn start_mpc_export(self: &Arc<Self>, name: String) -> u64 {
+        let engine = self.clone();
+        self.jobs.spawn("mpc_export", &name.clone(), move |job| {
+            job.progress(5, "Preparing the order", "");
+            engine.mpc_export(&name, |done, total| {
+                job.progress(5 + (done * 90 / total.max(1)) as u16, "Downloading official scans", format!("{done}/{total}"));
+            })
+        })
+    }
+
+    fn mpc_export(&self, name: &str, progress: impl FnMut(usize, usize)) -> Result<Value> {
         let order = {
             let orders = self.mpc_orders.lock().unwrap();
             orders.get(name).cloned()
         };
-        let order = match order {
+        let mut order = match order {
             Some(o) => o,
             None => self.build_mpc_order(name)?,
         };
+        // Official scans aren't on Google Drive: save them next to the order
+        // and reference the files (MPC Autofill desktop tool v4+).
+        let images_dir = PathBuf::from(EXPORTS_DIR).join(format!("{} images", safe_deck_filename(name)));
+        let (official, failed) = crate::mpc::localize_official(&mut order, &images_dir, progress)?;
         let base = PathBuf::from(EXPORTS_DIR).join(safe_deck_filename(name));
         let text_path = base.with_extension("mpc.txt");
         let text = order.to_text();
@@ -1270,6 +1372,9 @@ impl Engine {
             "xml_path": xml_path,
             "error": error,
             "file_stem": safe_deck_filename(name),
+            "official_images": official,
+            "download_failed": failed,
+            "images_dir": if official > 0 { Some(self.root.join(&images_dir).display().to_string()) } else { None },
         }))
     }
 

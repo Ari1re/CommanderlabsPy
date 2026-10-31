@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.27.2
+
+- **Proxies: every art choice.**
+  - Each card used to show at most 12 MPC Autofill images. Now the first 40 load right away and **Load more** brings in the rest.
+  - The default 300 DPI minimum no longer hides scans. It's now off; set it under Order options if you want one.
+  - Cards that find nothing are searched again with other spellings and fuzzy matching. Split and adventure cards ("Fire // Ice") are searched by their full name, both halves, and the first half.
+- **Proxies: official art.**
+  - Every distinct official artwork of each card from Scryfall is offered next to the community scans: one per artwork across all paper printings, both faces of double-faced cards, marked **Official** with the set.
+  - Filter the art by All / Official / MPC. Turn on **Official art first** or turn official art off in Order options.
+- When you export, chosen official scans are downloaded next to the order and the XML points at those files (the MPC Autofill desktop tool v4+ accepts local files).
+- If the MPC Autofill server can't be reached, the search still offers official art and says why.
+
 ## 0.27.1
 
 - Card images are fitted, never cropped. Battles, planes, split cards and proxy art with bleed used to lose their edges or look zoomed in.

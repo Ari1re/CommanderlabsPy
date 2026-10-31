@@ -14,7 +14,20 @@
   let focus = $state(0);
   let showBack = $state(false);
   let settingsOpen = $state(false);
-  let exported = $state<{ text: string; xml: string | null; xml_path: string | null; text_path: string; error: string | null; file_stem: string } | null>(null);
+  let exported = $state<{
+    text: string;
+    xml: string | null;
+    xml_path: string | null;
+    text_path: string;
+    error: string | null;
+    file_stem: string;
+    official_images: number;
+    images_dir: string | null;
+    download_failed: string[];
+  } | null>(null);
+  let exporting = $state<{ percent: number; detail: string } | null>(null);
+  let artFilter = $state<'all' | 'official' | 'community'>('all');
+  let loadingMore = $state(false);
 
   const STOCKS = ['(S30) Standard Smooth', '(S33) Superior Smooth', '(M31) Linen', '(P10) Plastic', '(S27) Smooth'];
 
@@ -32,7 +45,8 @@
       const res = await runJob<MpcOrder>('mpc_search', { name }, (j) => (searching = { percent: j.percent, detail: j.detail }), 700);
       order = res;
       notFound = res.not_found ?? [];
-      app.toast(`Found art for ${res.resolved} of ${res.faces} faces.`, 'success');
+      if (res.warning) app.toast(res.warning, 'error', 8000);
+      else app.toast(`Found art for ${res.resolved} of ${res.faces} faces.`, 'success');
     } catch (err) {
       app.error(err);
     } finally {
@@ -59,12 +73,26 @@
   }
 
   async function exportOrder() {
+    exporting = { percent: 0, detail: '' };
     try {
-      exported = await api('mpc_export', { name });
+      exported = await runJob('mpc_export', { name }, (j) => (exporting = { percent: j.percent, detail: j.detail }), 600);
       if (exported?.error) app.toast(exported.error, 'error', 7000);
       else app.toast('MPC order saved.', 'success');
     } catch (err) {
       app.error(err);
+    } finally {
+      exporting = null;
+    }
+  }
+
+  async function loadMore() {
+    loadingMore = true;
+    try {
+      order = await api<MpcOrder>('mpc_more', { name, index: focus, back: showBack });
+    } catch (err) {
+      app.error(err);
+    } finally {
+      loadingMore = false;
     }
   }
 
@@ -74,6 +102,14 @@
 
   let current = $derived(order?.cards[focus]);
   let face = $derived(current ? faceOf(current, showBack) : null);
+  let officialCount = $derived(face?.candidates.filter((c) => c.official).length ?? 0);
+  let communityCount = $derived((face?.candidates.length ?? 0) - officialCount);
+  /** Candidates with their index in the face, filtered by source. */
+  let shownCands = $derived(
+    (face?.candidates ?? [])
+      .map((cand, j) => ({ cand, j }))
+      .filter(({ cand }) => artFilter === 'all' || (artFilter === 'official') === !!cand.official),
+  );
 </script>
 
 {#if !order}
@@ -89,14 +125,20 @@
     <div class="row">
       <button class="btn ghost" onclick={() => (settingsOpen = !settingsOpen)}><Icon name="settings" size={16} /> Order options</button>
       <button class="btn" onclick={search} disabled={!!searching}><Icon name="search" size={16} /> {order.resolved ? 'Search again' : 'Find proxy art'}</button>
-      <button class="btn primary" onclick={exportOrder}><Icon name="download" size={16} /> Export order</button>
+      <button class="btn primary" onclick={exportOrder} disabled={!!exporting}><Icon name="download" size={16} /> {exporting ? 'Exporting…' : 'Export order'}</button>
     </div>
   </div>
 
   {#if searching}
     <div class="searching">
       <div class="progress"><i style:width="{searching.percent}%"></i></div>
-      <span class="small dim">Searching MPC Autofill… {searching.detail}</span>
+      <span class="small dim">Searching MPC Autofill and Scryfall… {searching.detail}</span>
+    </div>
+  {/if}
+  {#if exporting}
+    <div class="searching">
+      <div class="progress"><i style:width="{exporting.percent}%"></i></div>
+      <span class="small dim">Saving the order… {exporting.detail}</span>
     </div>
   {/if}
 
@@ -109,6 +151,11 @@
       </label>
       <label class="check"><input type="checkbox" checked={config.foil} onchange={(e) => setConfig({ foil: (e.target as HTMLInputElement).checked })} /> Foil</label>
       <label class="check"><input type="checkbox" checked={config.include_sideboard} onchange={(e) => setConfig({ include_sideboard: (e.target as HTMLInputElement).checked })} /> Include sideboard</label>
+      <label class="check"><input type="checkbox" checked={config.include_official} onchange={(e) => setConfig({ include_official: (e.target as HTMLInputElement).checked })} /> Include official card art (Scryfall)</label>
+      <label class="check"><input type="checkbox" checked={config.prefer_official} onchange={(e) => setConfig({ prefer_official: (e.target as HTMLInputElement).checked })} /> Official art first</label>
+      <label class="field"><span>Art choices per card <span class="muted">(0 = all)</span></span>
+        <input class="input" type="number" min="0" step="10" value={config.max_candidates} onchange={(e) => setConfig({ max_candidates: Number((e.target as HTMLInputElement).value) })} />
+      </label>
       <label class="field"><span>Minimum DPI</span>
         <input class="input" type="number" min="0" step="50" value={config.minimum_dpi} onchange={(e) => setConfig({ minimum_dpi: Number((e.target as HTMLInputElement).value) })} />
       </label>
@@ -132,7 +179,7 @@
           <button class="item" class:on={i === focus} class:missing onclick={() => { focus = i; showBack = false; }}>
             <span class="num qty">{c.quantity}</span>
             <span class="nm">{c.name}{c.back ? ' ⟲' : ''}</span>
-            <span class="small muted">{c.front.candidates.length ? `${c.front.selected + 1}/${c.front.candidates.length}` : 'no art'}</span>
+            <span class="small muted">{c.front.candidates.length ? `${c.front.selected + 1}/${c.front.candidates.length}${c.front.pending_ids?.length ? '+' : ''}` : c.front.pending_ids?.length ? 'tap to load' : 'no art'}</span>
           </button>
         </li>
       {/each}
@@ -154,17 +201,36 @@
           <div class="chosen">
             <img class="card-img" src={img.thumbnail_url} alt={img.name} />
             <div class="small dim">
-              {img.source_name || 'Unknown source'} · {img.dpi} DPI
+              {#if img.official}
+                <span class="badge brass">Official</span> {img.printing}
+              {:else}
+                {img.source_name || 'Unknown source'} · {img.dpi} DPI{img.tags?.length ? ` · ${img.tags.join(', ')}` : ''}
+              {/if}
             </div>
           </div>
-          <h3 class="small dim">Other art ({face.candidates.length})</h3>
+          <div class="cand-head">
+            <h3 class="small dim">All art ({face.candidates.length}{face.pending_ids?.length ? ` of ${face.candidates.length + face.pending_ids.length}` : ''})</h3>
+            <div class="segmented" role="group" aria-label="Art source">
+              <button aria-pressed={artFilter === 'all'} onclick={() => (artFilter = 'all')}>All</button>
+              <button aria-pressed={artFilter === 'official'} onclick={() => (artFilter = 'official')}>Official {officialCount}</button>
+              <button aria-pressed={artFilter === 'community'} onclick={() => (artFilter = 'community')}>MPC {communityCount}{face.pending_ids?.length ? '+' : ''}</button>
+            </div>
+          </div>
           <div class="cands">
-            {#each face.candidates as cand, j (cand.identifier)}
-              <button class="cand" class:on={j === face.selected} onclick={() => select(focus, showBack, j)} title="{cand.source_name} · {cand.dpi} DPI">
+            {#each shownCands as { cand, j } (cand.identifier)}
+              <button class="cand" class:on={j === face.selected} onclick={() => select(focus, showBack, j)} title={cand.official ? `Official · ${cand.printing}` : `${cand.source_name} · ${cand.dpi} DPI`}>
                 <img class="card-img" src={cand.thumbnail_url} alt="" loading="lazy" />
+                {#if cand.official}<span class="cand-tag">Official</span>{/if}
               </button>
             {/each}
           </div>
+          {#if face.pending_ids?.length && artFilter !== 'official'}
+            <button class="btn more" onclick={loadMore} disabled={loadingMore}>
+              {loadingMore ? 'Loading…' : `Load ${face.pending_ids.length} more MPC images`}
+            </button>
+          {/if}
+        {:else if face.pending_ids?.length}
+          <button class="btn" onclick={loadMore} disabled={loadingMore}>{loadingMore ? 'Loading…' : `Load ${face.pending_ids.length} MPC images`}</button>
         {:else}
           <p class="muted">No proxy art yet. Click “Find proxy art”.</p>
         {/if}
@@ -181,6 +247,20 @@
       <h3>Your order</h3>
       {#if exported.xml_path}
         <p class="small">Saved <b>{exported.xml_path}</b>. Open it with the MPC Autofill desktop tool, or import it on mpcfill.com.</p>
+      {/if}
+      {#if exported.download_failed?.length}
+        <p class="small error">
+          Couldn't download {exported.download_failed.length} official scan{exported.download_failed.length === 1 ? '' : 's'}
+          ({exported.download_failed.slice(0, 5).join(', ')}{exported.download_failed.length > 5 ? '…' : ''}). Check your connection
+          and export again; those cards still point at Scryfall's web address.
+        </p>
+      {/if}
+      {#if exported.official_images}
+        <p class="small">
+          {exported.official_images} official scan{exported.official_images === 1 ? '' : 's'} saved in <b>{exported.images_dir}</b>.
+          Official art isn't on Google Drive, so the order points at these files: use the MPC Autofill desktop tool (v4 or later)
+          on this computer, or move the folder with the XML and keep the paths the same. The mpcfill.com website can't read local files.
+        </p>
       {/if}
       <p class="small">The plain list is in <b>{exported.text_path}</b>. Paste it into mpcfill.com's “Add cards → Text” box.</p>
       <div class="row">
@@ -321,5 +401,37 @@
     .art {
       position: static;
     }
+  }
+  .cand {
+    position: relative;
+  }
+  .cand-tag {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    padding: 0 0.35rem;
+    border-radius: 99px;
+    background: rgba(14, 10, 20, 0.85);
+    border: 1px solid var(--brass);
+    color: #fff;
+    font-size: 0.62rem;
+    font-weight: 700;
+  }
+  .cand-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin: 0.75rem 0 0.4rem;
+  }
+  .cand-head h3 {
+    margin: 0;
+  }
+  .more {
+    margin-top: 0.75rem;
+  }
+  .error {
+    color: var(--danger);
   }
 </style>

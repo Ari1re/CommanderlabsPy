@@ -215,7 +215,8 @@ Every change is saved automatically, whether it's an added card, a new printing,
 
 The **Proxies** tab builds a MakePlayingCards order using MPC Autofill:
 
-- Click **Find proxy art**, then pick the art for each card. Double-faced cards get their back face.
+- Click **Find proxy art**, then pick the art for each card. You get every image MPC Autofill has (tap **Load more** for the rest) plus every official artwork of the card from Scryfall, marked **Official**. Filter by All / Official / MPC. Double-faced cards get their back face.
+- Official scans aren't on Google Drive, so **Export order** downloads the ones you picked into a folder next to the order and the XML points at those files. Use the MPC Autofill desktop tool (v4 or later) on the same computer for those; the mpcfill.com website can't read local files.
 - **Order options** sets card stock, foil, the sideboard, minimum DPI, preferred sources, the cardback and the server.
 - **Export order** saves the XML for the MPC Autofill tool or mpcfill.com, plus a plain list for mpcfill.com's text box.
 
