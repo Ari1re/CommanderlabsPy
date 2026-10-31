@@ -1,5 +1,5 @@
 import { api } from './api';
-import type { CardView, Deck, Entry, Status } from './types';
+import type { CardView, Deck, Entry, Status, UpdateInfo } from './types';
 import type { Currency } from './util';
 
 export type Route =
@@ -51,7 +51,22 @@ class AppState {
   /** Set by the open deck view so other components can push an updated deck. */
   deckUpdated: ((deck: Deck) => void) | null = null;
   updatingCards = $state<{ percent: number; step: string } | null>(null);
+  /** Latest release info from GitHub (null until checked). */
+  update = $state<UpdateInfo | null>(null);
+  /** The update dialog is open. */
+  updateOpen = $state(false);
   private toastId = 0;
+
+  /** Check GitHub for a newer build. Quiet unless `force` (Settings). */
+  async checkUpdate(force = false) {
+    try {
+      this.update = await api<UpdateInfo>('update_check', { force });
+      return this.update;
+    } catch (err) {
+      if (force) this.error(err);
+      return null;
+    }
+  }
 
   constructor() {
     window.addEventListener('hashchange', () => (this.route = parseHash()));

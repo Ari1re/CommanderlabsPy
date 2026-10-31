@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app, go } from './lib/store.svelte';
-  import { runJob, runtime } from './lib/api';
+  import { openExternal, runJob, runtime } from './lib/api';
+  import UpdateDialog from './components/UpdateDialog.svelte';
   import Icon from './components/Icon.svelte';
   import CardSheet from './components/CardSheet.svelte';
   import Library from './views/Library.svelte';
@@ -29,7 +30,20 @@
     fixStatusBar();
     await app.load();
     ready = true;
+    // Look for a newer build once things have settled.
+    setTimeout(() => app.checkUpdate(), 4000);
+    // In the desktop/Android app, open outside links in the system browser.
+    if (runtime.isTauri) {
+      document.addEventListener('click', (e) => {
+        const a = (e.target as HTMLElement)?.closest?.('a[target="_blank"]') as HTMLAnchorElement | null;
+        if (a?.href && /^https?:/.test(a.href)) {
+          e.preventDefault();
+          openExternal(a.href);
+        }
+      });
+    }
   });
+  let updateDismissed = $state(false);
 
   async function updateCards() {
     app.updatingCards = { percent: 0, step: 'Starting' };
@@ -71,9 +85,38 @@
         <span>{item.label}</span>
       </a>
     {/each}
+    {#if app.update?.available}
+      <button class="nav-item update-btn" onclick={() => (app.updateOpen = true)} title="Update to {app.update.latest_version}">
+        <span class="dot-wrap"><Icon name="download" size={22} /><i class="dot"></i></span>
+        <span>Update</span>
+      </button>
+    {/if}
   </nav>
 
   <main class="main">
+    {#if app.update?.available && !updateDismissed && app.route.page !== 'game'}
+      <div class="update-bar">
+        <Icon name="download" size={16} />
+        <span class="small"><b>Commander Lab {app.update.latest_version}</b> is available.</span>
+        <button class="btn small primary" onclick={() => (app.updateOpen = true)}>Update</button>
+        <button class="btn small ghost icon" aria-label="Hide" onclick={() => (updateDismissed = true)}><Icon name="close" size={14} /></button>
+      </div>
+    {/if}
+    {#if ready && app.status?.card_data_ready && app.status.format_data_ready === false}
+      <section class="setup slim">
+        <p class="small">
+          Update the card data once to use <b>Pauper Commander</b> and <b>Canadian Highlander</b> (their rules need rarity and format details older downloads don't have).
+        </p>
+        {#if app.updatingCards}
+          <div class="setup-progress">
+            <div class="progress"><i style:width="{app.updatingCards.percent}%"></i></div>
+            <span class="small dim">{app.updatingCards.step}</span>
+          </div>
+        {:else}
+          <button class="btn small primary" onclick={updateCards}><Icon name="refresh" size={15} /> Update card data</button>
+        {/if}
+      </section>
+    {/if}
     {#if ready && app.status && !app.status.card_data_ready}
       <section class="setup">
         <div>
@@ -120,12 +163,20 @@
         aria-current={section === item.page ? 'page' : undefined}
         onclick={() => go({ page: item.page } as any)}
       >
-        <Icon name={item.icon} size={22} />
+        {#if item.page === 'settings' && app.update?.available}
+          <span class="dot-wrap"><Icon name={item.icon} size={22} /><i class="dot"></i></span>
+        {:else}
+          <Icon name={item.icon} size={22} />
+        {/if}
         <span>{item.label}</span>
       </a>
     {/each}
   </nav>
 </div>
+
+{#if app.updateOpen}
+  <UpdateDialog onclose={() => (app.updateOpen = false)} />
+{/if}
 
 {#if app.inspect}
   <CardSheet card={app.inspect} onclose={() => app.close()} />
@@ -282,5 +333,44 @@
       bottom: calc(var(--tabbar) + var(--safe-bottom) + 0.75rem);
       left: 1rem;
     }
+  }
+  .update-btn {
+    border: 0;
+    background: none;
+    font: inherit;
+    cursor: pointer;
+    color: var(--brass-strong);
+  }
+  .dot-wrap {
+    position: relative;
+    display: inline-grid;
+  }
+  .dot {
+    position: absolute;
+    top: -2px;
+    right: -4px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--brass);
+    box-shadow: 0 0 0 2px var(--panel);
+  }
+  .update-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 1rem;
+    border: 1px solid var(--brass);
+    border-radius: var(--r-sm);
+    background: color-mix(in srgb, var(--brass) 10%, var(--panel));
+  }
+  .update-bar > span {
+    flex: 1;
+    min-width: 0;
+  }
+  .setup.slim {
+    padding: 0.75rem 1rem;
   }
 </style>

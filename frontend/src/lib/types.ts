@@ -273,4 +273,21 @@ export interface Status {
   card_data_ready: boolean;
   decks: number;
   ai_running: boolean;
+  build?: number | null;
+  format_data_ready?: boolean;
+}
+
+export interface UpdateInfo {
+  current_version: string;
+  current_build: number | null;
+  latest_build: number | null;
+  latest_version: string;
+  available: boolean;
+  published_at: string;
+  notes: string;
+  page_url: string;
+  download_url: string | null;
+  install: 'auto' | 'download' | 'none';
+  how: string;
+  checked_at: number;
 }

@@ -204,6 +204,15 @@ impl Engine {
 
             // --- card data ------------------------------------------------------
             "update_cards" => Ok(json!({ "job": self.start_update_cards() })),
+            "update_check" => to_value(crate::updater::check(&self.platform, opt(a, "force").unwrap_or(false))?),
+            "update_install" => {
+                let platform = self.platform.clone();
+                Ok(json!({ "job": self.jobs.spawn("update_install", "", move |job| {
+                    job.progress(1, "Downloading the update", "");
+                    let message = crate::updater::install(&platform, |pct, detail| job.progress(pct, "Downloading the update", detail))?;
+                    Ok(json!({ "message": message }))
+                }) }))
+            }
             "import_cards_file" => {
                 let path: String = arg(a, "path")?;
                 let engine = self.clone();
@@ -315,6 +324,15 @@ impl Engine {
 
             // --- exports ----------------------------------------------------------
             "export_moxfield" => self.export_moxfield(&arg::<String>(a, "name")?),
+            "export_archidekt" => {
+                let name: String = arg(a, "name")?;
+                let deck = self.load(&name)?;
+                let text = crate::tts::deck_to_archidekt_text(&deck, &self.db.lock().unwrap());
+                let path = PathBuf::from(EXPORTS_DIR).join(format!("{}.archidekt.txt", safe_deck_filename(&name)));
+                fs::write(&path, &text)?;
+                Ok(json!({ "text": text, "path": self.root.join(&path).display().to_string() }))
+            }
+            "export_tts" => self.export_tts(&arg::<String>(a, "name")?),
 
             // --- MPC ----------------------------------------------------------------
             "mpc_config" => to_value(MpcConfig::load_or_create()),
@@ -354,6 +372,8 @@ impl Engine {
         let decks = load_deck_files(DECKS_DIR).map(|d| d.len()).unwrap_or(0);
         Ok(json!({
             "version": crate::VERSION,
+            "build": crate::updater::current_build(),
+            "format_data_ready": self.db.lock().unwrap().has_format_data(),
             "platform": self.platform,
             "data_dir": self.root.display().to_string(),
             "cards": cards,
@@ -1102,6 +1122,33 @@ impl Engine {
             "text": text,
             "path": self.root.join(&path).display().to_string(),
             "with_printings": text.lines().filter(|l| l.ends_with(|c: char| c.is_ascii_alphanumeric()) && l.contains(") ")).count(),
+        }))
+    }
+
+    /// Tabletop Simulator saved object; also written straight into TTS'
+    /// Saved Objects folder when TTS is installed on this computer.
+    fn export_tts(&self, name: &str) -> Result<Value> {
+        let deck = self.load(name)?;
+        let value = crate::tts::deck_to_tts(&deck, &self.db.lock().unwrap());
+        let text = serde_json::to_string_pretty(&value)?;
+        let file = format!("{}.json", safe_deck_filename(name));
+        let path = PathBuf::from(EXPORTS_DIR).join(format!("{}.tts.json", safe_deck_filename(name)));
+        fs::write(&path, &text)?;
+        let installed = if self.platform == "android" {
+            None
+        } else {
+            crate::tts::saved_objects_dir().and_then(|dir| {
+                let target = dir.join(&file);
+                fs::write(&target, &text).ok().map(|_| target.display().to_string())
+            })
+        };
+        let cards = deck.commanders.iter().chain(deck.main.iter()).map(|e| e.quantity).sum::<u32>();
+        Ok(json!({
+            "json": text,
+            "file_name": file,
+            "path": self.root.join(&path).display().to_string(),
+            "installed_path": installed,
+            "cards": cards,
         }))
     }
 

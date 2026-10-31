@@ -14,6 +14,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Baked into the app so it can tell when a newer release (build-N) exists.
+  COMMANDERLAB_BUILD: ${{ github.run_number }}
 
 jobs:
   meta:
@@ -256,6 +258,28 @@ jobs:
     needs: [meta, desktop, linux-installer, android]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+      - name: Release notes from the changelog
+        run: |
+          awk '/^## /{n++} n==1' CHANGELOG.md > notes.md
+          cat >> notes.md <<'EOF'
+
+          ---
+
+          | Platform | Download |
+          |---|---|
+          | Windows 10/11 | `CommanderLab-windows-x86_64-setup.exe` (installer) or `CommanderLab-windows-x86_64-portable.exe` |
+          | Linux, any distro incl. NixOS | `CommanderLab-linux-x86_64.sh` → `sh CommanderLab-linux-x86_64.sh` |
+          | Linux packages | `.AppImage`, `.deb`, or `CommanderLab-web-linux-x86_64` (browser edition) |
+          | Android 7+ | `CommanderLab-android.apk` |
+
+          Already installed? Commander Lab shows an update button when a new build is out.
+          EOF
+          echo "Automated build of \`${{ github.sha }}\`." >> notes.md
+          cat notes.md
       - uses: actions/download-artifact@v4
         with:
           path: dl
@@ -272,13 +296,5 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: false
           make_latest: true
-          body: |
-            Automated build of `${{ github.sha }}`.
-
-            | Platform | Download |
-            |---|---|
-            | Windows 10/11 | `CommanderLab-windows-x86_64-setup.exe` (installer) or `CommanderLab-windows-x86_64-portable.exe` |
-            | Linux, any distro incl. NixOS | `CommanderLab-linux-x86_64.sh` → `sh CommanderLab-linux-x86_64.sh` |
-            | Linux packages | `.AppImage`, `.deb`, or `CommanderLab-web-linux-x86_64` (browser edition) |
-            | Android 7+ | `CommanderLab-android.apk` |
+          body_path: notes.md
           files: dist/*

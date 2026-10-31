@@ -22,6 +22,22 @@ export const runtime = {
 
 export class ApiError extends Error {}
 
+/** Open a web address outside the app: the system browser in the desktop and
+ * Android apps (on Android an .apk link hands over to the installer), a new tab
+ * in the browser edition. */
+export async function openExternal(url: string) {
+  const invoke = await getInvoke();
+  if (invoke) {
+    try {
+      await invoke('plugin:opener|open_url', { url });
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+  window.open(url, '_blank', 'noopener');
+}
+
 export async function api<T = any>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   const invoke = await getInvoke();
   if (invoke) {
