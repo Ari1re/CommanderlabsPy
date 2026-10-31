@@ -160,6 +160,7 @@ jobs:
           cp in/CommanderLab-linux-x86_64.AppImage app/CommanderLab.AppImage
           cp in/commander-lab-web app/commander-lab-web
           cp packaging/commander-lab.sh app/
+          cp desktop/src-tauri/icons/128x128@2x.png app/icon.png
           chmod +x app/*
           tar -C app -czf payload.tar.gz .
           sed "s/__CL_VERSION__/${{ needs.meta.outputs.version }}/" packaging/selfextract-header.sh > dist/CommanderLab-linux-x86_64.sh
@@ -171,6 +172,8 @@ jobs:
           export COMMANDER_LAB_HOME="$RUNNER_TEMP/cl"
           sh dist/CommanderLab-linux-x86_64.sh --extract
           test -x "$COMMANDER_LAB_HOME/app/CommanderLab.AppImage"
+          test -f "$COMMANDER_LAB_HOME/app/icon.png"
+          grep -q 'commander-lab.sh' "$HOME/.local/share/applications/commander-lab.desktop"
           "$COMMANDER_LAB_HOME/app/commander-lab-web" --no-browser --port 7999 &
           sleep 3
           curl -sf http://127.0.0.1:7999/health
@@ -272,7 +275,7 @@ jobs:
           | Platform | Download |
           |---|---|
           | Windows 10/11 | `CommanderLab-windows-x86_64-setup.exe` (installer) or `CommanderLab-windows-x86_64-portable.exe` |
-          | Linux, any distro incl. NixOS | `CommanderLab-linux-x86_64.sh` → `sh CommanderLab-linux-x86_64.sh` |
+          | Linux desktop app, any distro incl. NixOS | `CommanderLab-linux-x86_64.sh` → `sh CommanderLab-linux-x86_64.sh` |
           | Linux packages | `.AppImage`, `.deb`, or `CommanderLab-web-linux-x86_64` (browser edition) |
           | Android 7+ | `CommanderLab-android.apk` |
 

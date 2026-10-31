@@ -46,7 +46,7 @@ If you'd rather not install anything, the portable `.exe` runs as-is.
 sh CommanderLab-linux-x86_64.sh
 ```
 
-The first run installs the app to `~/.local/share/commander-lab/app` and opens it. Running a newer `.sh` updates the install. Your decks are never touched by updates.
+The first run installs the desktop app to `~/.local/share/commander-lab/app`, adds **Commander Lab** to your app launcher, and opens it. Running a newer `.sh` updates the install. Your decks are never touched by updates.
 
 - Start it later: `~/.local/share/commander-lab/app/commander-lab.sh`
 - Install without starting: `sh CommanderLab-linux-x86_64.sh --extract`
@@ -56,18 +56,19 @@ The release also includes the `.AppImage` and a `.deb` if you prefer those.
 
 ### NixOS
 
-The same `.sh` works. On NixOS it opens Commander Lab in your **web browser**, using a single static binary with no dependencies, so you don't need `nix-ld` or an FHS environment.
+The same `.sh` opens the **desktop app** on NixOS too:
 
 ```sh
 sh CommanderLab-linux-x86_64.sh
 ```
 
-If you want the native desktop window, install `appimage-run` and the launcher will use it automatically:
+The desktop app is an AppImage, which NixOS runs through `appimage-run`. If it isn't installed, the launcher gets it from Nix for that run (the first start takes a moment). To skip that, add it to your configuration:
 
-```sh
-nix-shell -p appimage-run --run "sh CommanderLab-linux-x86_64.sh"
-# or add appimage-run to environment.systemPackages
+```nix
+environment.systemPackages = [ pkgs.appimage-run ];
 ```
+
+If Nix can't provide it, the launcher says so and opens the browser edition instead. `--web` always opens the browser edition.
 
 Example Hyprland keybind:
 
@@ -75,7 +76,7 @@ Example Hyprland keybind:
 bind = $mainMod, M, exec, ~/.local/share/commander-lab/app/commander-lab.sh
 ```
 
-The browser edition and the desktop window share the same decks.
+The browser edition and the desktop app share the same decks. If the window comes up blank, the launcher already sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`, the usual fix for NVIDIA and some Wayland setups. Set it to `0` to turn that off.
 
 ### Android
 
@@ -91,12 +92,12 @@ On Linux (NixOS included), clone the repository and run the script:
 ```sh
 git clone https://github.com/Ari1re/CommanderlabsPy
 cd CommanderlabsPy
-./run-linux.sh              # browser edition
-./run-linux.sh --desktop    # desktop window (needs webkit2gtk)
+./run-linux.sh              # desktop app
+./run-linux.sh --web        # browser edition
 ./run-linux.sh --update     # git pull, rebuild and start
 ```
 
-It needs [Rust](https://rustup.rs), [Node.js 20+](https://nodejs.org) and a C compiler. On NixOS without them it runs inside the included `shell.nix` by itself. Decks are shared with any installed copy.
+It needs [Rust](https://rustup.rs), [Node.js 20+](https://nodejs.org) and a C compiler. The desktop app also needs the WebKitGTK 4.1 libraries; the script says which packages to install if they're missing (Debian/Ubuntu: `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev`). On NixOS it builds and runs inside the included `shell.nix`, which has everything. Decks are shared with any installed copy.
 
 By hand, on any system:
 
@@ -106,11 +107,12 @@ npm --prefix frontend ci && npm --prefix frontend run build
 # Browser edition (works everywhere):
 cargo run --release -p commander-lab-web
 
-# Desktop window (needs the Tauri system libraries, e.g. webkit2gtk on Linux):
-cd desktop && ../frontend/node_modules/.bin/tauri build
+# Desktop app (needs the Tauri system libraries, e.g. webkit2gtk on Linux):
+cargo build --release -p commander-lab --features tauri/custom-protocol
+# or installers: cd desktop && ../frontend/node_modules/.bin/tauri build
 ```
 
-On NixOS, open a shell first: `nix-shell -p cargo rustc gcc nodejs`.
+On NixOS, open the included shell first: `nix-shell`.
 
 ---
 
@@ -296,7 +298,7 @@ The **Game** tab turns your phone into a life counter for 2–6 players.
 When a new build is published, Commander Lab shows an **Update** button (in the sidebar on desktop, plus a banner and a dot on Settings). **Settings → Updates** checks any time.
 
 - **Windows** installer: downloads and installs the update, then reopens the app. The portable exe swaps itself for the new one and restarts.
-- **Linux** (installed with the `.sh`, or an AppImage) and the **NixOS** browser edition: installs the update and restarts.
+- **Linux** (installed with the `.sh`, NixOS included, or an AppImage): installs the update and restarts.
 - **Android**: downloads the new APK; tap it and Android installs it over the current app, keeping your decks.
 - The `.deb` and copies built from source don't replace themselves. For source builds, run `./run-linux.sh --update`.
 
