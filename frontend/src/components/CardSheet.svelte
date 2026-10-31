@@ -169,6 +169,8 @@
   .sheet {
     position: fixed;
     z-index: 81;
+    max-width: 100vw;
+    overflow-x: hidden;
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
@@ -198,6 +200,8 @@
     display: grid;
     gap: 0.8rem;
     align-content: start;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .title {
     display: flex;
@@ -209,6 +213,16 @@
   .oracle {
     white-space: pre-line;
     max-width: 60ch;
+    overflow-wrap: anywhere;
+  }
+  .art {
+    max-width: 100%;
+    height: auto;
+  }
+  .picker,
+  .prints,
+  .print {
+    min-width: 0;
   }
   .foil {
     box-shadow: 0 0 0 2px var(--brass), 0 0 22px color-mix(in srgb, var(--brass) 45%, transparent);

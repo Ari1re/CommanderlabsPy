@@ -59,6 +59,8 @@
     padding: 1rem 1rem 0.5rem 1.4rem;
   }
   .content {
+    min-width: 0;
+    overflow-wrap: anywhere;
     overflow: auto;
     padding: 0.5rem 1.4rem 1.2rem;
   }

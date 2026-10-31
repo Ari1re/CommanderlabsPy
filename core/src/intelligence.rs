@@ -58,6 +58,15 @@ impl CommanderIntelligence {
         let key = card.name.to_ascii_lowercase();
         let signal = self.edhrec_by_name.get(&key);
         let reference_frequency = self.references.frequency(&card.name);
+        // cEDH-first: at Bracket 5, when cEDH Decklist Database lists exist
+        // for this commander, they outrank casual decklists and EDHREC.
+        let cedh_first = self.target_bracket >= 5 && self.references.cedh_deck_count > 0;
+        let cedh_frequency = self.references.cedh_frequency(&card.name);
+        let cedh_share = if self.references.cedh_deck_count == 0 {
+            0.0
+        } else {
+            cedh_frequency as f64 / self.references.cedh_deck_count as f64
+        };
         let reference_package_frequency =
             self.references.package_frequency(&card.name);
 
@@ -128,9 +137,29 @@ impl CommanderIntelligence {
             85.0
         };
 
-        let reference_component =
+        let reference_component = if cedh_first {
+            // cEDH share carries the weight; the whole corpus (incl. casual
+            // lists) only nudges.
+            (cedh_share * 560.0).round() as i32
+                + (reference_share * 70.0).round() as i32
+                + (package_share * package_multiplier).round() as i32
+        } else {
             (reference_share * reference_multiplier).round() as i32
-            + (package_share * package_multiplier).round() as i32;
+                + (package_share * package_multiplier).round() as i32
+        };
+        let cedh_core_bonus = if !cedh_first {
+            0
+        } else if cedh_share >= 0.70 {
+            220
+        } else if cedh_share >= 0.45 {
+            140
+        } else if cedh_share >= 0.25 {
+            60
+        } else {
+            0
+        };
+        // EDHREC mostly reflects casual decks: tiebreaker only in cEDH-first mode.
+        let edhrec_weight = if cedh_first { 0.3 } else { 1.0 };
 
         let reference_core_bonus = if reference_share >= 0.70 {
             if self.target_bracket >= 5 { 120 } else { 80 }
@@ -160,9 +189,11 @@ impl CommanderIntelligence {
             0
         };
 
-        let score = edhrec_component
+        let reference_core_bonus = if cedh_first { 0 } else { reference_core_bonus };
+        let score = (edhrec_component as f64 * edhrec_weight).round() as i32
             + reference_component
             + reference_core_bonus
+            + cedh_core_bonus
             + engine_component
             + core_component
             + theme_component
@@ -174,7 +205,9 @@ impl CommanderIntelligence {
         if signal.is_some() {
             confidence = confidence.saturating_add(40);
         }
-        if reference_frequency > 0 {
+        if cedh_first && cedh_frequency > 0 {
+            confidence = confidence.saturating_add((cedh_share * 50.0).round() as u8);
+        } else if reference_frequency > 0 {
             confidence = confidence.saturating_add(
                 (reference_share * 35.0).round() as u8,
             );
@@ -194,7 +227,12 @@ impl CommanderIntelligence {
         confidence = confidence.min(100);
 
         let reason = format!(
-            "{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}",
+            if cedh_first && cedh_frequency > 0 {
+                format!("cEDH {}/{} lists • ", cedh_frequency, self.references.cedh_deck_count)
+            } else {
+                String::new()
+            },
             signal
                 .map(|s| format!(
                     "EDHREC {:.0}% inclusion / {:.1}% synergy",

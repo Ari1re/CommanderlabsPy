@@ -1870,6 +1870,20 @@ notes.insert(
         ));
     }
 
+    if target_bracket.bracket >= 5 {
+        notes.insert(
+            1,
+            if reference_snapshot.cedh_deck_count > 0 {
+                format!(
+                    "cEDH sources first: card choices were scored mainly on {} cEDH Decklist Database list(s) for this commander; casual decklists and EDHREC were used only as tiebreakers.",
+                    reference_snapshot.cedh_deck_count
+                )
+            } else {
+                "No cEDH Decklist Database lists were found for this commander, so the Bracket 5 build fell back to high-power public decklists and EDHREC.".to_string()
+            },
+        );
+    }
+
     if reference_snapshot.deck_count() > 0 {
         notes.push(format!(
             "Compared against {} cached/public reference deck(s) from Archidekt, Moxfield{}. Deep Learn also measured recurring card pairs and {} distinct complete Spellbook combo line(s) across the corpus.",
