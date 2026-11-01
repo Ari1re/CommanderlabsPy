@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.32.0
+
+- **Budgets for generated decks.** The Build screen has a **Budget**: a total for the whole deck ($50, $100, $250, $500 or your own amount), a per-card limit, or both, in US dollars from Scryfall.
+  - Cards over the limit never enter the build. With a total, the per-card ceiling is worked out from what's left after the commander's price.
+  - If the finished deck is still over, its most expensive cards are swapped for cheaper ones that fill the same role at a similar mana value. Expensive lands become cheap lands in your colors, or basics. The commander and its combo pieces stay.
+  - The deck's notes list each swap and the final price, and say so if the commander alone puts the total out of reach.
+  - Works for Commander, Pauper Commander and Canadian Highlander (where swaps never add pointed cards).
+- **Suggestions can go to the sideboard or Considering.** Each suggestion has **+ Sideboard** and **+ Considering** next to **Add**, and shows when a card is already in one of them.
+
 ## 0.31.0
 
 - **Every copy of Commander Lab updates itself from Settings.**

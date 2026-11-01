@@ -5,6 +5,7 @@ use crate::{
     archetype::{detect_deck_tags, tag_fit_score, tag_names_for_card, theme_list, ArchetypeTag},
     bracket::{estimate_bracket, refine_with_combo_report, BracketEstimate},
     commander::{combined_identity, resolve_generation_commanders},
+    budget::Budget,
     data::{Card, CardDb},
     deck::{DeckEntry, ParsedDeck},
     edhrec::{commander_themes, EdhrecCardSignal},
@@ -796,6 +797,8 @@ pub struct GenerationOptions {
     /// Read every card's Oracle text for cards that fit the chosen play
     /// styles, including old cards no decklist runs.
     pub deep_search: bool,
+    /// Price limits (USD): a total for the deck and/or a per-card ceiling.
+    pub budget: Budget,
 }
 
 pub fn generate_optimized_deck<F>(
@@ -875,7 +878,7 @@ where
             format.label()
         ));
     }
-    let allowed = |card: &Card| format.card_allowed(card).is_ok();
+    let budget = options.budget;
 
     progress(GenerationProgress::new(
         4,
@@ -906,6 +909,10 @@ where
     }
 
     let identity = combined_identity(&commanders);
+    // Legal in the format and inside the per-card price ceiling (worked out
+    // from what's left of the budget after the commander).
+    let card_budget = budget.after_spending(commanders.iter().map(crate::budget::price).sum());
+    let allowed = |card: &Card| format.card_allowed(card).is_ok() && card_budget.card_ok(card);
     let commander_entries = commanders
         .iter()
         .map(|card| DeckEntry {
@@ -1360,6 +1367,9 @@ for template in relevant_templates
     let Some(cards) = resolve_combo_template(template, &identity, format, db)? else {
         continue;
     };
+    if !cards.iter().all(|card| budget.card_ok(card)) {
+        continue;
+    }
 
     if cards
         .iter()
@@ -2002,6 +2012,58 @@ let (integrity_report, validated_bracket) = integrity_gate(
     &intelligence,
     &final_combos,
 )?;
+
+// Budget: swap the priciest cards for cheaper ones until the deck fits.
+if budget.is_set() {
+    let protected: HashSet<String> = deck
+        .commanders
+        .iter()
+        .map(|e| e.name.to_ascii_lowercase())
+        .chain(final_combos.iter().flat_map(|c| c.cards.iter()).map(|n| n.to_ascii_lowercase()))
+        .collect();
+    if budget.total.is_some() {
+        progress(GenerationProgress::new(96, "Fitting the budget", budget.describe()));
+    }
+    let report = crate::budget::fit_total(
+        &mut deck,
+        &budget,
+        db,
+        &pool,
+        &identity,
+        &protected,
+        |card| {
+            let key = card.name.to_ascii_lowercase();
+            let synergy = edhrec_signals
+                .get(&key)
+                .map(|s| (s.inclusion_pct() * 100.0) as i64 + (s.synergy * 100.0) as i64 + 5_000)
+                .unwrap_or(0);
+            let theme = if card_matches_theme(card, selected_theme) { 4_000 } else { 0 };
+            let engine = if card_matches_engine(card, &commander_engine_terms) { 3_000 } else { 0 };
+            let rank = 3_000 - (card.edhrec_rank.unwrap_or(30_000) as i64 / 10).min(3_000);
+            synergy + theme + engine + rank
+        },
+        |card| allowed(card),
+    )?;
+    let mut note = format!("Budget: {}. ", budget.describe());
+    if !report.swaps.is_empty() {
+        note.push_str(&format!(
+            "Swapped {} card(s) for cheaper ones to fit (${:.2} → ${:.2}): {}. ",
+            report.swaps.len(),
+            report.before,
+            report.after,
+            report.swaps.iter().take(12).map(|(a, b)| format!("{a} → {b}")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if budget.total.is_some() && !report.fits {
+        note.push_str(&format!(
+            "The deck still costs ${:.2}: its commander, combo pieces and cheapest picks don't fit under the total. ",
+            report.after
+        ));
+    } else {
+        note.push_str(&format!("Deck price: ${:.2}.", report.after));
+    }
+    notes.push(note.trim().to_string());
+}
 
 progress(GenerationProgress::new(
     97,

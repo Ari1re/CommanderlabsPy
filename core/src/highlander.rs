@@ -187,6 +187,7 @@ pub fn generate_highlander<F>(
     theme: &str,
     power: u8,
     use_deep_search: bool,
+    budget: crate::budget::Budget,
     db: &CardDb,
     mut progress: F,
 ) -> Result<GeneratedDeck>
@@ -222,6 +223,7 @@ where
             || !identity_subset(&card.color_identity, &colors)
             || multiplayer_only(&card)
             || card.type_line.to_ascii_lowercase().contains("plane —")
+            || !budget.card_ok(&card)
         {
             return;
         }
@@ -455,6 +457,33 @@ where
     }
     add_weighted_basics(&mut main, &weight, basics_needed);
 
+    // Budget: swap the priciest cards for cheaper, unpointed ones until it fits.
+    let mut budget_note = None;
+    if budget.is_set() {
+        let mut tmp = ParsedDeck { main: std::mem::take(&mut main), ..Default::default() };
+        let report = crate::budget::fit_total(
+            &mut tmp,
+            &budget,
+            db,
+            &pool,
+            &colors,
+            &HashSet::new(),
+            |card| 3_000 - (card.edhrec_rank.unwrap_or(30_000) as i64 / 10).min(3_000),
+            |card| crate::format::canlander_points(&card.name) == 0,
+        )?;
+        main = tmp.main;
+        let mut note = format!("Budget: {}. ", budget.describe());
+        if !report.swaps.is_empty() {
+            note.push_str(&format!("Swapped {} card(s) for cheaper ones (${:.2} → ${:.2}). ", report.swaps.len(), report.before, report.after));
+        }
+        note.push_str(&if budget.total.is_some() && !report.fits {
+            format!("The deck still costs ${:.2}; there weren't enough cheaper cards that fit.", report.after)
+        } else {
+            format!("Deck price: ${:.2}.", report.after)
+        });
+        budget_note = Some(note);
+    }
+
     let deck_cards: Vec<(u32, Card)> = main
         .iter()
         .filter_map(|e| db.get_card(&e.name).ok().flatten().map(|c| (e.quantity, c)))
@@ -519,6 +548,9 @@ where
             )
         },
     ];
+    if let Some(note) = budget_note {
+        notes.push(note);
+    }
     if use_deep_search && !card_themes.is_empty() {
         let picked: Vec<String> = main
             .iter()

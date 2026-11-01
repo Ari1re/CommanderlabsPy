@@ -147,6 +147,8 @@ Each format builds from its own sources:
 
 Commander brackets only apply to Commander. For PDH the power level sets how hard the build pushes. For Canadian Highlander it sets how many points the deck may spend (levels 1–2 none, 3 up to 4, 4 up to 7, 5 all 10).
 
+**Budget**: choose a total for the whole deck ($50, $100, $250, $500 or your own amount) and, if you like, the most any one card may cost. Prices are Scryfall's US dollar (TCGplayer) prices. The total includes the commander, which always stays. Cards over the limit never enter the build. If the finished deck still costs too much, its most expensive cards are swapped for cheaper ones that do the same job at a similar mana value, and expensive lands become cheaper lands in your colors or basics. The deck's notes list the swaps and the final price. Budgets work in every format.
+
 **Deep card search** (a switch on the Build screen) reads the rules text of every card in Scryfall's database for cards that fit your play styles, including older cards no decklist runs. A -1/-1 counters deck picks up wither and persist creatures, for example. The deck's notes say which cards came from the search and why.
 
 At **Bracket 5 (cEDH)**, the generator builds from cEDH Decklist Database lists first; casual decklists and EDHREC only break ties. The deck's notes say which sources were used.
@@ -166,6 +168,7 @@ Every generated deck is checked before it's saved: exactly 100 cards, singleton,
 The **Cards** tab groups the deck by type, like Moxfield.
 
 - Type in **Add a card** to search every card and press Enter to add it.
+- On **Suggestions**, each card can go to the deck (**Add**), **+ Sideboard** or **+ Considering**.
 - Use **+ / −** to change counts. The **⋯** menu moves cards to the sideboard, makes a card your commander, or removes it.
 - Click any card to see it full size. Choose **Change printing** to pick from every printing, with art and prices, and toggle **Foil**.
 - Switch between **List** and **Images**, and sort by mana value or name.
