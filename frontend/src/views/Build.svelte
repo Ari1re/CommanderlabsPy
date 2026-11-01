@@ -23,6 +23,14 @@
   let picked = $state<string[]>([]);
   const MAX_THEMES = 3;
   let bracket = $state(3);
+  /** Budget: total for the deck ('' = no limit) and an optional per-card cap. */
+  const BUDGETS = [50, 100, 250, 500];
+  let budgetTotal = $state<number | null>(null);
+  let customTotal = $state('');
+  let showCustom = $state(false);
+  let perCard = $state('');
+  let total = $derived(showCustom ? (Number(customTotal) > 0 ? Number(customTotal) : null) : budgetTotal);
+  let cardCap = $derived(Number(perCard) > 0 ? Number(perCard) : null);
   let job = $state<Job | null>(null);
   let failed = $state<string | null>(null);
 
@@ -108,7 +116,16 @@
     try {
       const res = await runJob<{ name: string }>(
         'generate',
-        { commander: spec, theme: picked.join(' + '), bracket, format, deep_search: deep, colors: colorSpec },
+        {
+          commander: spec,
+          theme: picked.join(' + '),
+          bracket,
+          format,
+          deep_search: deep,
+          colors: colorSpec,
+          budget_total: total,
+          budget_card: cardCap,
+        },
         (j) => (job = j),
         800,
       );
@@ -254,6 +271,39 @@
         </form>
       {/if}
 
+      <div class="label-row">
+        <h2>Budget</h2>
+        <span class="small muted">Prices in US dollars, from Scryfall (TCGplayer).</span>
+      </div>
+      <div class="budget stack">
+        <div class="segmented wrap" role="group" aria-label="Deck budget">
+          <button aria-pressed={!showCustom && budgetTotal === null} onclick={() => { showCustom = false; budgetTotal = null; }}>No limit</button>
+          {#each BUDGETS as b (b)}
+            <button aria-pressed={!showCustom && budgetTotal === b} onclick={() => { showCustom = false; budgetTotal = b; }}>${b}</button>
+          {/each}
+          <button aria-pressed={showCustom} onclick={() => (showCustom = true)}>Custom</button>
+        </div>
+        <div class="budget-inputs">
+          {#if showCustom}
+            <label class="money">
+              <span class="small">Whole deck</span>
+              <span class="input-wrap"><span class="dim">$</span><input class="input" type="number" inputmode="decimal" min="1" step="1" bind:value={customTotal} placeholder="150" /></span>
+            </label>
+          {/if}
+          <label class="money">
+            <span class="small">Most per card <span class="dim">(optional)</span></span>
+            <span class="input-wrap"><span class="dim">$</span><input class="input" type="number" inputmode="decimal" min="0.1" step="0.5" bind:value={perCard} placeholder="Any" /></span>
+          </label>
+        </div>
+        {#if total || cardCap}
+          <p class="small muted">
+            {#if total}The whole deck, commander included, stays under ${total}: pricey cards are left out, and the most expensive picks are swapped for cheaper ones that do the same job.{/if}
+            {#if cardCap}No card over ${cardCap}.{/if}
+            The commander you picked always stays.
+          </p>
+        {/if}
+      </div>
+
       <label class="deep panel">
         <input type="checkbox" bind:checked={deep} />
         <span>
@@ -333,6 +383,26 @@
   .custom .input {
     flex: 1;
     min-width: 0;
+  }
+  .segmented.wrap {
+    flex-wrap: wrap;
+  }
+  .budget-inputs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .money {
+    display: grid;
+    gap: 0.25rem;
+  }
+  .input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .input-wrap .input {
+    width: 8rem;
   }
   .deep {
     display: flex;

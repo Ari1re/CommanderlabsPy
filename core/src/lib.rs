@@ -10,6 +10,7 @@ pub mod api;
 pub mod archetype;
 pub mod archidekt;
 pub mod bracket;
+pub mod budget;
 pub mod commander;
 pub mod data;
 pub mod deck;

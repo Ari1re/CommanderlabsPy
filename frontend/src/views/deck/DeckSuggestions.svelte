@@ -21,7 +21,8 @@
   let step = $state('');
   let role = $state<string>('all');
   let maxPrice = $state<number | null>(null);
-  let added = $state<Set<string>>(new Set());
+  /** Card name → where it was added ("deck", "sideboard", "Considering"). */
+  let addedTo = $state<Record<string, string>>({});
   let source = $state<string>('all');
 
   const SOURCE_LABEL: Record<string, string> = {
@@ -92,7 +93,7 @@
   let shown = $derived(
     mixed.filter(
       (m) =>
-        (added.has(m.card.name) || (!inDeck.has(m.card.name.toLowerCase()) && matches({ card: m.card, reason: '' }))) &&
+        (m.card.name in addedTo || (!inDeck.has(m.card.name.toLowerCase()) && matches({ card: m.card, reason: '' }))) &&
         (source === 'all' || m.reasons.some((r) => r.source === source)),
     ),
   );
@@ -143,11 +144,22 @@
 
   let inDeck = $derived(new Set(deck.entries.filter((e) => (e.zone === 'main' || e.zone === 'commander')).map((e) => e.name.toLowerCase())));
 
-  async function add(s: Suggestion) {
+  /** Cards already set aside in the sideboard or Considering. */
+  let setAside = $derived(
+    new Map(deck.entries.filter((e) => e.zone === 'sideboard' || e.zone === 'considering').map((e) => [e.name.toLowerCase(), e.zone])),
+  );
+
+  const ZONE_LABEL = { main: 'deck', sideboard: 'sideboard', considering: 'Considering' } as const;
+
+  async function add(s: Suggestion, zone: 'main' | 'sideboard' | 'considering' = 'main') {
     try {
-      onchange(await api<Deck>('edit_deck', { name: deck.name, action: 'add', card: s.card.name, zone: 'main' }));
-      added = new Set([...added, s.card.name]);
-      app.toast(`Added ${s.card.name}. ${countAfter()} cards now.`, 'success');
+      const after = countAfter();
+      onchange(await api<Deck>('edit_deck', { name: deck.name, action: 'add', card: s.card.name, zone }));
+      addedTo = { ...addedTo, [s.card.name]: ZONE_LABEL[zone] };
+      app.toast(
+        zone === 'main' ? `Added ${s.card.name}. ${after} cards now.` : `Added ${s.card.name} to ${zone === 'sideboard' ? 'the sideboard' : 'Considering'}.`,
+        'success',
+      );
     } catch (err) {
       app.error(err);
     }
@@ -223,7 +235,7 @@
   {/if}
   <div class="grid">
     {#each shown as m (m.card.oracle_id)}
-      <article class="sugg" class:done={added.has(m.card.name)}>
+      <article class="sugg" class:done={addedTo[m.card.name] === 'deck'}>
         <button class="img" onclick={() => app.open(m.card)} aria-label="View {m.card.name}">
           {#if m.card.image_uri}
             <img class="card-img" src={m.card.image_uri} alt={m.card.name} loading="lazy" />
@@ -243,12 +255,26 @@
           <div class="row">
             <span class="small num dim">{money(price(m.card, app.currency), app.currency)}</span>
             <span class="spacer"></span>
-            {#if added.has(m.card.name)}
-              <span class="small added"><Icon name="check" size={15} /> Added</span>
+            {#if addedTo[m.card.name]}
+              <span class="small added"><Icon name="check" size={15} /> {addedTo[m.card.name] === 'deck' ? 'Added' : `In ${addedTo[m.card.name]}`}</span>
             {:else}
               <button class="btn small primary" onclick={() => add({ card: m.card, reason: '' })}><Icon name="plus" size={15} /> Add</button>
             {/if}
           </div>
+          {#if !addedTo[m.card.name]}
+            <div class="also" role="group" aria-label="Add {m.card.name} elsewhere">
+              {#if setAside.get(m.card.name.toLowerCase()) === 'sideboard'}
+                <span class="small dim">In sideboard</span>
+              {:else}
+                <button class="link-btn" onclick={() => add({ card: m.card, reason: '' }, 'sideboard')}>+ Sideboard</button>
+              {/if}
+              {#if setAside.get(m.card.name.toLowerCase()) === 'considering'}
+                <span class="small dim">In Considering</span>
+              {:else}
+                <button class="link-btn" onclick={() => add({ card: m.card, reason: '' }, 'considering')}>+ Considering</button>
+              {/if}
+            </div>
+          {/if}
         </div>
       </article>
     {/each}
@@ -304,6 +330,26 @@
     width: auto;
     min-height: 34px;
     padding: 0.2rem 0.5rem;
+  }
+  .also {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.75rem;
+    margin-top: 0.35rem;
+  }
+  .link-btn {
+    background: none;
+    border: 0;
+    padding: 0.2rem 0;
+    color: var(--text-2);
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .link-btn:hover,
+  .link-btn:focus-visible {
+    color: var(--brass-strong);
   }
   .grid {
     display: grid;

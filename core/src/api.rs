@@ -318,6 +318,7 @@ impl Engine {
                 GenerationOptions {
                     format: Format::parse(&opt::<String>(a, "format").unwrap_or_default()),
                     deep_search: opt(a, "deep_search").unwrap_or(false),
+                    budget: crate::budget::Budget::new(opt(a, "budget_total"), opt(a, "budget_card")),
                 },
                 opt(a, "colors").unwrap_or_default(),
             )? })),
@@ -1144,7 +1145,7 @@ impl Engine {
         Ok(self.jobs.spawn("generate", &label, move |job| {
             let db = CardDb::open(DB_PATH)?;
             let generated = if options.format == Format::Canlander {
-                generate_highlander(&colors, &theme, bracket, options.deep_search, &db, |p| {
+                generate_highlander(&colors, &theme, bracket, options.deep_search, options.budget, &db, |p| {
                     job.progress(p.percent, p.step, p.detail)
                 })?
             } else {
@@ -1158,7 +1159,11 @@ impl Engine {
                 )?
             };
             let power = if options.format.is_commander() { format!("Bracket {bracket}") } else { format!("{} power {bracket}", options.format.label()) };
-            let deep = if options.deep_search { ", deep search" } else { "" };
+            let deep = format!(
+                "{}{}",
+                if options.deep_search { ", deep search" } else { "" },
+                if options.budget.is_set() { format!(", budget {}", options.budget.describe()) } else { String::new() }
+            );
             let message = if theme.trim().is_empty() {
                 format!("Generated at {power}{deep}")
             } else {
