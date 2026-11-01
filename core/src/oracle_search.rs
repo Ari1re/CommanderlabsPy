@@ -11,6 +11,7 @@ use crate::{
 use anyhow::Result;
 use regex::Regex;
 use serde::Serialize;
+use std::collections::HashSet;
 
 /// One way a card can fit a theme.
 struct Rule {
@@ -366,6 +367,20 @@ pub fn deep_search(
     format: Format,
     limit: usize,
 ) -> Result<Vec<DeepFind>> {
+    deep_search_excluding(db, themes, identity, format, limit, &HashSet::new())
+}
+
+/// [`deep_search`] that skips cards named in `exclude` (lowercased card
+/// names, usually the deck's own cards) before taking the top `limit`, so a
+/// deck that already runs the best fits still gets new ones.
+pub fn deep_search_excluding(
+    db: &CardDb,
+    themes: &[String],
+    identity: Option<&str>,
+    format: Format,
+    limit: usize,
+    exclude: &HashSet<String>,
+) -> Result<Vec<DeepFind>> {
     let matchers: Vec<ThemeMatcher> = themes.iter().map(|t| ThemeMatcher::new(t)).collect();
     if matchers.iter().all(|m| m.rules.is_empty()) {
         return Ok(Vec::new());
@@ -376,7 +391,7 @@ pub fn deep_search(
         if card.is_basic || card.type_line.to_ascii_lowercase().contains("land") && !lands_theme(themes) {
             return;
         }
-        if format.card_allowed(&card).is_err() {
+        if format.card_allowed(&card).is_err() || exclude.contains(&card.name.to_lowercase()) {
             return;
         }
         if let Some(identity) = identity {
