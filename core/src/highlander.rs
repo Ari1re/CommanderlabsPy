@@ -597,6 +597,7 @@ where
             combos: Vec::new(),
             notes,
             sources: highlander_sources(&evidence),
+            report: None,
         },
     })
 }

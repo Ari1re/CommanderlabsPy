@@ -407,6 +407,12 @@ pub fn classify_card(card: &Card) -> CardRoles {
     let ramp = !is_land
         && (
             oracle.contains("add {")
+                // "Add one mana of any color…" (Arcane Signet, Fellwar Stone)
+                || oracle.contains("add one mana")
+                || oracle.contains("add two mana")
+                || oracle.contains("add three mana")
+                || oracle.contains("add x mana")
+                || oracle.contains("add an amount of")
                 || oracle.contains("create a treasure token")
                 || oracle.contains("create two treasure tokens")
                 || oracle.contains("search your library for a basic land")

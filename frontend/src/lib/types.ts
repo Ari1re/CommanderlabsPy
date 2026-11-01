@@ -108,6 +108,33 @@ export interface GamePlan {
   summary: string;
   combos: Combo[];
   notes: string[];
+  /** How the deck was built (deep learning generation). */
+  report?: GenerationReport | null;
+}
+
+export interface TierCounts {
+  core: number;
+  synergy: number;
+  staple: number;
+  could_use: number;
+  none: number;
+}
+
+export interface GenerationPick {
+  card: string;
+  tier: 'synergy' | 'core' | 'staple' | 'could_use' | null;
+  reasons: string[];
+}
+
+export interface GenerationReport {
+  engine: string;
+  sources: { name: string; status: string; detail: string }[];
+  themes: { name: string; from: string }[];
+  pool_tiers: TierCounts;
+  deck_tiers: TierCounts;
+  picks: GenerationPick[];
+  near_misses: GenerationPick[];
+  weaknesses: string[];
 }
 
 export interface FormatCheck {

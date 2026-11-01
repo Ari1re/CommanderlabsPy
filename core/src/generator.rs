@@ -38,6 +38,9 @@ pub struct GamePlan {
     pub combos: Vec<GeneratedCombo>,
     pub notes: Vec<String>,
     pub sources: Vec<DeckSource>,
+    /// How the deck was built (deep learning generation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<crate::deep_generation::GenerationReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -799,6 +802,10 @@ pub struct GenerationOptions {
     pub deep_search: bool,
     /// Price limits (USD): a total for the deck and/or a per-card ceiling.
     pub budget: Budget,
+    /// Ask the configured AI model for themes and key cards first.
+    pub ai_assist: bool,
+    /// Deep learning (default) or peer-based generation.
+    pub engine: crate::deep_generation::GenerationEngine,
 }
 
 pub fn generate_optimized_deck<F>(
@@ -938,7 +945,11 @@ where
     progress(GenerationProgress::new(
         16,
         "Locking deck theme",
-        format!("Building around {selected_theme}"),
+        if selected_theme.trim().is_empty() {
+            "No play style chosen".to_string()
+        } else {
+            format!("Building around {selected_theme}")
+        },
     ));
 
     let mut tags = detect_deck_tags(&shell, db)?;
@@ -967,6 +978,66 @@ where
             });
         }
     }
+
+    // AI assist: the model's themes (used when the player chose none), key
+    // cards and cards to avoid. Its card names are checked against the card
+    // database, format and colors before they count.
+    let mut ai_hints: Option<crate::ai::GenerationHints> = None;
+    if options.ai_assist {
+        progress(GenerationProgress::new(18, "Asking the AI model", "Themes, key cards and cards to avoid"));
+        let edhrec_names: Vec<String> = commander_edhrec_themes.iter().take(6).map(|t| t.name.clone()).collect();
+        match crate::ai::generation_hints(&commanders, &edhrec_names, selected_theme, target_bracket.bracket, format.label()) {
+            Ok(hints) => {
+                progress(GenerationProgress::new(
+                    20,
+                    "AI suggestions",
+                    format!(
+                        "[AI] {} • themes={} • key cards={} • avoid={} • plan: {}",
+                        hints.model,
+                        hints.themes.join(" / "),
+                        hints.key_cards.join(", "),
+                        hints.avoid.join(", "),
+                        hints.plan,
+                    ),
+                ));
+                ai_hints = Some(hints);
+            }
+            Err(err) => progress(GenerationProgress::new(20, "AI suggestions", format!("[AI] skipped: {err:#}"))),
+        }
+    }
+    // Play styles, and where each came from. The player's own choice wins.
+    // Otherwise: the AI model's, then (deep learning) the commander's own
+    // mechanics, then its most popular EDHREC themes.
+    let deep = options.engine == crate::deep_generation::GenerationEngine::DeepLearning;
+    let mechanics = if deep { crate::deep_generation::commander_mechanics(&commanders) } else { Vec::new() };
+    let mut theme_lines: Vec<crate::deep_generation::ThemeLine> = Vec::new();
+    let line = |name: &str, from: &str| crate::deep_generation::ThemeLine { name: name.to_string(), from: from.to_string() };
+    if !selected_theme.trim().is_empty() {
+        theme_lines.extend(theme_list(selected_theme).iter().map(|t| line(t, "you")));
+    } else {
+        if let Some(hints) = &ai_hints {
+            theme_lines.extend(hints.themes.iter().map(|t| line(t, "the AI model")));
+        }
+        if deep {
+            theme_lines.extend(mechanics.iter().map(|t| line(t, "the commander's rules text")));
+            theme_lines.extend(commander_edhrec_themes.iter().take(2).map(|t| line(&t.name, "EDHREC")));
+        }
+        let mut seen = HashSet::new();
+        theme_lines.retain(|t| seen.insert(t.name.to_ascii_lowercase()));
+        theme_lines.truncate(3);
+    }
+    let auto_theme_spec;
+    let selected_theme = if selected_theme.trim().is_empty() && !theme_lines.is_empty() {
+        auto_theme_spec = theme_lines.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(crate::archetype::THEME_SEPARATOR);
+        progress(GenerationProgress::new(
+            21,
+            "Play styles chosen",
+            theme_lines.iter().map(|t| format!("{} (from {})", t.name, t.from)).collect::<Vec<_>>().join(" • "),
+        ));
+        auto_theme_spec.as_str()
+    } else {
+        selected_theme
+    };
 
     let selected_themes = theme_list(selected_theme);
     for theme in selected_themes.iter().rev() {
@@ -1025,7 +1096,8 @@ where
 
     // Research the commander in the format's own sources (PDHREC and
     // Archidekt's Pauper EDH decks for PDH).
-    let intelligence = crate::format_sources::with_format(format, || {
+    let depth = if deep { crate::references::ReferenceDepth::DEEP } else { crate::references::ReferenceDepth::PEER };
+    let intelligence = crate::references::with_depth(depth, || crate::format_sources::with_format(format, || {
         learn_commander_intelligence(
             &commanders,
             selected_theme,
@@ -1039,7 +1111,7 @@ where
                 ));
             },
         )
-    })?;
+    }))?;
 
     // Generation and AI Agent share the learned commander model.
     let reference_snapshot = intelligence.references.clone();
@@ -1105,11 +1177,45 @@ where
             }
         })?;
     }
+    // AI key cards join the pool even when they're outside the usual
+    // popularity cutoff.
+    let mut ai_key = HashSet::<String>::new();
+    let mut ai_avoid = HashSet::<String>::new();
+    if let Some(hints) = &ai_hints {
+        let mut rejected = Vec::new();
+        for name in &hints.key_cards {
+            match db.get_card(name)? {
+                Some(card) if allowed(&card) && identity_subset(&card.color_identity, &identity) => {
+                    ai_key.insert(card.name.to_ascii_lowercase());
+                    if !pool.iter().any(|c| c.name == card.name) {
+                        pool.push(card);
+                    }
+                }
+                Some(card) => rejected.push(format!("{} (not legal here)", card.name)),
+                None => rejected.push(format!("{name} (no such card)")),
+            }
+        }
+        for name in &hints.avoid {
+            if let Some(card) = db.get_card(name)? {
+                ai_avoid.insert(card.name.to_ascii_lowercase());
+            }
+        }
+        progress(GenerationProgress::new(
+            31,
+            "AI suggestions checked",
+            format!(
+                "[AI] {} key card(s) usable{}",
+                ai_key.len(),
+                if rejected.is_empty() { String::new() } else { format!(" • ignored: {}", rejected.join(", ")) }
+            ),
+        ));
+    }
+
     pool.retain(|card| allowed(card));
 
     // Deep card search: Oracle-text matches for the chosen play styles.
     let mut deep_finds: HashMap<String, DeepFind> = HashMap::new();
-    if options.deep_search {
+    if options.deep_search || deep {
         let mut themes = theme_list(selected_theme);
         if themes.is_empty() {
             themes = primary_tags.clone();
@@ -1171,8 +1277,14 @@ where
     let mut commander_engine_cards = 0usize;
     let mut edhrec_core_cards = 0usize;
 
+    // The commander's own mechanics, matched by the same rules as deep
+    // search. Peer-based generation relies on engine words alone, which
+    // finds nothing for commanders like Drana whose text names no type.
+    let mechanic_matchers: Vec<crate::oracle_search::ThemeMatcher> =
+        mechanics.iter().map(|m| crate::oracle_search::ThemeMatcher::new(m)).collect();
+
     let commander_engine_target =
-        if commander_engine_terms.is_empty() {
+        if commander_engine_terms.is_empty() && mechanic_matchers.is_empty() {
             0
         } else {
             match target_bracket.bracket {
@@ -1319,6 +1431,69 @@ where
         });
     }
 
+    // Deep learning: Commander Spellbook's combos for this commander, most
+    // played first, when the reference decks didn't supply enough.
+    let mut spellbook_found = 0usize;
+    let mut spellbook_status = if deep { "not needed" } else { "off" };
+    if deep && seeded_combos.len() < target_bracket.combo_target() {
+        spellbook_status = "used";
+        let legal = match format {
+            Format::Pdh => "pauper_commander",
+            _ => "commander",
+        };
+        let ci = if identity.is_empty() { "c".to_string() } else { identity.to_lowercase() };
+        for commander in &commanders {
+            let query = format!("card:\"{}\" ci<={ci} legal:{legal}", commander.name);
+            let Ok(found) = crate::spellbook::search_combos(&query, 30) else {
+                spellbook_status = "failed";
+                continue;
+            };
+            spellbook_found += found.len();
+            for combo in found {
+                if seeded_combos.len() >= target_bracket.combo_target() {
+                    break;
+                }
+                // Compact lines only: two or three cards.
+                if combo.cards.len() > 3 {
+                    continue;
+                }
+                let mut to_add = Vec::new();
+                let mut ok = true;
+                for name in &combo.cards {
+                    match db.get_card(name)? {
+                        Some(card) if allowed(&card) && identity_subset(&card.color_identity, &identity) => {
+                            if !used.contains(&card.name.to_ascii_lowercase()) {
+                                to_add.push(card);
+                            }
+                        }
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok || main.len() + to_add.len() > spell_target {
+                    continue;
+                }
+                for card in &to_add {
+                    used.insert(card.name.to_ascii_lowercase());
+                    role_counts.add_card(card, classify_card(card));
+                    main.push(DeckEntry { quantity: 1, name: card.name.clone(), ..Default::default() });
+                }
+                seeded_combos.push(GeneratedCombo {
+                    cards: combo.cards.clone(),
+                    result: combo.result.lines().next().unwrap_or("Commander Spellbook combo").to_string(),
+                    source: "Commander Spellbook, built around this commander".to_string(),
+                });
+            }
+        }
+        progress(GenerationProgress::new(
+            35,
+            "Commander Spellbook",
+            format!("{spellbook_found} combo(s) with this commander found • {} seeded in total", seeded_combos.len()),
+        ));
+    }
+
     progress(GenerationProgress::new(
         36,
         "Selecting win packages",
@@ -1439,6 +1614,8 @@ for template in relevant_templates
     // commander's own keywords ("counter", "token"…) match far too broadly to
     // carry the large bonuses they get when real build data backs them up.
     let thin_evidence = edhrec_build_cards.is_empty() && reference_snapshot.deck_count() == 0;
+    // Each candidate's evidence tier and reasons, for the report.
+    let mut evidence: HashMap<String, (Option<crate::deep_generation::Tier>, Vec<String>)> = HashMap::new();
 
     let spell_pool = pool
         .iter()
@@ -1452,12 +1629,28 @@ for template in relevant_templates
             let roles = classify_card(card);
             let direct_theme = card_matches_theme(card, selected_theme)
                 || deep_finds.contains_key(&card.name.to_ascii_lowercase());
+            let mechanic_match = mechanic_matchers.iter().any(|m| m.matches(card));
             let engine_match =
-                card_matches_engine(card, &commander_engine_terms);
+                card_matches_engine(card, &commander_engine_terms) || mechanic_match;
             let reference_frequency =
                 reference_snapshot.frequency(&card.name);
             let edhrec_signal =
                 edhrec_signals.get(&card.name.to_ascii_lowercase());
+            let (tier, tier_bonus, reasons) = crate::deep_generation::assess(
+                card,
+                &crate::deep_generation::Evidence {
+                    edhrec: edhrec_signal,
+                    reference_hits: reference_frequency,
+                    reference_decks: reference_snapshot.deck_count(),
+                    deep_find: deep_finds.get(&card.name.to_ascii_lowercase()).map(|f| f.score),
+                    mechanic: mechanic_match,
+                    theme: card_matches_theme(card, selected_theme),
+                    ai_key: ai_key.contains(&card.name.to_ascii_lowercase()),
+                    roles,
+                    bracket: target_bracket.bracket,
+                },
+            );
+            evidence.insert(card.name.clone(), (tier, reasons));
             let learned_support =
                 intelligence.support_for_card(card, roles);
 
@@ -1485,7 +1678,14 @@ for template in relevant_templates
 
             let support = if thin_evidence { learned_support.score / 3 } else { learned_support.score };
 
-            let score = base_card_score(card, &tags)
+            // AI assist: a nudge, not a takeover. Key cards land near the
+            // EDHREC-core bonus; avoided cards drop below most utility.
+            let key = card.name.to_ascii_lowercase();
+            let ai_bonus = if ai_key.contains(&key) { 120 } else if ai_avoid.contains(&key) { -120 } else { 0 };
+
+            let score = ai_bonus
+                + if deep { tier_bonus } else { 0 }
+                + base_card_score(card, &tags)
                 + target_bracket.fast_mana_score(card, roles)
                 + bracket_card_score(card, roles, target_bracket)
                 + support
@@ -1512,6 +1712,57 @@ for template in relevant_templates
             && card.edhrec_rank.map(|r| r > 15_000).unwrap_or(true)
     };
     let mut deep_obscure_picked = 0usize;
+
+    // Deep learning: a power floor. Before synergy picks, reserve slots for
+    // the format's most-played staples and Game Changers in these colors,
+    // more at higher brackets (the bracket's Game Changer limit holds).
+    if deep {
+        let quota = match target_bracket.bracket {
+            1 => 0,
+            2 => 4,
+            3 => 8,
+            4 => 14,
+            _ => 20,
+        };
+        let mut staples: Vec<&(&Card, CardRoles, i32, bool, bool, u32, bool)> = spell_pool
+            .iter()
+            .filter(|(card, roles, ..)| {
+                let structural = roles.ramp || roles.draw || roles.removal || roles.wipe || roles.tutor || roles.protection;
+                (structural || card.game_changer) && card.edhrec_rank.map(|r| r <= 1_500).unwrap_or(false)
+            })
+            .collect();
+        staples.sort_by_key(|(card, ..)| card.edhrec_rank.unwrap_or(u32::MAX));
+        let mut picked = Vec::new();
+        for (card, roles, _, direct_theme, engine_match, _, edhrec_core) in staples {
+            if picked.len() >= quota || main.len() >= spell_target {
+                break;
+            }
+            if used.contains(&card.name.to_ascii_lowercase()) {
+                continue;
+            }
+            if card.game_changer && role_counts.game_changers as usize >= target_bracket.max_game_changers() {
+                continue;
+            }
+            used.insert(card.name.to_ascii_lowercase());
+            role_counts.add_card(card, *roles);
+            if *direct_theme {
+                theme_cards += 1;
+            }
+            if *engine_match {
+                commander_engine_cards += 1;
+            }
+            if *edhrec_core {
+                edhrec_core_cards += 1;
+            }
+            main.push(DeckEntry { quantity: 1, name: card.name.clone(), ..Default::default() });
+            picked.push(card.name.clone());
+        }
+        progress(GenerationProgress::new(
+            46,
+            "Power staples",
+            format!("{} of {quota} reserved: {}", picked.len(), picked.join(", ")),
+        ));
+    }
 
     while main.len() < spell_target {
         let mut best_index = None;
@@ -1561,7 +1812,10 @@ for template in relevant_templates
                 };
 
             let edhrec_need =
-                if *edhrec_core
+                if deep {
+                    // Already counted, synergy-weighted, in the tier bonus.
+                    0
+                } else if *edhrec_core
                     && edhrec_core_cards < edhrec_core_target
                 {
                     150
@@ -2262,7 +2516,130 @@ notes.insert(
     let summary =
         build_game_plan_summary(&commanders, selected_theme, &primary_tags, &final_combos);
 
-    let sources = intelligence.sources.clone();
+    // Only credit sources that contributed: a generic "public deck
+    // references" entry stays only if that site supplied a deck.
+    let decks_from = |site: &str| reference_snapshot.decks.iter().filter(|d| d.source.eq_ignore_ascii_case(site)).count();
+    let sources: Vec<DeckSource> = intelligence
+        .sources
+        .iter()
+        .filter(|s| !s.title.to_ascii_lowercase().contains("deck references") || decks_from(&s.source) > 0)
+        .cloned()
+        .collect();
+
+    let report = deep.then(|| {
+        use crate::deep_generation::{GenerationReport, Pick, SourceLine, TierCounts};
+        let status = |n: usize| if n > 0 { "used" } else { "empty" }.to_string();
+        let mut report_sources = vec![
+            SourceLine { name: "EDHREC".into(), status: status(edhrec_build_cards.len()), detail: format!("{} cards with inclusion and synergy", edhrec_build_cards.len()) },
+        ];
+        for site in ["Archidekt", "Moxfield", "cEDH Decklist Database"] {
+            let n = decks_from(site);
+            report_sources.push(SourceLine {
+                name: format!("{site} decklists"),
+                status: status(n),
+                detail: if site == "Moxfield" && n == 0 {
+                    "no decks: Moxfield's search ignores the commander filter".into()
+                } else {
+                    format!("{n} deck(s)")
+                },
+            });
+        }
+        report_sources.push(SourceLine {
+            name: "Commander Spellbook".into(),
+            status: spellbook_status.to_string(),
+            detail: format!("{spellbook_found} combo(s) with this commander"),
+        });
+        report_sources.push(SourceLine { name: "Rules-text search".into(), status: status(deep_finds.len()), detail: format!("{} matching cards", deep_finds.len()) });
+        report_sources.push(SourceLine {
+            name: "Commander's rules text".into(),
+            status: status(mechanics.len()),
+            detail: if mechanics.is_empty() { "no clear mechanic".into() } else { mechanics.join(", ") },
+        });
+        report_sources.push(SourceLine {
+            name: "AI model".into(),
+            status: if !options.ai_assist { "off".into() } else if ai_hints.is_some() { "used".into() } else { "skipped".into() },
+            detail: match &ai_hints {
+                Some(h) => format!("{} key card(s) usable of {}", ai_key.len(), h.key_cards.len()),
+                None if options.ai_assist => "didn't answer".into(),
+                None => "turn on \"Let the AI model help\" when building".into(),
+            },
+        });
+
+        let in_deck: HashSet<String> = deck.main.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+        let mut pool_tiers = TierCounts::default();
+        for (card, ..) in &spell_pool {
+            pool_tiers.add(evidence.get(&card.name).and_then(|(t, _)| *t));
+        }
+        let mut deck_tiers = TierCounts::default();
+        let mut picks = Vec::new();
+        for entry in &deck.main {
+            let Some(card) = db.get_card(&entry.name).ok().flatten() else { continue };
+            if card.type_line.to_ascii_lowercase().contains("land") {
+                continue;
+            }
+            let (tier, reasons) = evidence.get(&card.name).cloned().unwrap_or((None, vec!["added to fill a role or fix the bracket".into()]));
+            deck_tiers.add(tier);
+            picks.push(Pick { card: card.name.clone(), tier, reasons });
+        }
+        picks.sort_by_key(|p| p.tier.map(|t| t as u8).unwrap_or(9));
+        let mut ranked: Vec<_> = spell_pool.iter().filter(|(card, ..)| !in_deck.contains(&card.name.to_ascii_lowercase())).collect();
+        ranked.sort_by_key(|(_, _, score, ..)| -*score);
+        let near_misses = ranked
+            .iter()
+            .take(8)
+            .map(|(card, ..)| {
+                let (tier, reasons) = evidence.get(&card.name).cloned().unwrap_or((None, Vec::new()));
+                Pick { card: card.name.clone(), tier, reasons }
+            })
+            .collect();
+
+        let mut weaknesses = Vec::new();
+        let refs = reference_snapshot.deck_count();
+        if refs < 10 {
+            weaknesses.push(format!("Only {refs} reference decklist(s) were found, so \"commonly played\" rests mostly on EDHREC."));
+        }
+        if edhrec_build_cards.is_empty() {
+            weaknesses.push("No EDHREC data for this commander; picks lean on rules text and staples.".into());
+        }
+        if mechanics.is_empty() {
+            weaknesses.push("The commander's rules text didn't point to a clear mechanic, so there's no engine bonus.".into());
+        }
+        if deck_tiers.synergy < 10 {
+            weaknesses.push(format!("Only {} synergy cards made the deck; it may play like a generic pile.", deck_tiers.synergy));
+        }
+        if target_bracket.bracket >= 3 && final_combos.is_empty() {
+            weaknesses.push("No combo made the final list; the deck wins through combat or value.".into());
+        }
+        if !options.ai_assist {
+            weaknesses.push("Built without an AI model. Turning on AI help adds the model's key cards as another source.".into());
+        }
+
+        GenerationReport {
+            engine: crate::deep_generation::GenerationEngine::DeepLearning.label().to_string(),
+            sources: report_sources,
+            themes: theme_lines.clone(),
+            pool_tiers,
+            deck_tiers,
+            picks,
+            near_misses,
+            weaknesses,
+        }
+    });
+    if let Some(r) = &report {
+        progress(GenerationProgress::new(
+            99,
+            "Generation report",
+            format!(
+                "deck: {} commonly played • {} synergy • {} staples • {} could use • {} other | weak spots: {}",
+                r.deck_tiers.core,
+                r.deck_tiers.synergy,
+                r.deck_tiers.staple,
+                r.deck_tiers.could_use,
+                r.deck_tiers.none,
+                if r.weaknesses.is_empty() { "none".to_string() } else { r.weaknesses.join(" / ") },
+            ),
+        ));
+    }
 
     progress(GenerationProgress::new(
         100,
@@ -2292,6 +2669,7 @@ notes.insert(
             combos: final_combos,
             notes,
             sources,
+            report,
         },
     })
 }
@@ -2890,6 +3268,10 @@ pub fn game_plan_markdown(plan: &GamePlan) -> String {
     out.push_str("\n## Build Notes\n\n");
     for note in &plan.notes {
         out.push_str(&format!("- {note}\n"));
+    }
+
+    if let Some(report) = &plan.report {
+        out.push_str(&report.markdown());
     }
 
     out.push_str("\n## Sources\n\n");

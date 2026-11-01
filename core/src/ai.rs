@@ -328,10 +328,28 @@ pub struct LocalAi {
 fn openai_chat_url(base_url: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
 
-    if base.ends_with("/v1") {
+    // Most services put their OpenAI-compatible API under /v1; Gemini's is
+    // under /v1beta/openai.
+    if base.ends_with("/v1") || base.ends_with("/openai") {
         format!("{base}/chat/completions")
     } else {
         format!("{base}/v1/chat/completions")
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::openai_chat_url;
+
+    #[test]
+    fn chat_urls_for_common_services() {
+        assert_eq!(openai_chat_url("https://api.openai.com"), "https://api.openai.com/v1/chat/completions");
+        assert_eq!(openai_chat_url("https://api.anthropic.com/v1/"), "https://api.anthropic.com/v1/chat/completions");
+        assert_eq!(
+            openai_chat_url("https://generativelanguage.googleapis.com/v1beta/openai"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        );
+        assert_eq!(openai_chat_url("https://api.groq.com/openai/v1"), "https://api.groq.com/openai/v1/chat/completions");
     }
 }
 
@@ -562,11 +580,30 @@ impl LocalAi {
         self.chat_messages(system, turns, false)
     }
 
+    /// [`Self::chat`], calling `on_text` with the answer so far as it's
+    /// written. Only the built-in engine streams; other providers report
+    /// the whole answer once it arrives.
+    pub fn chat_streaming(&self, system: &str, turns: &[(String, String)], on_text: &dyn Fn(&str)) -> Result<String> {
+        let answer = self.chat_messages_with(system, turns, false, Some(on_text))?;
+        on_text(&answer);
+        Ok(answer)
+    }
+
     fn chat_messages(
         &self,
         system: &str,
         turns: &[(String, String)],
         json_mode: bool,
+    ) -> Result<String> {
+        self.chat_messages_with(system, turns, json_mode, None)
+    }
+
+    fn chat_messages_with(
+        &self,
+        system: &str,
+        turns: &[(String, String)],
+        json_mode: bool,
+        on_text: Option<&dyn Fn(&str)>,
     ) -> Result<String> {
         let mut api_messages = vec![json!({
             "role": "system",
@@ -596,6 +633,7 @@ impl LocalAi {
                     turns,
                     temperature: self.config.temperature as f32,
                     json: json_mode,
+                    on_text,
                 })
             }
 
@@ -1440,4 +1478,125 @@ COMMANDER RULE GUARDRAILS
         },
         web_docs=source_excerpt.join("\n\n"),
     )
+}
+
+/// What the AI model suggests before a deck is generated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GenerationHints {
+    /// Play styles for the deck, best first.
+    #[serde(default)]
+    pub themes: Vec<String>,
+    /// Cards that should be in a good list for this commander.
+    #[serde(default)]
+    pub key_cards: Vec<String>,
+    /// Cards that look on-theme but play badly here.
+    #[serde(default)]
+    pub avoid: Vec<String>,
+    /// One or two sentences on how the deck should win.
+    #[serde(default)]
+    pub plan: String,
+    /// The model that answered.
+    #[serde(skip_deserializing)]
+    pub model: String,
+}
+
+/// Ask the configured AI model how to build around `commanders`. The
+/// generator treats the answer as suggestions: cards are checked against
+/// the card database, format and colors before they count.
+pub fn generation_hints(
+    commanders: &[crate::data::Card],
+    edhrec_themes: &[String],
+    user_themes: &str,
+    bracket: u8,
+    format: &str,
+) -> Result<GenerationHints> {
+    let ai = LocalAi::connect()?;
+    let commander_text = commanders
+        .iter()
+        .map(|c| format!("{} — {} — {}\n{}", c.name, c.mana_cost, c.type_line, c.oracle_text))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let system = "You are an expert Magic: The Gathering Commander deckbuilder. Answer only with JSON. \
+        Use exact English card names. Only suggest cards legal in the format and inside the commander's color identity.";
+    let prompt = format!(
+        "Format: {format}. Target bracket: {bracket} (1 casual … 5 cEDH).\n\
+         Commander:\n{commander_text}\n\n\
+         Popular themes on EDHREC: {}.\n\
+         Themes the player asked for: {}.\n\n\
+         Reply with JSON shaped like this example (different content):\n\
+         {{\"themes\": [\"Tokens\", \"Aristocrats\"], \
+         \"key_cards\": [\"Skullclamp\", \"Pitiless Plunderer\", \"Grave Pact\"], \
+         \"avoid\": [\"Card Name\"], \
+         \"plan\": \"Make many small creatures, then drain the table by sacrificing them.\"}}\n\
+         Give up to 3 themes, 10 to 15 key cards that make this commander's plan work, and up to 5 cards to avoid.",
+        if edhrec_themes.is_empty() { "unknown".to_string() } else { edhrec_themes.join(", ") },
+        if user_themes.trim().is_empty() { "none, choose for them" } else { user_themes },
+    );
+    let value = ai.chat_json(system, &prompt)?;
+    // Small models stray from the shape (numbers in a name list, a string
+    // instead of a list); keep whatever text entries are there.
+    let names = |key: &str| -> Vec<String> {
+        match value.get(key) {
+            Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            Some(Value::String(s)) => s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            _ => Vec::new(),
+        }
+    };
+    let mut hints = GenerationHints {
+        themes: names("themes"),
+        key_cards: names("key_cards"),
+        avoid: names("avoid"),
+        plan: value.get("plan").and_then(Value::as_str).unwrap_or_default().to_string(),
+        model: ai.model().to_string(),
+    };
+    if hints.themes.is_empty() && hints.key_cards.is_empty() {
+        return Err(anyhow!("The AI model's answer had no themes or cards in it."));
+    }
+    hints.themes.truncate(3);
+    hints.key_cards.truncate(15);
+    hints.avoid.truncate(5);
+    Ok(hints)
+}
+
+/// Send a one-word request to the configured AI and time it, so Settings can
+/// say whether a key, address and model work together.
+pub fn test_connection() -> Result<Value> {
+    let started = std::time::Instant::now();
+    let ai = LocalAi::connect()?;
+    let reply = ai.chat("You are a connection test.", &[("user".into(), "Reply with the single word OK.".into())])?;
+    Ok(json!({
+        "ok": true,
+        "model": ai.model(),
+        "provider": ai.provider().label(),
+        "reply": reply.trim().chars().take(80).collect::<String>(),
+        "seconds": (started.elapsed().as_secs_f64() * 10.0).round() / 10.0,
+    }))
+}
+
+/// Model names an online API offers (OpenAI-compatible `GET …/models`).
+/// Not every service lists models; the caller falls back to typing one.
+pub fn list_api_models(base_url: &str, api_key: &str) -> Result<Vec<String>> {
+    let base = base_url.trim().trim_end_matches('/');
+    let url = if base.ends_with("/v1") || base.ends_with("/openai") { format!("{base}/models") } else { format!("{base}/v1/models") };
+    let client = Client::builder().timeout(Duration::from_secs(20)).build()?;
+    let mut request = client.get(&url);
+    if !api_key.trim().is_empty() {
+        request = request.bearer_auth(api_key.trim());
+    }
+    let value: Value = request
+        .send()
+        .context("Couldn't reach that address")?
+        .error_for_status()
+        .context("The service refused the model list (check the key)")?
+        .json()
+        .context("The service's model list wasn't readable")?;
+    let mut names: Vec<String> = value
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    names.sort();
+    Ok(names)
 }

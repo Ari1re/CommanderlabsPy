@@ -2,10 +2,12 @@
   import { onMount } from 'svelte';
   import { api, runJob } from '../../lib/api';
   import { app } from '../../lib/store.svelte';
-  import type { Source } from '../../lib/types';
+  import type { GenerationReport, Source } from '../../lib/types';
   import Icon from '../../components/Icon.svelte';
 
-  let { name }: { name: string } = $props();
+  let { name, report = null }: { name: string; report?: GenerationReport | null } = $props();
+
+  const TIER: Record<string, string> = { synergy: 'Synergy', core: 'Commonly played', staple: 'Staple', could_use: 'Could use' };
 
   let sources = $state<Source[] | null>(null);
   let url = $state('');
@@ -73,6 +75,58 @@
     {/if}
   </section>
 
+  {#if report}
+    <section class="stack">
+      <div>
+        <h2>How this deck was built</h2>
+        <p class="dim small">{report.engine}. Every source it asked, what each gave, and why each card is in.</p>
+      </div>
+      <ul class="sources">
+        {#each report.sources as s (s.name)}
+          <li>
+            <div>
+              <b>{s.name}</b>
+              <p class="small muted">{s.detail}</p>
+            </div>
+            <span class="badge" class:ok={s.status === 'used'} class:warn={s.status === 'empty' || s.status === 'failed'}>{s.status}</span>
+          </li>
+        {/each}
+      </ul>
+      {#if report.themes.length}
+        <p class="small">
+          Play styles: {#each report.themes as t, i (t.name)}{i ? ' · ' : ''}<b>{t.name}</b> <span class="muted">(from {t.from})</span>{/each}
+        </p>
+      {/if}
+      <p class="small">
+        In the deck: <b>{report.deck_tiers.synergy}</b> synergy · <b>{report.deck_tiers.core}</b> commonly played ·
+        <b>{report.deck_tiers.staple}</b> staples · <b>{report.deck_tiers.could_use}</b> could use · {report.deck_tiers.none} other
+        <span class="muted">(from {report.pool_tiers.synergy + report.pool_tiers.core + report.pool_tiers.staple + report.pool_tiers.could_use} candidates with evidence)</span>
+      </p>
+      {#if report.weaknesses.length}
+        <div class="weak panel">
+          <b class="small">Weak spots</b>
+          <ul class="small">{#each report.weaknesses as w, i (i)}<li>{w}</li>{/each}</ul>
+        </div>
+      {/if}
+      <details>
+        <summary class="small dim">Why each card ({report.picks.length})</summary>
+        <ul class="picks small">
+          {#each report.picks as p (p.card)}
+            <li><b>{p.card}</b> <span class="muted">· {p.tier ? TIER[p.tier] : 'Filler'}</span>{#if p.reasons.length}: {p.reasons.join('; ')}{/if}</li>
+          {/each}
+        </ul>
+      </details>
+      {#if report.near_misses.length}
+        <details>
+          <summary class="small dim">Just missed the cut ({report.near_misses.length})</summary>
+          <ul class="picks small">
+            {#each report.near_misses as p (p.card)}<li><b>{p.card}</b>{#if p.reasons.length}: {p.reasons.join('; ')}{/if}</li>{/each}
+          </ul>
+        </details>
+      {/if}
+    </section>
+  {/if}
+
   <section class="stack">
     <h2>Research sources</h2>
     {#if sources === null}
@@ -94,6 +148,23 @@
 </div>
 
 <style>
+  .weak {
+    padding: 0.6rem 0.9rem;
+    border-style: dashed;
+  }
+  .weak ul,
+  .picks {
+    margin: 0.3rem 0 0;
+    padding-left: 1.1rem;
+    display: grid;
+    gap: 0.25rem;
+  }
+  .badge.ok {
+    color: var(--ok);
+  }
+  .badge.warn {
+    color: var(--danger);
+  }
   .wrap {
     max-width: 56rem;
     gap: 2rem;

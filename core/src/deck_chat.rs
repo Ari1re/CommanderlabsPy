@@ -248,16 +248,49 @@ Deck
 "#;
 
 /// Answer with the AI model. Errors if no model is reachable.
-pub fn ai_answer(facts: &DeckFacts, history: &[(String, String)], question: &str, notes: &str) -> Result<String> {
+/// What [`ai_answer`] is doing, for the chat to show while it waits.
+pub trait AnswerProgress {
+    /// A step, with what it's looking at.
+    fn step(&self, step: &str, detail: String);
+    /// The answer so far.
+    fn text(&self, text: &str);
+}
+
+pub fn ai_answer(
+    facts: &DeckFacts,
+    history: &[(String, String)],
+    question: &str,
+    notes: &str,
+    progress: &dyn AnswerProgress,
+) -> Result<String> {
+    progress.step("Connecting to the AI model", String::new());
     let ai = LocalAi::connect()?;
     let focus = mentioned(facts, question);
+    if !focus.is_empty() {
+        progress.step("Looking at the cards you mentioned", focus.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "));
+    }
+    let a = &facts.analysis;
+    progress.step(
+        "Summarizing the deck",
+        format!(
+            "{} cards · Bracket {} · {}{}",
+            facts.cards.iter().map(|(q, _, _)| q).sum::<u32>(),
+            a.bracket.bracket,
+            a.tags.iter().take(3).map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
+            facts.combos.as_ref().map(|r| format!(" · {} combos", r.included)).unwrap_or_default(),
+        ),
+    );
     let mut system = format!("{SYSTEM}\nDECK CONTEXT\n{}", context_text(facts, &focus));
     if !notes.trim().is_empty() {
         system.push_str(&format!("\nUSER NOTES ABOUT THIS DECK\n{notes}\n"));
     }
     let mut turns: Vec<(String, String)> = history.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect();
     turns.push(("user".into(), question.to_string()));
-    Ok(ai.chat(&system, &turns)?.trim().to_string())
+    let model = crate::local_llm::preset(ai.model())
+        .map(|p| format!("the built-in AI ({})", p.name))
+        .unwrap_or_else(|| ai.model().to_string());
+    progress.step(&format!("Asking {model}"), "Writing the answer".into());
+    Ok(ai.chat_streaming(&system, &turns, &|text| progress.text(text))?.trim().to_string())
 }
 
 fn has_word(q: &str, words: &[&str]) -> bool {

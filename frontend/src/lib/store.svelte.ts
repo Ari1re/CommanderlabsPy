@@ -42,6 +42,8 @@ class AppState {
   toasts = $state<Toast[]>([]);
   theme = $state<'dark' | 'light' | 'system'>('dark');
   currency = $state<Currency>('usd');
+  /** Deck generator: deep learning (default) or the original peer-based one. */
+  generation = $state<'deep' | 'peer'>('deep');
   /** Card shown in the floating/side preview. */
   preview = $state<CardView | null>(null);
   /** Card opened in the detail sheet. */
@@ -81,6 +83,7 @@ class AppState {
       const settings = await api<Record<string, any>>('settings_get');
       if (settings.theme) this.theme = settings.theme;
       if (settings.currency) this.currency = settings.currency;
+      if (settings.generation === 'peer') this.generation = 'peer';
     } catch {
       /* first run */
     }
