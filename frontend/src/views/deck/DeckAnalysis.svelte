@@ -295,7 +295,7 @@
 <style>
   .summary {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 1px;
     background: var(--line-soft);
     border: 1px solid var(--line-soft);
@@ -343,7 +343,7 @@
 
   .curve {
     display: grid;
-    grid-template-columns: repeat(8, 1fr);
+    grid-template-columns: repeat(8, minmax(0, 1fr));
     gap: 0.4rem;
     height: 160px;
     align-items: end;
@@ -369,7 +369,7 @@
   }
   .mana-row {
     display: grid;
-    grid-template-columns: 18px 1fr 4.5rem;
+    grid-template-columns: 18px minmax(0, 1fr) 4.5rem;
     gap: 0.6rem;
     align-items: center;
   }
@@ -402,12 +402,12 @@
   .role,
   .sim-row {
     display: grid;
-    grid-template-columns: 9.5rem 1fr 2.5rem;
+    grid-template-columns: 9.5rem minmax(0, 1fr) 2.5rem;
     gap: 0.6rem;
     align-items: center;
   }
   .sim-row {
-    grid-template-columns: 12rem 1fr 3rem;
+    grid-template-columns: 12rem minmax(0, 1fr) 3rem;
   }
   .track {
     height: 8px;
@@ -437,7 +437,7 @@
   }
 
   .bracket {
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
     gap: 1.5rem;
   }
   .b-num {
@@ -465,7 +465,7 @@
   }
   .suggest li {
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas: 'name btn' 'why btn';
     column-gap: 0.75rem;
     padding: 0.45rem 0;
@@ -509,14 +509,14 @@
 
   @media (max-width: 760px) {
     .summary {
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .summary > div:last-child {
       grid-column: span 2;
     }
     .role,
     .sim-row {
-      grid-template-columns: 7.5rem 1fr 2.6rem;
+      grid-template-columns: 7.5rem minmax(0, 1fr) 2.6rem;
     }
     .b-num {
       font-size: 3.5rem;

@@ -178,7 +178,7 @@
     max-height: calc(100vh - 2rem);
     overflow: auto;
     display: grid;
-    grid-template-columns: minmax(200px, 300px) 1fr;
+    grid-template-columns: minmax(200px, 300px) minmax(0, 1fr);
     gap: 1.5rem;
     padding: 1.5rem;
     background: var(--panel);
@@ -188,7 +188,7 @@
   }
   .sheet.wide {
     width: min(1080px, calc(100vw - 2rem));
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .close {
     position: absolute;
@@ -229,7 +229,7 @@
   }
   dl {
     display: grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
     gap: 0.25rem 1rem;
     margin: 0;
   }
@@ -289,7 +289,7 @@
       transform: none;
       width: 100%;
       max-height: 90vh;
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
       border-radius: var(--r-md) var(--r-md) 0 0;
       padding-bottom: calc(1.5rem + var(--safe-bottom));
     }
@@ -298,7 +298,7 @@
       margin: 0 auto;
     }
     .prints {
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 </style>

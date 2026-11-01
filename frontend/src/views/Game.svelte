@@ -728,7 +728,7 @@
   }
   .games li {
     display: grid;
-    grid-template-columns: 4rem 1fr auto;
+    grid-template-columns: 4rem minmax(0, 1fr) auto;
     grid-template-areas: 'd w x' 'd p x';
     column-gap: 0.75rem;
     padding: 0.5rem 0;
@@ -981,7 +981,7 @@
   }
   .nudges {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.4rem;
   }
   .nudge {
@@ -1009,7 +1009,7 @@
   }
   .grid3 {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.5rem;
   }
   .tile {
@@ -1075,7 +1075,7 @@
   }
   .log li {
     display: grid;
-    grid-template-columns: 10px auto 1fr auto;
+    grid-template-columns: 10px auto minmax(0, 1fr) auto;
     gap: 0.5rem;
     align-items: center;
     padding: 0.45rem 0;
@@ -1136,13 +1136,13 @@
       min-width: 100%;
     }
     .players {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
     .segmented {
       flex-wrap: wrap;
     }
     .games li {
-      grid-template-columns: 3.5rem 1fr auto;
+      grid-template-columns: 3.5rem minmax(0, 1fr) auto;
     }
   }
   .segmented.modes {

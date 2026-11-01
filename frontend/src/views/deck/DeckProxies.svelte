@@ -313,7 +313,7 @@
   }
   .layout {
     display: grid;
-    grid-template-columns: minmax(240px, 340px) 1fr;
+    grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);
     gap: 1.5rem;
     align-items: start;
   }
@@ -393,7 +393,7 @@
   }
   @media (max-width: 760px) {
     .layout {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
     .list {
       max-height: 40vh;

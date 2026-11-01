@@ -201,7 +201,7 @@
 <style>
   .shell {
     display: grid;
-    grid-template-columns: var(--rail) 1fr;
+    grid-template-columns: var(--rail) minmax(0, 1fr);
     min-height: 100vh;
   }
 
@@ -305,7 +305,7 @@
 
   @media (max-width: 760px) {
     .shell {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
     .rail {
       display: none;
@@ -315,7 +315,7 @@
     }
     .tabbar {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       position: fixed;
       left: 0;
       right: 0;

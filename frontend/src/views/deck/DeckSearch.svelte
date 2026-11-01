@@ -355,6 +355,7 @@
   }
   .result {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.4rem;
     align-content: start;
     min-width: 0;
@@ -431,7 +432,7 @@
   }
   @media (max-width: 640px) {
     .grid {
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 0.75rem;
     }
   }

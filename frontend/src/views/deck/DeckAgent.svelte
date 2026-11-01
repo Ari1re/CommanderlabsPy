@@ -341,7 +341,7 @@
   }
   @media (max-width: 1000px) {
     .layout {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
     .chat {
       position: static;
