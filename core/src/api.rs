@@ -30,7 +30,7 @@ use crate::{
     },
     format::{check_deck, Format, CANLANDER_MAX_POINTS, CANLANDER_POINTS, CANLANDER_POINTS_DATE},
     highlander::{generate_highlander, HIGHLANDER_THEMES},
-    oracle_search::deep_search,
+    oracle_search::deep_search_excluding,
     guide::build_guide,
     printings::printings,
     share,
@@ -596,14 +596,17 @@ impl Engine {
                 }
                 identity = Some(colors);
             }
-            exclude.extend(deck.commanders.iter().chain(deck.main.iter()).map(|e| e.name.to_ascii_lowercase()));
+            exclude.extend(
+                deck.commanders
+                    .iter()
+                    .chain(deck.main.iter())
+                    .map(|e| db.get_card(&e.name).ok().flatten().map(|c| c.name).unwrap_or_else(|| e.name.clone()).to_lowercase()),
+            );
         }
         let limit: usize = opt(a, "limit").unwrap_or(40);
-        let finds = deep_search(&db, &themes, identity.as_deref(), format, limit + exclude.len().min(200))?;
+        let finds = deep_search_excluding(&db, &themes, identity.as_deref(), format, limit, &exclude)?;
         let out: Vec<Value> = finds
             .into_iter()
-            .filter(|f| !exclude.contains(&f.name.to_ascii_lowercase()))
-            .take(limit)
             .filter_map(|f| {
                 let card = db.get_card(&f.name).ok().flatten()?;
                 Some(json!({ "find": f, "card": self.card_view(&db, card) }))
@@ -1932,12 +1935,12 @@ impl Engine {
                 .commanders
                 .iter()
                 .chain(deck.main.iter())
-                .filter_map(|e| db.get_card(&e.name).ok().flatten().map(|c| c.name.to_ascii_lowercase()))
+                .filter_map(|e| db.get_card(&e.name).ok().flatten().map(|c| c.name.to_lowercase()))
                 .collect();
             let fits = |card: &Card| {
                 format.card_allowed(card).is_ok()
                     && !card.is_basic
-                    && !in_deck.contains(&card.name.to_ascii_lowercase())
+                    && !in_deck.contains(&card.name.to_lowercase())
                     && (identity.is_empty() && commanders.is_empty() || identity_subset(&card.color_identity, &identity))
             };
 
@@ -2024,7 +2027,7 @@ impl Engine {
             }
             themes.truncate(3);
             if !themes.is_empty() {
-                let finds = deep_search(&db, &themes, Some(&identity), format, 80).unwrap_or_default();
+                let finds = deep_search_excluding(&db, &themes, Some(&identity), format, 80, &in_deck).unwrap_or_default();
                 let items: Vec<Value> = finds
                     .into_iter()
                     .filter_map(|f| db.get_card(&f.name).ok().flatten().map(|c| (f, c)))

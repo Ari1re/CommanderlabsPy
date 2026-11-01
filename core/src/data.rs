@@ -281,9 +281,16 @@ impl CardDb {
             "ALTER TABLE cards ADD COLUMN pdh_legal TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE cards ADD COLUMN vintage_legal TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE cards ADD COLUMN pdh_commander INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE cards ADD COLUMN name_fold TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE aliases ADD COLUMN alias_fold TEXT NOT NULL DEFAULT ''",
         ] {
             let _ = conn.execute(sql, []);
         }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_cards_name_fold ON cards(name_fold);
+             CREATE INDEX IF NOT EXISTS idx_alias_fold ON aliases(alias_fold);",
+        )?;
+        backfill_folds(&conn)?;
 
         // Remove non-playable Art Series rows that older imports could
         // accidentally persist under a playable card's Oracle identity.
@@ -358,6 +365,16 @@ impl CardDb {
             return Ok(Some(card));
         }
 
+        // Spelled without accents or exact punctuation ("Lorien Revealed",
+        // "Urza’s Saga", "Fire/Ice", "Jace Vryn's Prodigy"), as typed or as
+        // an AI model writes it.
+        let fold = fold_name(&normalized);
+        if !fold.is_empty() {
+            if let Some(card) = self.query_fold(&fold)? {
+                return Ok(Some(card));
+            }
+        }
+
         // Compatibility fallback for multiface exports. If the combined
         // representation did not match, try each face independently.
         //
@@ -377,10 +394,34 @@ impl CardDb {
                 if let Some(card) = self.query_alias(&face_key)? {
                     return Ok(Some(card));
                 }
+
+                if let Some(card) = self.query_fold(&fold_name(face))? {
+                    return Ok(Some(card));
+                }
             }
         }
 
         Ok(None)
+    }
+
+    /// Look a card up by its folded name (see [`fold_name`]): full name
+    /// first, then any face name.
+    fn query_fold(&self, fold: &str) -> Result<Option<Card>> {
+        if fold.is_empty() {
+            return Ok(None);
+        }
+        let sql = format!(
+            "SELECT {CARD_COLUMNS} FROM cards WHERE name_fold = ?1 \
+             ORDER BY lower(type_line) LIKE '%token%', commander_legal DESC, vintage_legal = 'not_legal' LIMIT 1"
+        );
+        if let Some(card) = self.conn.query_row(&sql, [fold], row_to_card).optional()? {
+            return Ok(Some(card));
+        }
+        let sql = format!(
+            "SELECT {CARD_COLUMNS} FROM cards WHERE oracle_id = \
+             (SELECT oracle_id FROM aliases WHERE alias_fold = ?1 LIMIT 1)"
+        );
+        self.conn.query_row(&sql, [fold], row_to_card).optional().map_err(Into::into)
     }
 
     fn query_card_name(&self, key: &str) -> Result<Option<Card>> {
@@ -501,9 +542,9 @@ impl CardDb {
                    pdh_legal, vintage_legal, pdh_commander
             FROM cards
             WHERE commander_legal = 1
-              AND name_lower LIKE ?1
+              AND (name_lower LIKE ?1 OR name_fold LIKE ?4)
             ORDER BY
-                CASE WHEN name_lower = ?2 THEN 0 ELSE 1 END,
+                CASE WHEN name_lower = ?2 OR name_fold = ?5 THEN 0 ELSE 1 END,
                 edhrec_rank IS NULL,
                 edhrec_rank ASC,
                 name ASC
@@ -512,8 +553,9 @@ impl CardDb {
         )?;
 
         let exact = query.trim().to_ascii_lowercase();
+        let fold = fold_query(query);
         let rows = stmt.query_map(
-            params![pattern, exact, limit as i64],
+            params![pattern, exact, limit as i64, format!("%{fold}%"), fold],
             row_to_card,
         )?;
 
@@ -554,10 +596,10 @@ impl CardDb {
                    cardmarket_uri, cardhoarder_uri, game_changer, rarity,
                    pdh_legal, vintage_legal, pdh_commander
             FROM cards
-            WHERE name_lower LIKE ?1
+            WHERE name_lower LIKE ?1 OR name_fold LIKE ?5
             ORDER BY
-                CASE WHEN name_lower = ?2 THEN 0
-                     WHEN name_lower LIKE ?3 THEN 1
+                CASE WHEN name_lower = ?2 OR name_fold = ?6 THEN 0
+                     WHEN name_lower LIKE ?3 OR name_fold LIKE ?7 THEN 1
                      ELSE 2 END,
                 edhrec_rank IS NULL,
                 edhrec_rank ASC,
@@ -566,12 +608,16 @@ impl CardDb {
             "#,
         )?;
 
+        let fold = fold_query(query);
         let rows = stmt.query_map(
             params![
                 format!("%{needle}%"),
                 needle,
                 format!("{needle}%"),
-                limit as i64
+                limit as i64,
+                format!("%{fold}%"),
+                fold,
+                format!("{fold}%"),
             ],
             row_to_card,
         )?;
@@ -745,12 +791,16 @@ impl CardDb {
              AND lower(type_line) NOT LIKE '%land%' AND rarity IN ('common', 'uncommon')))"
         };
         let sql = format!(
-            "SELECT {CARD_COLUMNS} FROM cards WHERE {filter} AND name_lower LIKE ?1 \
-             ORDER BY CASE WHEN name_lower = ?2 THEN 0 ELSE 1 END, edhrec_rank IS NULL, edhrec_rank, name LIMIT ?3"
+            "SELECT {CARD_COLUMNS} FROM cards WHERE {filter} AND (name_lower LIKE ?1 OR name_fold LIKE ?4) \
+             ORDER BY CASE WHEN name_lower = ?2 OR name_fold = ?5 THEN 0 ELSE 1 END, edhrec_rank IS NULL, edhrec_rank, name LIMIT ?3"
         );
         let needle = query.trim().to_ascii_lowercase();
+        let fold = fold_query(query);
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![format!("%{needle}%"), needle, limit as i64], row_to_card)?;
+        let rows = stmt.query_map(
+            params![format!("%{needle}%"), needle, limit as i64, format!("%{fold}%"), fold],
+            row_to_card,
+        )?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
@@ -1027,18 +1077,18 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
             commander_eligible, image_uri, price_usd, price_usd_foil,
             price_eur, price_eur_foil, price_tix, tcgplayer_uri,
             cardmarket_uri, cardhoarder_uri, game_changer, rarity,
-            pdh_legal, vintage_legal, pdh_commander
+            pdh_legal, vintage_legal, pdh_commander, name_fold
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
             ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-            ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+            ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
         )
         "#,
     )?;
 
     let mut alias_stmt = tx.prepare(
-        "INSERT INTO aliases(alias_lower, oracle_id) VALUES (?1, ?2)",
+        "INSERT INTO aliases(alias_lower, oracle_id, alias_fold) VALUES (?1, ?2, ?3)",
     )?;
 
     let mut printing_stmt = tx.prepare(
@@ -1209,6 +1259,7 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
             raw.legalities.get("paupercommander").cloned().unwrap_or_default(),
             raw.legalities.get("vintage").cloned().unwrap_or_default(),
             pdh_commander_from_print(&raw.rarity, &lower_type) as i32,
+            fold_name(&raw.name),
         ])?;
 
         if !raw.set.is_empty() && !raw.collector_number.is_empty() {
@@ -1226,13 +1277,15 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
 
         alias_stmt.execute(params![
             raw.name.to_ascii_lowercase(),
-            oracle_id
+            oracle_id,
+            fold_name(&raw.name)
         ])?;
 
         for face_name in face_names {
             alias_stmt.execute(params![
                 face_name.to_ascii_lowercase(),
-                oracle_id
+                oracle_id,
+                fold_name(&face_name)
             ])?;
         }
 
@@ -1240,6 +1293,76 @@ fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
     }
 
     Ok(inserted)
+}
+
+/// A card name reduced for loose matching: lowercase, accents removed
+/// ("Lórien" → "lorien", "Æther" → "aether"), apostrophes dropped, and any
+/// other punctuation (commas, dashes, slashes) treated as a space. Names that
+/// differ only in those ways fold to the same string.
+pub fn fold_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars().flat_map(char::to_lowercase) {
+        match ch {
+            '\'' | '\u{2019}' | '\u{2018}' | '`' | '\u{b4}' => {}
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' => out.push('a'),
+            'æ' => out.push_str("ae"),
+            'ç' => out.push('c'),
+            'è' | 'é' | 'ê' | 'ë' | 'ē' => out.push('e'),
+            'ì' | 'í' | 'î' | 'ï' | 'ī' => out.push('i'),
+            'ñ' => out.push('n'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' => out.push('o'),
+            'œ' => out.push_str("oe"),
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' => out.push('u'),
+            'ý' | 'ÿ' => out.push('y'),
+            'ß' => out.push_str("ss"),
+            c if c.is_alphanumeric() => out.push(c),
+            _ => out.push(' '),
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// [`fold_name`] for a search box. A query that folds to nothing (only
+/// punctuation) gets a value no name folds to, so `LIKE '%…%'` can't match
+/// every card.
+fn fold_query(query: &str) -> String {
+    let fold = fold_name(query);
+    if fold.is_empty() {
+        "\u{1}".to_string()
+    } else {
+        fold
+    }
+}
+
+/// Fill the folded-name columns for databases built before they existed.
+fn backfill_folds(conn: &Connection) -> Result<()> {
+    let missing: i64 = conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM cards WHERE name_fold = '') + (SELECT COUNT(*) FROM aliases WHERE alias_fold = '')",
+        [],
+        |r| r.get(0),
+    )?;
+    if missing == 0 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (select, update) in [
+        ("SELECT rowid, name FROM cards WHERE name_fold = ''", "UPDATE cards SET name_fold = ?1 WHERE rowid = ?2"),
+        ("SELECT rowid, alias_lower FROM aliases WHERE alias_fold = ''", "UPDATE aliases SET alias_fold = ?1 WHERE rowid = ?2"),
+    ] {
+        let rows: Vec<(i64, String)> = tx
+            .prepare(select)?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut stmt = tx.prepare(update)?;
+        for (rowid, name) in rows {
+            // A name that folds to nothing still gets a value, so it isn't
+            // picked up again on every start.
+            let fold = fold_name(&name);
+            stmt.execute(params![if fold.is_empty() { "-".to_string() } else { fold }, rowid])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn commander_eligible_from_text(
@@ -1414,7 +1537,7 @@ pub fn canonical_colors(colors: &[String]) -> String {
 
 #[cfg(test)]
 mod commander_eligibility_tests {
-    use super::commander_eligible_from_text;
+    use super::{commander_eligible_from_text, fold_name, fold_query};
 
     #[test]
     fn legendary_artifact_creature_is_commander_eligible() {
@@ -1460,5 +1583,17 @@ mod commander_eligibility_tests {
             "legendary artifact",
             "",
         ));
+    }
+
+    #[test]
+    fn folded_names_ignore_accents_and_punctuation() {
+        assert_eq!(fold_name("Lórien Revealed"), fold_name("Lorien Revealed"));
+        assert_eq!(fold_name("LÓRIEN REVEALED"), "lorien revealed");
+        assert_eq!(fold_name("Lim-Dûl's Vault"), fold_name("Lim-Dul’s Vault"));
+        assert_eq!(fold_name("Fire // Ice"), fold_name("Fire/Ice"));
+        assert_eq!(fold_name("Jace, Vryn's Prodigy"), fold_name("Jace Vryn's Prodigy"));
+        assert_eq!(fold_name("Elesh Norn — Mother of Machines"), fold_name("Elesh Norn, Mother of Machines"));
+        assert_eq!(fold_name("Æther Vial"), "aether vial");
+        assert_eq!(fold_query("//"), "\u{1}");
     }
 }
