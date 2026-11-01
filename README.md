@@ -267,7 +267,7 @@ The **Proxies** tab builds a MakePlayingCards order using MPC Autofill:
 - Without one, Commander Lab answers from its own analysis: name a card to get its text and why it's in the deck, or ask about the curve, mana, price, bracket, combos, mulligans, early turns, how it wins, interaction, or what to cut and add.
 - On Android, connect an online AI under **Settings → AI model** for AI answers.
 
-**Optimize the deck**: describe what you want, for example "win faster, keep the graveyard package, stay in Bracket 4". The agent researches the commander and any reference decks you've added under **Sources**, builds candidate versions, goldfishes each one, and ranks them. Save any result as a new deck. Your deck isn't changed until you do.
+**Optimize the deck**: tell the agent what to do in your own words, for example "win faster, keep the graveyard package, stay in Bracket 4" or "turn it into a stax deck that locks the table". There's no goal to pick: it reads your request (and your last few chat messages) and optimizes for that. The agent researches the commander and any reference decks you've added under **Sources**, builds candidate versions, goldfishes each one, and ranks them. Save any result as a new deck. Your deck isn't changed until you do.
 
 The AI model is optional. Pick it in **Settings → AI model**:
 - the built-in llama.cpp model
