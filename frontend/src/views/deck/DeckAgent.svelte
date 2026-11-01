@@ -16,7 +16,6 @@
   let chat = $state<ChatMessage[]>([]);
   let agent = $state<any>(null);
   let brief = $state('');
-  let goal = $state<'fast' | 'stax'>('fast');
   let target = $state(3);
   let intensity = $state<'quick' | 'standard' | 'thorough' | 'exhaustive'>('standard');
   let job = $state<Job | null>(null);
@@ -61,7 +60,7 @@
   async function run() {
     job = { id: 0, kind: 'agent', subject: name, status: 'running', percent: 0, step: 'Starting', detail: '', log: [], result: null, error: null };
     try {
-      agent = await runJob('agent_run', { name, bracket: target, goal, intensity, brief }, (j) => (job = j), 1000);
+      agent = await runJob('agent_run', { name, bracket: target, intensity, brief }, (j) => (job = j), 1000);
       app.toast('The agent finished testing.', 'success');
     } catch (err) {
       app.error(err);
@@ -220,17 +219,12 @@
     {/if}
 
     <label class="field">
-      <span>What should the deck do better?</span>
-      <textarea class="input" rows="4" bind:value={brief} placeholder="Win faster without relying on the commander. Keep the graveyard package. Use this list as a reference: https://www.moxfield.com/decks/…"></textarea>
+      <span>What should the agent do?</span>
+      <textarea class="input" rows="4" bind:value={brief} placeholder="Win faster without relying on the commander. Keep the graveyard package. Or: turn it into a stax deck that locks the table. Use this list as a reference: https://www.moxfield.com/decks/…"></textarea>
+      <span class="small dim">Say it in your own words. The agent reads what you ask for (including your last few chat messages) and optimizes for that.</span>
     </label>
 
     <div class="opts">
-      <label class="field"><span>Goal</span>
-        <select class="input" bind:value={goal}>
-          <option value="fast">Win as fast as possible</option>
-          <option value="stax">Lock the table (stax)</option>
-        </select>
-      </label>
       <label class="field"><span>Bracket</span>
         <select class="input" bind:value={target}>
           {#each BRACKETS as b (b.n)}<option value={b.n}>{b.n} · {b.name}</option>{/each}

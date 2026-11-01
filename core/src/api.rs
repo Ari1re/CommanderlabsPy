@@ -1606,9 +1606,12 @@ impl Engine {
     fn start_agent(self: &Arc<Self>, args: &Value) -> Result<u64> {
         let name: String = arg(args, "name")?;
         let bracket: u8 = opt(args, "bracket").unwrap_or(3);
-        let goal = match opt::<String>(args, "goal").as_deref() {
-            Some("stax") | Some("stax_lock") => OptimizationGoal::StaxLock,
-            _ => OptimizationGoal::FastWin,
+        // The goal comes from what the user asks for; an explicit one (older
+        // clients) still wins.
+        let explicit_goal = match opt::<String>(args, "goal").as_deref() {
+            Some("stax") | Some("stax_lock") => Some(OptimizationGoal::StaxLock),
+            Some("fast") | Some("fast_win") => Some(OptimizationGoal::FastWin),
+            _ => None,
         };
         let intensity = match opt::<String>(args, "intensity").as_deref() {
             Some("quick") => TestingIntensity::Quick,
@@ -1653,6 +1656,12 @@ impl Engine {
                     full_brief.push_str(&format!("- {line}\n"));
                 }
             }
+
+            let goal = explicit_goal.unwrap_or_else(|| goal_from_request(&full_brief));
+            job.log(format!(
+                "Goal from your request: {}",
+                if goal == OptimizationGoal::StaxLock { "lock the table (stax)" } else { "win efficiently" }
+            ));
 
             let result = run_optimization_agent(
                 &deck,
@@ -2199,5 +2208,36 @@ mod tests {
         assert_eq!(list[0].quantity, 5);
         assert_eq!(Engine::take(&mut list, "Island", None), 5);
         assert!(list.is_empty());
+    }
+}
+
+
+/// What the agent optimizes for, read from the user's request: asking to lock
+/// the table (stax, prison, taxes, resource denial) builds a lock; anything
+/// else optimizes for winning efficiently.
+fn goal_from_request(request: &str) -> OptimizationGoal {
+    let text = request.to_lowercase();
+    let stax = [
+        "stax", "prison", "lock the table", "lock down", "lockdown", "lock the game", "lock out", "lock pieces", "taxes",
+        "tax effects", "hatebear", "hate bear", "resource denial", "deny resources", "shut down", "shut off", "armageddon",
+        "winter orb", "static orb",
+    ];
+    if stax.iter().any(|w| text.contains(w)) {
+        OptimizationGoal::StaxLock
+    } else {
+        OptimizationGoal::FastWin
+    }
+}
+
+#[cfg(test)]
+mod goal_tests {
+    use super::*;
+
+    #[test]
+    fn goal_follows_the_request() {
+        assert!(goal_from_request("Turn this into a prison deck that locks the table") == OptimizationGoal::StaxLock);
+        assert!(goal_from_request("More stax pieces please") == OptimizationGoal::StaxLock);
+        assert!(goal_from_request("Win faster and keep the graveyard package") == OptimizationGoal::FastWin);
+        assert!(goal_from_request("") == OptimizationGoal::FastWin);
     }
 }

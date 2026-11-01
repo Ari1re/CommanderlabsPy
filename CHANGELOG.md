@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.33.1
+
+- **The agent does what you ask, with no goal to pick.** The Goal menu ("win as fast as possible" / "lock the table") is gone from **Optimize the deck**. Write what you want ("win faster, keep the graveyard package", "make it a stax deck that locks the table") and the agent reads it, along with your last few chat messages. Its log shows how it read your request.
+
 ## 0.33.0
 
 - **Ask about this deck: a chat for any question, not just rebuilding.** The AI Agent tab now opens with the chat. Ask what a card does or why it's in, how cards work together, rules questions, mulligans, the first turns, how the deck wins, its combos, weaknesses, curve, mana, price or bracket, or what to cut and add. Suggested questions get you started, and answers show lists and bold text properly.
