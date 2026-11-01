@@ -4,7 +4,7 @@ members = ["core", "web", "desktop/src-tauri", "desktop/plugins/apk-installer"]
 default-members = ["core", "web"]
 
 [workspace.package]
-version = "0.32.1"
+version = "0.33.0"
 
 [profile.release]
 strip = true

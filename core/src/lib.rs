@@ -14,6 +14,7 @@ pub mod budget;
 pub mod commander;
 pub mod data;
 pub mod deck;
+pub mod deck_chat;
 pub mod deck_history;
 pub mod deep_agent;
 pub mod deep_learn;

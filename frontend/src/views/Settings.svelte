@@ -134,9 +134,26 @@
     <section>
       <h2>AI model</h2>
       {#if !ai.available}
-        <p class="dim">The local AI model isn't available on Android. Deck building, analysis and the agent's simulations still work.</p>
+        <p class="small dim">
+          The built-in AI model can't run on Android. To get AI answers in "Ask about this deck" and written plans from the agent,
+          connect an online AI (any OpenAI-compatible service). Without one, the chat answers from Commander Lab's own analysis.
+        </p>
+        {#if ai.config.provider !== 'api'}
+          <div><button class="btn" onclick={() => setAi({ provider: 'api' })}>Use an online AI</button></div>
+        {:else}
+          <div class="setting">
+            <label class="field grow"><span>API address</span><input class="input" value={ai.config.api_base_url} onchange={(e) => setAi({ api_base_url: (e.target as HTMLInputElement).value })} /></label>
+            <label class="field grow"><span>Model name</span><input class="input" value={ai.config.api_model} onchange={(e) => setAi({ api_model: (e.target as HTMLInputElement).value })} /></label>
+          </div>
+          <div class="setting">
+            <label class="field grow"><span>API key {ai.config.has_api_key ? '(saved)' : ''}</span>
+              <input class="input" type="password" bind:value={apiKey} placeholder={ai.config.has_api_key ? '••••••••' : 'Paste your key'} />
+            </label>
+            <button class="btn" onclick={() => { setAi({ api_key: apiKey }); apiKey = ''; }}>Save key</button>
+          </div>
+        {/if}
       {:else}
-        <p class="small dim">Optional. Powers the AI Agent's written plans and chat. Everything else works without it.</p>
+        <p class="small dim">Optional. Powers AI answers in "Ask about this deck" and the agent's written plans. Without it, the chat answers from Commander Lab's own analysis.</p>
         <div class="setting">
           <span>Provider</span>
           <div class="segmented" role="group" aria-label="AI provider">

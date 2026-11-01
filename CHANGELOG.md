@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.33.0
+
+- **Ask about this deck: a chat for any question, not just rebuilding.** The AI Agent tab now opens with the chat. Ask what a card does or why it's in, how cards work together, rules questions, mulligans, the first turns, how the deck wins, its combos, weaknesses, curve, mana, price or bracket, or what to cut and add. Suggested questions get you started, and answers show lists and bold text properly.
+  - With an AI model, every answer gets the whole deck: each card's rules text and role, the stats, bracket, price, game plan and combos. Before, it saw only the card names, and lost even those after the first message.
+  - Without an AI model (or on Android without an online key), Commander Lab answers from its own analysis instead of failing: card text and why it's in the deck, curve, mana, price, bracket, combos, mulligans, early turns, how it wins, interaction, and what to cut or add.
+  - If an online AI is set up but doesn't answer (a wrong key, say), the reply says why.
+- **Android can use an online AI.** Settings → AI model lets you connect any OpenAI-compatible service for AI answers and plans.
+- **Fixed:** choosing the Online API in Settings, or changing its address or model, didn't take effect; the app kept calling the built-in model's address.
+- The optimizer sits below the chat as **Optimize the deck** and works as before.
+
 ## 0.32.1
 
 - **Fixed: card images overlapping on phones.** A card with a long name, usually a double-faced card like "Bloodline Keeper // Lord of Lineage", widened its column so its image spilled over the next card. Card grids now keep every column the same width whatever the name, in Suggestions, Search, the Cards tab's image view and everywhere else that lays cards out in columns.
