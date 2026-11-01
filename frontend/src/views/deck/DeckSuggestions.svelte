@@ -358,6 +358,10 @@
   }
   .sugg {
     display: grid;
+    /* One column that never grows past the card: long double-faced names
+       ("Bloodline Keeper // Lord of Lineage") otherwise widened it and the
+       image with it. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.45rem;
     align-content: start;
   }
@@ -457,7 +461,7 @@
   }
   @media (max-width: 640px) {
     .grid {
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 0.75rem;
     }
   }

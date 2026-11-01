@@ -153,7 +153,7 @@
   .timeline > li {
     position: relative;
     display: grid;
-    grid-template-columns: 24px 1fr;
+    grid-template-columns: 24px minmax(0, 1fr);
     gap: 0.75rem;
     padding-bottom: 1rem;
   }

@@ -281,12 +281,12 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 1fr 260px;
+    grid-template-columns: minmax(0, 1fr) 260px;
     gap: 2rem;
     align-items: start;
   }
   .layout.visual {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .groups {
     columns: 2 320px;
@@ -446,7 +446,7 @@
 
   @media (max-width: 1100px) {
     .layout {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
     .preview {
       display: none;
@@ -472,7 +472,7 @@
   }
   @media (max-width: 640px) {
     .images {
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 0.4rem;
     }
   }

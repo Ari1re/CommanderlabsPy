@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.32.1
+
+- **Fixed: card images overlapping on phones.** A card with a long name, usually a double-faced card like "Bloodline Keeper // Lord of Lineage", widened its column so its image spilled over the next card. Card grids now keep every column the same width whatever the name, in Suggestions, Search, the Cards tab's image view and everywhere else that lays cards out in columns.
+
 ## 0.32.0
 
 - **Budgets for generated decks.** The Build screen has a **Budget**: a total for the whole deck ($50, $100, $250, $500 or your own amount), a per-card limit, or both, in US dollars from Scryfall.
