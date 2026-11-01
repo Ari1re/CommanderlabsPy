@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.33.2
+
+- **Search: help when nothing matches.** A search that finds nothing now suggests searches that do, with card counts; tap one to run it.
+  - Old or informal wording in card text: `o:unblockable` → `o:"can't be blocked"` or `otag:unblockable`; `o:etb` → `o:enters`; `o:"sacrifice outlet"` → `otag:sacrifice-outlet`.
+  - Tags that don't exist: `otag:wrath` → `otag:board-wipe`; `otag:card-draw` → `otag:draw`, plus other close real tags from Scryfall's tag list.
+  - Searches Scryfall can't read (`kw:unblockable`) show Scryfall's reason with suggestions, instead of only an error.
+- **Fixed: "Only cards that fit this deck" leaked with `or`.** `otag:ramp or otag:draw` applied the deck's colors and format only to the last part, letting off-color cards in (3,753 results instead of 1,933). The search is now grouped before the filter is added.
+- **Fixed: the deck filter contradicting your search.** If your search sets a format (`f:pauper`) or colors (`id:esper`), the filter no longer adds its own, which made such searches find nothing.
+- The search help's examples use current card wording (`o:enters`, `o:"can't be blocked"`).
+
 ## 0.33.1
 
 - **The agent does what you ask, with no goal to pick.** The Goal menu ("win as fast as possible" / "lock the table") is gone from **Optimize the deck**. Write what you want ("win faster, keep the graveyard package", "make it a stax deck that locks the table") and the agent reads it, along with your last few chat messages. Its log shows how it read your request.

@@ -435,31 +435,23 @@ impl Engine {
         let dir: String = opt(a, "dir").unwrap_or_else(|| "auto".into());
         let unique: String = opt(a, "unique").unwrap_or_else(|| "cards".into());
         let page: u32 = opt(a, "page").unwrap_or(1).max(1);
-        let url = reqwest::Url::parse_with_params(
-            "https://api.scryfall.com/cards/search",
-            &[("q", q.as_str()), ("order", order.as_str()), ("dir", dir.as_str()), ("unique", unique.as_str()), ("page", &page.to_string())],
-        )?;
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .user_agent(concat!("CommanderLab/", env!("CARGO_PKG_VERSION")))
-            .build()?;
-        let mut body: Value = Value::Null;
-        for attempt in 0..3 {
-            let response = client.get(url.clone()).header("Accept", "application/json").send().context("Couldn't reach Scryfall")?;
-            let status = response.status().as_u16();
-            if status == 429 {
-                std::thread::sleep(std::time::Duration::from_millis(800 * (attempt + 1)));
-                continue;
-            }
-            body = response.json().context("Scryfall sent an unreadable answer")?;
-            if status == 404 {
-                return Ok(json!({ "total": 0, "has_more": false, "cards": [], "warnings": [] }));
-            }
-            if status >= 400 {
-                bail!("{}", body.get("details").and_then(Value::as_str).unwrap_or("Scryfall couldn't run that search."));
-            }
-            break;
-        }
+        // The deck's "fits this deck" filter comes separately, so it can be
+        // grouped with the search and dropped where the search overrides it.
+        let filter: String = opt(a, "filter").unwrap_or_default();
+        let full = crate::scryfall_search::compose(&q, &filter);
+        let client = crate::scryfall_search::client()?;
+        let nothing = |warning: Option<String>| {
+            let suggestions = if page == 1 { crate::scryfall_search::suggestions(&client, &q, &filter) } else { Vec::new() };
+            json!({ "total": 0, "has_more": false, "cards": [], "warnings": warning.into_iter().collect::<Vec<_>>(), "query": full, "suggestions": suggestions })
+        };
+        let body = match crate::scryfall_search::search_page(&client, &full, &order, &dir, &unique, page) {
+            Ok(Some(body)) => body,
+            Ok(None) => return Ok(nothing(None)),
+            // Scryfall rejects searches it can't read ("All of your terms were
+            // ignored"): say why, and still offer searches that work.
+            Err(err) if !format!("{err}").contains("reach Scryfall") => return Ok(nothing(Some(format!("{err}")))),
+            Err(err) => return Err(err),
+        };
         let db = self.db.lock().unwrap();
         let face_image = |c: &Value| -> String {
             c.get("image_uris")
@@ -500,6 +492,7 @@ impl Engine {
             "has_more": body.get("has_more").and_then(Value::as_bool).unwrap_or(false),
             "warnings": body.get("warnings").cloned().unwrap_or(json!([])),
             "cards": cards,
+            "query": full,
         }))
     }
 
