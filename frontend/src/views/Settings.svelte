@@ -59,6 +59,32 @@
   async function stopAi() {
     ai = await api('ai_stop');
   }
+
+  // Built-in model downloads: model id → progress text.
+  let downloading = $state<Record<string, string>>({});
+
+  async function downloadModel(model: string) {
+    downloading[model] = 'Starting…';
+    try {
+      ai = await runJob('ai_model_download', { model }, (job) => {
+        downloading[model] = job.detail || `${job.percent}%`;
+      }, 1000);
+      app.toast('Model downloaded. AI is ready to start.', 'success');
+    } catch (err) {
+      app.error(err);
+    } finally {
+      delete downloading[model];
+    }
+  }
+
+  async function deleteModel(model: string, name: string) {
+    if (!confirm(`Delete the ${name} model? You can download it again later.`)) return;
+    try {
+      ai = await api('ai_model_delete', { model });
+    } catch (err) {
+      app.error(err);
+    }
+  }
 </script>
 
 <h1 class="title">Settings</h1>
@@ -158,7 +184,9 @@
           <span>Provider</span>
           <div class="segmented" role="group" aria-label="AI provider">
             <button aria-pressed={ai.config.provider === 'llama_cpp'} onclick={() => setAi({ provider: 'llama_cpp' })}>Built-in (llama.cpp)</button>
-            <button aria-pressed={ai.config.provider === 'ollama'} onclick={() => setAi({ provider: 'ollama' })}>Ollama</button>
+            {#if app.status?.platform !== 'android'}
+              <button aria-pressed={ai.config.provider === 'ollama'} onclick={() => setAi({ provider: 'ollama' })}>Ollama</button>
+            {/if}
             <button aria-pressed={ai.config.provider === 'api'} onclick={() => setAi({ provider: 'api' })}>Online API</button>
           </div>
         </div>
@@ -173,6 +201,30 @@
             </label>
             <button class="btn" onclick={() => { setAi({ api_key: apiKey }); apiKey = ''; }}>Save key</button>
           </div>
+        {:else if ai.uses_built_in}
+          <p class="small dim">
+            Runs on this device, offline. Download a model once; it only works while it's answering, so it doesn't drain the battery in the background.
+          </p>
+          {#each ai.models as m (m.model)}
+            <div class="setting">
+              <div>
+                <span>{m.name} {#if m.installed && ai.config.model === m.model}<span class="badge ok">In use</span>{/if}</span>
+                <p class="small muted">{m.description} · {(m.size_mb / 1000).toFixed(1)} GB</p>
+              </div>
+              {#if downloading[m.model]}
+                <span class="small dim">{downloading[m.model]}</span>
+              {:else if !m.installed}
+                <button class="btn" onclick={() => downloadModel(m.model)}><Icon name="download" size={15} /> Download</button>
+              {:else}
+                <div class="row">
+                  {#if ai.config.model !== m.model}
+                    <button class="btn" onclick={() => setAi({ model: m.model })}>Use</button>
+                  {/if}
+                  <button class="btn ghost" onclick={() => deleteModel(m.model, m.name)}>Delete</button>
+                </div>
+              {/if}
+            </div>
+          {/each}
         {:else}
           {@const presets = ai.config.provider === 'ollama' ? ai.presets.ollama : ai.presets.llama_cpp}
           <div class="setting">

@@ -19,6 +19,7 @@ use std::{
 #[derive(Debug, Clone)]
 pub enum LlamaStartupState {
     Disabled,
+    BuiltIn,
     ExternalServer(String),
     AlreadyRunning,
     Started,
@@ -31,6 +32,7 @@ impl LlamaStartupState {
     pub fn status_line(&self) -> String {
         match self {
             Self::Disabled => "llama.cpp is not selected.".to_string(),
+            Self::BuiltIn => "Built-in AI engine ready.".to_string(),
             Self::ExternalServer(url) => {
                 format!("llama.cpp external server ready: {url}")
             }
@@ -79,6 +81,29 @@ impl LlamaRuntime {
                 LlamaStartupState::Disabled,
                 "local AI disabled".to_string(),
             );
+        }
+
+        if config.uses_built_in() {
+            let Some(preset) = crate::local_llm::resolve_installed(&config.model) else {
+                return Self::new(
+                    None,
+                    LlamaStartupState::NotInstalled,
+                    "no model downloaded yet (Settings → AI model)".to_string(),
+                );
+            };
+            // Load now so the first answer doesn't wait for it.
+            return match crate::local_llm::load(preset) {
+                Ok(()) => Self::new(
+                    None,
+                    LlamaStartupState::BuiltIn,
+                    format!("model {} ({}) loaded", preset.name, preset.id),
+                ),
+                Err(err) => Self::new(
+                    None,
+                    LlamaStartupState::Failed(format!("{err:#}")),
+                    "model unavailable".to_string(),
+                ),
+            };
         }
 
         println!(
@@ -302,6 +327,7 @@ impl LlamaRuntime {
         matches!(
             self.state,
             LlamaStartupState::ExternalServer(_)
+                | LlamaStartupState::BuiltIn
                 | LlamaStartupState::AlreadyRunning
                 | LlamaStartupState::Started
                 | LlamaStartupState::InstalledAndStarted
@@ -317,6 +343,10 @@ impl LlamaRuntime {
     }
 
     pub fn shutdown(&mut self) {
+        if matches!(self.state, LlamaStartupState::BuiltIn) {
+            // Give the model's memory back.
+            crate::local_llm::unload();
+        }
         let Some(mut child) = self.child.take() else {
             return;
         };
@@ -362,7 +392,7 @@ enum LlamaCommand {
     Server(PathBuf),
 }
 
-fn is_local_llama_url(url: &str) -> bool {
+pub(crate) fn is_local_llama_url(url: &str) -> bool {
     let lower = url
         .trim()
         .trim_end_matches('/')

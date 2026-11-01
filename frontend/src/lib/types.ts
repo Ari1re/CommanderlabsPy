@@ -191,6 +191,8 @@ export interface ComboLine {
   spellbook_url: string;
   bracket: number | null;
   almost: boolean;
+  /** Pieces the deck doesn't run yet (combos it could add). */
+  missing?: string[];
 }
 
 export interface Simulation {

@@ -10,6 +10,8 @@
     included: number;
     almost_included: number;
     variants: ComboLine[];
+    /** Combos the deck could add, legal in its format and colors. */
+    possible?: ComboLine[];
   }
 
   interface ComboCard {
@@ -24,6 +26,7 @@
   let bracket = $state<Bracket | null>(null);
   let busy = $state(false);
   let error = $state<string | null>(null);
+  let tab = $state<'have' | 'add'>('have');
   let show = $state<'all' | 'complete' | 'almost'>('all');
   let open = $state<string | null>(null);
 
@@ -51,7 +54,9 @@
   }
 
   let shown = $derived(
-    (report?.variants ?? []).filter((v) => show === 'all' || (show === 'almost' ? v.almost : !v.almost)),
+    tab === 'add'
+      ? (report?.possible ?? [])
+      : (report?.variants ?? []).filter((v) => show === 'all' || (show === 'almost' ? v.almost : !v.almost)),
   );
 </script>
 
@@ -59,8 +64,9 @@
   <div class="empty">
     <h2>Find combos in this deck</h2>
     <p class="dim">
-      Checks your list against Commander Spellbook for complete combos and combos you're one card
-      away from. The result also refines the bracket estimate.
+      Checks your list against Commander Spellbook for complete combos, combos you're one card
+      away from, and combos you could add. Only cards legal in this deck's format and colors are
+      suggested. The result also refines the bracket estimate.
     </p>
     {#if error}<p class="err">{error}</p>{/if}
     <button class="btn primary" onclick={run} disabled={busy}>
@@ -69,16 +75,31 @@
   </div>
 {:else}
   <div class="row head">
-    <h2>{report.included} complete, {report.almost_included} one card away</h2>
+    <div class="segmented" role="group" aria-label="Combo lists">
+      <button aria-pressed={tab === 'have'} onclick={() => (tab = 'have')}>
+        Have or almost have ({report.included + report.almost_included})
+      </button>
+      <button aria-pressed={tab === 'add'} onclick={() => (tab = 'add')}>
+        Could add ({report.possible?.length ?? 0})
+      </button>
+    </div>
     <span class="spacer"></span>
     {#if bracket}<span class="badge brass">Bracket {bracket.bracket} with combos</span>{/if}
-    <div class="segmented" role="group" aria-label="Filter">
-      <button aria-pressed={show === 'all'} onclick={() => (show = 'all')}>All</button>
-      <button aria-pressed={show === 'complete'} onclick={() => (show = 'complete')}>In the deck</button>
-      <button aria-pressed={show === 'almost'} onclick={() => (show = 'almost')}>One card away</button>
-    </div>
     <button class="btn ghost icon" onclick={run} disabled={busy} aria-label="Check again"><Icon name="refresh" size={18} /></button>
   </div>
+  {#if tab === 'have'}
+    <div class="row head">
+      <h2>{report.included} complete, {report.almost_included} one card away</h2>
+      <span class="spacer"></span>
+      <div class="segmented" role="group" aria-label="Filter">
+        <button aria-pressed={show === 'all'} onclick={() => (show = 'all')}>All</button>
+        <button aria-pressed={show === 'complete'} onclick={() => (show = 'complete')}>In the deck</button>
+        <button aria-pressed={show === 'almost'} onclick={() => (show = 'almost')}>One card away</button>
+      </div>
+    </div>
+  {:else}
+    <p class="dim small head">Combos you don't run yet, legal in this deck's format and colors. Ones built around your commander come first, then the fewest cards to add.</p>
+  {/if}
 
   {#if shown.length === 0}
     <p class="muted">No combos in this view.</p>
@@ -88,7 +109,11 @@
     {#each shown as v (v.id)}
       <li class="panel combo" class:almost={v.almost}>
         <button class="summary" onclick={() => (open = open === v.id ? null : v.id)} aria-expanded={open === v.id}>
-          <span class="badge" class:brass={!v.almost}>{v.almost ? '+1 card' : 'In deck'}</span>
+          {#if tab === 'add'}
+            <span class="badge">+{v.missing?.length ?? 0} card{(v.missing?.length ?? 0) === 1 ? '' : 's'}</span>
+          {:else}
+            <span class="badge" class:brass={!v.almost}>{v.almost ? '+1 card' : 'In deck'}</span>
+          {/if}
           <span class="cards">{v.cards.join(' + ')}</span>
           {#if v.bracket}<span class="small muted">B{v.bracket}</span>{/if}
         </button>
