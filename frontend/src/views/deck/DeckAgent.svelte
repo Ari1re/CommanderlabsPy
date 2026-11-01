@@ -104,6 +104,51 @@
     }
   }
 
+  const STARTERS = [
+    'How do I mulligan this deck?',
+    'How does this deck win?',
+    'What should I do in the first three turns?',
+    'Which cards are the weakest?',
+    'What are the combos?',
+    'Is the mana base good enough?',
+  ];
+
+  /** The chat can use an AI model: the built-in one is running, or an online API key is set. */
+  let chatAi = $derived(!!ai && (ai.running || (ai.config?.provider === 'api' && ai.config?.has_api_key) || ai.config?.provider === 'ollama'));
+
+  /** Escape, then a little Markdown: **bold**, _italic_, `code`, bullet and numbered lists. */
+  function md(text: string): string {
+    const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const inline = (t: string) =>
+      t
+        .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+        .replace(/(^|[\s(])_(.+?)_(?=[\s).,!?:;]|$)/g, '$1<i>$2</i>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>');
+    const out: string[] = [];
+    let list: 'ul' | 'ol' | null = null;
+    for (const raw of esc.split('\n')) {
+      const line = raw.trimEnd();
+      const bullet = /^\s*[-*•]\s+(.*)$/.exec(line);
+      const num = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      const kind = bullet ? 'ul' : num ? 'ol' : null;
+      if (list && kind !== list) {
+        out.push(`</${list}>`);
+        list = null;
+      }
+      if (kind) {
+        if (!list) {
+          out.push(`<${kind}>`);
+          list = kind;
+        }
+        out.push(`<li>${inline((bullet ?? num)![1])}</li>`);
+      } else if (line.trim()) {
+        out.push(`<p>${inline(line)}</p>`);
+      }
+    }
+    if (list) out.push(`</${list}>`);
+    return out.join('');
+  }
+
   function turn(n: number | null | undefined) {
     return n ? `turn ${n}` : '—';
   }
@@ -112,9 +157,53 @@
 </script>
 
 <div class="layout">
+  <section class="chat panel">
+    <div class="row chat-head">
+      <h2>Ask about this deck</h2>
+      <span class="spacer"></span>
+      {#if chat.length}<button class="btn ghost small" onclick={clearChat}>Clear</button>{/if}
+    </div>
+    <div class="messages" bind:this={chatBox}>
+      {#if !chat.length}
+        <p class="small muted">
+          Ask anything about this deck: what a card does or why it's in, how cards work together, rules questions,
+          how to mulligan and pilot it, its combos, curve, mana, price or bracket, or what to cut and add.
+        </p>
+        <div class="starters">
+          {#each STARTERS as q (q)}
+            <button class="chip" onclick={() => { message = q; send(); }}>{q}</button>
+          {/each}
+        </div>
+      {/if}
+      {#each chat as m, i (i)}
+        {#if m.role === 'assistant'}
+          <div class="msg assistant">{@html md(m.content)}</div>
+        {:else}
+          <div class="msg user">{m.content}</div>
+        {/if}
+      {/each}
+      {#if thinking}<div class="msg assistant muted">Thinking…</div>{/if}
+    </div>
+    {#if ai && !chatAi && !chat.length}
+      <p class="small dim ai-note">
+        {ai.available ? 'No AI model is running, so answers come from Commander Lab\'s own analysis.' : 'Answers come from Commander Lab\'s own analysis.'}
+        For open-ended questions, {ai.available ? 'start an AI model' : 'add an online AI key'} in Settings → AI model.
+      </p>
+    {/if}
+    <form class="composer" onsubmit={(e) => { e.preventDefault(); send(); }}>
+      <textarea
+        class="input"
+        rows="2"
+        bind:value={message}
+        placeholder="Ask about a card, the plan, a rules question…"
+        onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+      ></textarea>
+      <button class="btn primary icon" aria-label="Send" disabled={thinking || !message.trim()}><Icon name="play" size={16} /></button>
+    </form>
+  </section>
   <section class="stack">
     <div>
-      <h2>Optimize with the AI Agent</h2>
+      <h2>Optimize the deck</h2>
       <p class="dim small">
         Describe what you want. The agent researches the commander and reference decks, rebuilds candidate lists,
         goldfishes each one, and ranks them. Your deck isn't changed until you save a result.
@@ -209,40 +298,12 @@
     {/if}
   </section>
 
-  <section class="chat panel">
-    <div class="row chat-head">
-      <h3>Ask about this deck</h3>
-      <span class="spacer"></span>
-      {#if chat.length}<button class="btn ghost small" onclick={clearChat}>Clear</button>{/if}
-    </div>
-    <div class="messages" bind:this={chatBox}>
-      {#if !chat.length}
-        <p class="small muted">
-          Ask how to pilot it, what to cut, or why a card is in. Your chat direction is included the next time you run the agent.
-        </p>
-      {/if}
-      {#each chat as m, i (i)}
-        <div class="msg {m.role}">{m.content}</div>
-      {/each}
-      {#if thinking}<div class="msg assistant muted">Thinking…</div>{/if}
-    </div>
-    <form class="composer" onsubmit={(e) => { e.preventDefault(); send(); }}>
-      <textarea
-        class="input"
-        rows="2"
-        bind:value={message}
-        placeholder="How should I mulligan this deck?"
-        onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-      ></textarea>
-      <button class="btn primary icon" aria-label="Send" disabled={thinking || !message.trim()}><Icon name="play" size={16} /></button>
-    </form>
-  </section>
 </div>
 
 <style>
   .layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
+    grid-template-columns: minmax(0, 1.2fr) minmax(300px, 1fr);
     gap: 2rem;
     align-items: start;
   }
@@ -302,8 +363,52 @@
     top: 4.5rem;
     display: grid;
     grid-template-rows: auto 1fr auto;
-    height: min(70vh, 640px);
+    height: min(78vh, 760px);
     overflow: hidden;
+  }
+  .chat:has(.ai-note) {
+    grid-template-rows: auto 1fr auto auto;
+  }
+  .starters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .chip {
+    padding: 0.35rem 0.75rem;
+    border-radius: 99px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text-2);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 700;
+    text-align: left;
+  }
+  .chip:hover {
+    border-color: var(--brass);
+    color: var(--brass-strong);
+  }
+  .ai-note {
+    margin: 0;
+    padding: 0.5rem 1rem 0;
+  }
+  .msg.assistant {
+    white-space: normal;
+  }
+  .msg.assistant :global(p) {
+    margin: 0 0 0.45rem;
+  }
+  .msg.assistant :global(p:last-child),
+  .msg.assistant :global(ul:last-child),
+  .msg.assistant :global(ol:last-child) {
+    margin-bottom: 0;
+  }
+  .msg.assistant :global(ul),
+  .msg.assistant :global(ol) {
+    margin: 0 0 0.45rem;
+    padding-left: 1.2rem;
   }
   .chat-head {
     padding: 0.8rem 1rem 0.4rem;

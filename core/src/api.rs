@@ -9,7 +9,7 @@
 //! (`./decks`, `./data`, `./exports`).
 
 use crate::{
-    ai::{chat_with_deck_agent, model_presets, AgentChatMessage, AiConfig, AiProvider},
+    ai::{model_presets, AgentChatMessage, AiConfig, AiProvider},
     ai_runtime::LocalAiRuntime,
     analysis::{analyze_deck, classify_card, identity_subset, CardRoles},
     archidekt::import_archidekt,
@@ -1549,7 +1549,8 @@ impl Engine {
     fn ai_config_set(&self, args: &Value) -> Result<Value> {
         let mut config = AiConfig::load_or_create();
         if let Some(provider) = opt::<AiProvider>(args, "provider") {
-            config.provider = provider;
+            // Also points the app at that provider's address and model.
+            config.set_provider(provider);
         }
         if let Some(model) = opt::<String>(args, "model") {
             config.model = model;
@@ -1565,6 +1566,11 @@ impl Engine {
         }
         if let Some(web) = opt::<bool>(args, "web_research") {
             config.web_research = web;
+        }
+        if config.provider == AiProvider::Api {
+            // The online API's address and model are what get called.
+            config.base_url = config.api_base_url.clone();
+            config.model = config.api_model.clone();
         }
         config.save()?;
         self.ai_status()
@@ -1685,25 +1691,40 @@ impl Engine {
         }
         let engine = self.clone();
         Ok(self.jobs.spawn("agent_chat", &name.clone(), move |job| {
-            job.progress(20, "Agent is thinking", "");
+            job.progress(20, "Thinking", "");
             let deck = engine.load(&name)?;
             let path = engine.deck_path(&name)?;
             let db = CardDb::open(DB_PATH)?;
+            if !db.has_cards() {
+                bail!("Download the card database first (Update card data).");
+            }
             let history = load_history(&path);
-            let (_, sources) = engine.current_sources(&name)?;
-            let user_refs: Vec<DeckSource> = sources.into_iter().filter(|s| s.user_provided).collect();
-            let agent = history.latest_agent.clone();
-            let reply = chat_with_deck_agent(
-                &deck,
-                &db,
-                history.latest_research.as_ref().or(agent.as_ref().map(|a| &a.research)),
-                agent.as_ref().map(|a| &a.ai_profile),
-                Some(history.agent_last_brief.as_str()).filter(|b| !b.is_empty()),
-                &user_refs,
-                &history.agent_chat,
-                "",
-                &message,
-            )?;
+            let facts = crate::deck_chat::gather(&deck, &db, engine.cached_combos(&name), engine.cached_plan(&name).as_ref())?;
+            let turns: Vec<(String, String)> = history
+                .agent_chat
+                .iter()
+                .filter(|m| m.role == "user" || m.role == "assistant")
+                .map(|m| (m.role.clone(), m.content.clone()))
+                .collect();
+            let reply = match crate::deck_chat::ai_answer(&facts, &turns, &message, &history.agent_last_brief) {
+                Ok(reply) if !reply.is_empty() => reply,
+                result => {
+                    // Someone who set up an online AI should hear why it didn't answer.
+                    let failure = match (&result, AiConfig::load_or_create().provider) {
+                        (Err(err), AiProvider::Api) => format!(" (The online AI didn't answer: {err:#}.)"),
+                        _ => String::new(),
+                    };
+                    let how = if engine.platform == "android" {
+                        "add an online AI key in Settings → AI model"
+                    } else {
+                        "start an AI model in Settings → AI model"
+                    };
+                    format!(
+                        "{}\n\n_Answered from Commander Lab's own analysis. For open-ended questions, {how}.{failure}_",
+                        crate::deck_chat::offline_answer(&facts, &message)
+                    )
+                }
+            };
             let mut chat = history.agent_chat.clone();
             chat.push(AgentChatMessage { role: "user".into(), content: message.clone() });
             chat.push(AgentChatMessage { role: "assistant".into(), content: reply });

@@ -545,6 +545,11 @@ impl LocalAi {
         self.config.provider
     }
 
+    /// A plain chat completion: system prompt plus (role, content) turns.
+    pub fn chat(&self, system: &str, turns: &[(String, String)]) -> Result<String> {
+        self.chat_messages(system, turns, false)
+    }
+
     fn chat_messages(
         &self,
         system: &str,

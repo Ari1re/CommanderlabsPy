@@ -261,14 +261,20 @@ The **Proxies** tab builds a MakePlayingCards order using MPC Autofill:
 
 ### AI Agent
 
-Describe what you want, for example "win faster, keep the graveyard package, stay in Bracket 4". The agent researches the commander and any reference decks you've added under **Sources**, builds candidate versions, goldfishes each one, and ranks them. Save any result as a new deck. Your deck isn't changed until you do.
+**Ask about this deck** is a chat at the top of the tab. Ask anything about the deck: what a card does or why it's in, how two cards work together, a rules question, how to mulligan, what to do in the first turns, how it wins, its combos, matchups and weaknesses, its curve, mana, price or bracket, or what to cut and add. Tap a suggested question to start.
+
+- With an AI model, every answer gets the whole deck: each card's rules text and role, the stats, bracket, price, game plan and any combos found on the **Combos** tab.
+- Without one, Commander Lab answers from its own analysis: name a card to get its text and why it's in the deck, or ask about the curve, mana, price, bracket, combos, mulligans, early turns, how it wins, interaction, or what to cut and add.
+- On Android, connect an online AI under **Settings → AI model** for AI answers.
+
+**Optimize the deck**: describe what you want, for example "win faster, keep the graveyard package, stay in Bracket 4". The agent researches the commander and any reference decks you've added under **Sources**, builds candidate versions, goldfishes each one, and ranks them. Save any result as a new deck. Your deck isn't changed until you do.
 
 The AI model is optional. Pick it in **Settings → AI model**:
 - the built-in llama.cpp model
 - Ollama
 - any OpenAI-compatible API
 
-Without one, the agent still runs its research and simulations.
+Without one, the agent still runs its research and simulations, and the chat answers from Commander Lab's analysis. On Android only the online API is available.
 
 ### Game: life and counters
 
