@@ -2,10 +2,21 @@
   import { onMount, tick } from 'svelte';
   import { api, runJob, type Job } from '../../lib/api';
   import { app } from '../../lib/store.svelte';
-  import { BRACKETS } from '../../lib/util';
+  import { BRACKETS, POWER_LEVELS, type FormatId } from '../../lib/util';
   import Icon from '../../components/Icon.svelte';
 
-  let { name, bracket, onsaved }: { name: string; bracket: number; onsaved: (name: string) => void } = $props();
+  let {
+    name,
+    bracket,
+    format = 'commander',
+    onsaved,
+  }: { name: string; bracket: number; format?: FormatId; onsaved: (name: string) => void } = $props();
+
+  /** Commander decks are tuned to a bracket; Pauper Commander and Highlander use power levels. */
+  let levels = $derived(format === 'commander' ? BRACKETS : POWER_LEVELS[format]);
+  let levelWord = $derived(format === 'commander' ? 'bracket' : 'power level');
+  /** A Highlander rebuild the agent saved this visit. */
+  let rebuilt = $state<string | null>(null);
 
   interface ChatMessage {
     role: 'user' | 'assistant';
@@ -22,6 +33,8 @@
   let starting = $state(false);
   let message = $state('');
   let thinking = $state(false);
+  /** The chat job while it works: its steps and the answer so far. */
+  let live = $state<Job | null>(null);
   /** A change request waiting for the user to pick a bracket. */
   let pending = $state<string | null>(null);
   /** Agent-side messages from this visit (bracket questions, run summaries). */
@@ -89,9 +102,13 @@
     return /\b(faster|slower|stronger|weaker|swap|replace|lower the bracket|raise the bracket|more (consistent|interaction|ramp|removal|draw))\b/.test(t);
   }
 
-  /** A bracket the message names ("bracket 3", "B4", "cEDH"), if any. */
+  /** A bracket (or, outside Commander, power level) the message names ("bracket 3", "B4", "cEDH", "power 4"), if any. */
   function namedBracket(text: string): number | null {
     const t = text.toLowerCase();
+    if (format !== 'commander') {
+      const p = /\bpower(?: level)?\s*([1-5])\b/.exec(t);
+      return p ? Number(p[1]) : null;
+    }
     if (/\bcedh\b/.test(t)) return 5;
     const m = /\b(?:bracket|b)\s*([1-5])\b/.exec(t);
     if (m) return Number(m[1]);
@@ -102,7 +119,27 @@
   function startRun(n: number) {
     target = n;
     pending = null;
-    run();
+    if (format === 'canlander') rebuildHighlander(n);
+    else run();
+  }
+
+  /** Highlander has no commander for the optimizer to study: rebuild with the Highlander builder instead. */
+  async function rebuildHighlander(power: number) {
+    job = { id: 0, kind: 'highlander_rebuild', subject: name, status: 'running', percent: 0, step: 'Starting', detail: '', log: [], result: null, error: null };
+    scrollChat();
+    try {
+      const res = await runJob<{ name: string; kept: string[] }>('highlander_rebuild', { name, power, message: brief }, (j) => (job = j), 1000);
+      rebuilt = res.name;
+      note(
+        `Rebuilt in this deck's colors and play styles at power ${power}${res.kept.length ? `, keeping ${res.kept.join(', ')}` : ''}. ` +
+          `It's saved as a new deck, "${res.name}"; this one isn't changed.`,
+      );
+    } catch (err) {
+      app.error(err);
+    } finally {
+      job = null;
+      scrollChat();
+    }
   }
 
   async function send() {
@@ -115,11 +152,15 @@
       brief = text;
       const n = namedBracket(text);
       if (n) {
-        note(`Rebuilding and testing for Bracket ${n}.`);
+        note(format === 'canlander' ? `Rebuilding at power ${n}.` : `Rebuilding and testing for ${format === 'commander' ? 'Bracket' : 'power'} ${n}.`);
         startRun(n);
       } else {
         pending = text;
-        note('I can rebuild this deck and goldfish-test the versions. Which bracket should I aim for?');
+        note(
+          format === 'canlander'
+            ? 'I can rebuild this Highlander deck in its colors and play styles, keeping any card you named. Which power level should I aim for?'
+            : `I can rebuild this deck and goldfish-test the versions. Which ${levelWord} should I aim for?`,
+        );
       }
       return;
     }
@@ -128,7 +169,11 @@
     thinking = true;
     scrollChat();
     try {
-      const res = await runJob<{ chat: ChatMessage[] }>('agent_chat', { name, message: text });
+      const res = await runJob<{ chat: ChatMessage[] }>('agent_chat', { name, message: text }, (j) => {
+        const grew = (j.partial?.length ?? 0) !== (live?.partial?.length ?? 0) || j.log.length !== (live?.log.length ?? 0);
+        live = j;
+        if (grew) scrollChat();
+      }, 400);
       chat = res.chat;
     } catch (err) {
       app.error(err);
@@ -136,8 +181,14 @@
       message = text;
     } finally {
       thinking = false;
+      live = null;
       scrollChat();
     }
+  }
+
+  /** A job log line without its "NN% " prefix. */
+  function stepLine(line: string): string {
+    return line.replace(/^\s*\d+%\s*/, '');
   }
 
   async function clearChat() {
@@ -235,17 +286,30 @@
       {/if}
       {#each notes.filter((n) => n.after === i + 1) as n, j (j)}<div class="msg assistant">{n.content}</div>{/each}
     {/each}
-    {#if thinking}<div class="msg assistant muted">Thinking…</div>{/if}
+    {#if thinking}
+      <div class="msg assistant thinking" aria-live="polite">
+        <ul class="steps small">
+          {#each (live?.log ?? []).map(stepLine) as l, i (i)}
+            <li class:current={i === (live?.log.length ?? 0) - 1 && !live?.partial}>{l}</li>
+          {:else}
+            <li class="current">Thinking…</li>
+          {/each}
+        </ul>
+        {#if live?.partial}<div class="partial">{@html md(live.partial)}</div>{/if}
+      </div>
+    {/if}
 
     {#if pending}
       <div class="msg assistant ask">
         <div class="starters">
-          {#each BRACKETS as b (b.n)}
-            <button class="chip" class:current={b.n === bracket} onclick={() => startRun(b.n)} title={b.blurb}>
-              {b.n} · {b.name}{b.n === bracket ? ' (now)' : ''}
+          {#each levels as b (b.n)}
+            {@const now = format === 'commander' && b.n === bracket}
+            <button class="chip" class:current={now} onclick={() => startRun(b.n)} title={b.blurb}>
+              {b.n} · {b.name}{now ? ' (now)' : ''}
             </button>
           {/each}
         </div>
+        {#if format !== 'canlander'}
         <label class="field depth"><span class="small dim">Testing depth</span>
           <select class="input" bind:value={intensity}>
             <option value="quick">Quick (1 round)</option>
@@ -254,6 +318,13 @@
             <option value="exhaustive">Exhaustive (8 rounds)</option>
           </select>
         </label>
+        {/if}
+      </div>
+    {/if}
+
+    {#if rebuilt && !job}
+      <div class="msg assistant">
+        <button class="btn small" onclick={() => onsaved(rebuilt!)}>Open “{rebuilt}”</button>
       </div>
     {/if}
 
@@ -264,7 +335,7 @@
         <p class="small dim">{job.detail}</p>
         <ol class="log small">{#each job.log.slice(-6) as l, i (i)}<li>{l}</li>{/each}</ol>
       </div>
-    {:else if agent}
+    {:else if agent && format !== 'canlander'}
       <div class="msg assistant results-msg">
         <b>Agent results</b> <span class="small dim">· ranked at Bracket {agent.target_bracket}</span>
         <ol class="results">
@@ -339,6 +410,33 @@
   }
   .depth {
     max-width: 240px;
+  }
+  .thinking {
+    display: grid;
+    gap: 0.4rem;
+  }
+  .steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.15rem;
+    color: var(--muted);
+  }
+  .steps li::before {
+    content: '✓ ';
+    color: var(--ok);
+  }
+  .steps li.current::before {
+    content: '… ';
+    color: var(--brass);
+  }
+  .steps li.current {
+    color: var(--text-2);
+  }
+  .partial {
+    border-top: 1px solid var(--line-soft);
+    padding-top: 0.4rem;
   }
   .chip.current {
     border-color: var(--brass);

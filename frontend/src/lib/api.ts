@@ -78,6 +78,8 @@ export interface Job {
   step: string;
   detail: string;
   log: string[];
+  /** Text produced so far (an AI answer as it's written). */
+  partial?: string;
   result: any;
   error: string | null;
 }

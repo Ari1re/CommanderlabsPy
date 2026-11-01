@@ -15,6 +15,18 @@
 
   let format = $state<FormatId>('commander');
   let deep = $state(false);
+  let aiAssist = $state(false);
+  /** An AI model the generator can ask: a downloaded built-in model, a running server, or an online API key. */
+  let aiReady = $state(false);
+  api<any>('ai_status')
+    .then((ai) => {
+      aiReady =
+        ai.running ||
+        (ai.uses_built_in && ai.models?.some((m: any) => m.installed)) ||
+        (ai.config?.provider === 'api' && ai.config?.has_api_key);
+      aiAssist = aiReady;
+    })
+    .catch(() => (aiReady = false));
   let colors = $state<string[]>([]);
   let customTheme = $state('');
   let commanders = $state<CardView[]>([]);
@@ -122,6 +134,7 @@
           bracket,
           format,
           deep_search: deep,
+          ai_assist: aiReady && aiAssist && format !== 'canlander',
           colors: colorSpec,
           budget_total: total,
           budget_card: cardCap,
@@ -304,6 +317,13 @@
         {/if}
       </div>
 
+      {#if app.generation === 'deep' && format !== 'canlander'}
+        <p class="small dim">
+          Built with deep learning generation (Settings → Deck generation): rules-text search is always on, and you get a
+          report of every source and why each card is in.
+          {#if !aiReady}For better picks, set up an AI model in Settings → AI model.{/if}
+        </p>
+      {:else}
       <label class="deep panel">
         <input type="checkbox" bind:checked={deep} />
         <span>
@@ -314,6 +334,21 @@
           </span>
         </span>
       </label>
+      {/if}
+
+      {#if aiReady && format !== 'canlander'}
+        <label class="deep panel">
+          <input type="checkbox" bind:checked={aiAssist} />
+          <span>
+            <b>Let the AI model help</b>{#if app.generation === 'deep'} <span class="badge brass">Recommended</span>{/if}
+            <span class="small dim">
+              Before building, asks your AI model for play styles (when you haven't picked any), key cards for this
+              commander, and cards to avoid. Its picks still have to be real, legal cards in your colors, and they're a
+              nudge, not a takeover. Everything it suggested shows in the build log.
+            </span>
+          </span>
+        </label>
+      {/if}
 
       {#if failed}
         <p class="error">{failed}</p>

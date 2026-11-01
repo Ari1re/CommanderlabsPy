@@ -40,6 +40,9 @@ pub struct JobState {
     pub step: String,
     pub detail: String,
     pub log: Vec<String>,
+    /// Text produced so far (an AI answer as it's written).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub partial: String,
     pub result: Option<Value>,
     pub error: Option<String>,
     pub started_ms: u128,
@@ -91,6 +94,13 @@ impl JobHandle {
         });
     }
 
+    /// Replace the text produced so far (not added to the log).
+    pub fn partial(&self, text: &str) {
+        self.jobs.update(self.id, |job| {
+            job.partial = text.to_string();
+        });
+    }
+
     pub fn log(&self, line: impl Into<String>) {
         let line = line.into();
         self.jobs.update(self.id, |job| {
@@ -118,6 +128,7 @@ impl Jobs {
                     step: "Starting".to_string(),
                     detail: String::new(),
                     log: Vec::new(),
+                    partial: String::new(),
                     result: None,
                     error: None,
                     started_ms: now_ms(),

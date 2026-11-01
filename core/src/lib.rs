@@ -17,6 +17,7 @@ pub mod deck;
 pub mod deck_chat;
 pub mod deck_history;
 pub mod deep_agent;
+pub mod deep_generation;
 pub mod deep_learn;
 pub mod edhrec;
 pub mod format;

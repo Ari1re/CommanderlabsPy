@@ -281,9 +281,9 @@
     {:else if tab === 'proxies'}
       <DeckProxies {name} />
     {:else if tab === 'sources'}
-      <DeckSources {name} />
+      <DeckSources {name} report={deck?.plan?.report ?? null} />
     {:else if tab === 'agent'}
-      <DeckAgent {name} bracket={analysis?.bracket.bracket ?? 3} onsaved={(n) => go({ page: 'deck', name: n, tab: 'cards' })} />
+      <DeckAgent {name} format={fmt} bracket={analysis?.bracket.bracket ?? 3} onsaved={(n) => go({ page: 'deck', name: n, tab: 'cards' })} />
     {/if}
   </section>
 {/if}

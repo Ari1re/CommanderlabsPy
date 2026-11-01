@@ -320,11 +320,14 @@ impl ThemeMatcher {
 
     /// How strongly a card fits (0 = not at all), and the best reason.
     pub fn score(&self, card: &Card) -> (i32, Option<&'static str>) {
+        // The mana cost too, so "X spells" finds Exsanguinate ({X}{B}{B}),
+        // not just cards with {X} in an ability.
         let text = format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             card.type_line.to_ascii_lowercase(),
             card.oracle_text.to_ascii_lowercase(),
-            card.keywords.to_ascii_lowercase()
+            card.keywords.to_ascii_lowercase(),
+            card.mana_cost.to_ascii_lowercase()
         );
         let mut score = 0;
         let mut best: Option<(&'static str, i32)> = None;

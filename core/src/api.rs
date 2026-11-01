@@ -321,6 +321,12 @@ impl Engine {
                     format: Format::parse(&opt::<String>(a, "format").unwrap_or_default()),
                     deep_search: opt(a, "deep_search").unwrap_or(false),
                     budget: crate::budget::Budget::new(opt(a, "budget_total"), opt(a, "budget_card")),
+                    ai_assist: opt(a, "ai_assist").unwrap_or(false),
+                    // Settings → Deck generation, unless the request names one.
+                    engine: crate::deep_generation::GenerationEngine::parse(
+                        &opt::<String>(a, "engine")
+                            .unwrap_or_else(|| read_settings().get("generation").and_then(Value::as_str).unwrap_or_default().to_string()),
+                    ),
                 },
                 opt(a, "colors").unwrap_or_default(),
             )? })),
@@ -351,6 +357,13 @@ impl Engine {
             "ai_status" => self.ai_status(),
             "ai_config_set" => self.ai_config_set(a),
             "ai_start" => Ok(json!({ "job": self.start_ai_runtime() })),
+            "ai_test" => crate::ai::test_connection(),
+            "ai_api_models" => {
+                let config = AiConfig::load_or_create();
+                let base = opt::<String>(a, "api_base_url").unwrap_or(config.api_base_url);
+                let key = opt::<String>(a, "api_key").filter(|k| !k.is_empty()).unwrap_or(config.api_key);
+                Ok(json!({ "models": crate::ai::list_api_models(&base, &key)? }))
+            }
             "ai_model_download" => Ok(json!({ "job": self.start_model_download(arg(a, "model")?)? })),
             "ai_model_delete" => {
                 let id: String = arg(a, "model")?;
@@ -369,6 +382,7 @@ impl Engine {
             }
             "agent_state" => self.agent_state(&arg::<String>(a, "name")?),
             "agent_run" => Ok(json!({ "job": self.start_agent(a)? })),
+            "highlander_rebuild" => Ok(json!({ "job": self.start_highlander_rebuild(arg(a, "name")?, opt(a, "power").unwrap_or(3), opt(a, "message").unwrap_or_default()) })),
             "agent_chat" => Ok(json!({ "job": self.start_chat(arg(a, "name")?, arg(a, "message")?)? })),
             "agent_chat_clear" => self.chat_clear(&arg::<String>(a, "name")?),
             "agent_save" => self.agent_save(&arg::<String>(a, "name")?, opt(a, "iteration")),
@@ -1265,6 +1279,86 @@ impl Engine {
         }))
     }
 
+    /// The agent's answer to a change request in a Canadian Highlander deck:
+    /// rebuild it with the Highlander builder in the deck's colors and play
+    /// styles, keeping any card the request names, as a new deck.
+    fn start_highlander_rebuild(self: &Arc<Self>, name: String, power: u8, message: String) -> u64 {
+        let engine = self.clone();
+        self.jobs.spawn("highlander_rebuild", &name.clone(), move |job| {
+            job.progress(5, "Reading the deck", name.clone());
+            let deck = engine.load(&name)?;
+            let db = CardDb::open(DB_PATH)?;
+            let cards: Vec<Card> = deck.commanders.iter().chain(deck.main.iter()).filter_map(|e| db.get_card(&e.name).ok().flatten()).collect();
+
+            // Cards the request names: ones in the deck, or whatever follows
+            // "around" ("build it around Golos, Tireless Pilgrim").
+            let lower = crate::data::fold_name(&message);
+            let mut keep: Vec<Card> = cards
+                .iter()
+                .filter(|c| !c.is_basic && c.name.len() >= 4 && lower.contains(&crate::data::fold_name(&c.name)))
+                .cloned()
+                .collect();
+            if let Some((_, rest)) = message.split_once(" around ") {
+                let named = rest.trim().trim_end_matches(['.', '!', '?']);
+                if let Ok(Some(card)) = db.get_card(named) {
+                    if !keep.iter().any(|k| k.name == card.name) {
+                        keep.push(card);
+                    }
+                }
+            }
+
+            let mut colors: Vec<String> = Vec::new();
+            for c in cards.iter().chain(keep.iter()) {
+                for ch in c.color_identity.chars() {
+                    if !colors.contains(&ch.to_string()) {
+                        colors.push(ch.to_string());
+                    }
+                }
+            }
+            let colors = crate::data::canonical_colors(&colors);
+            let themes: Vec<String> = crate::archetype::detect_deck_tags(&deck, &db)
+                .unwrap_or_default()
+                .into_iter()
+                .take(2)
+                .map(|t| t.name)
+                .collect();
+            job.progress(
+                10,
+                "Planning the rebuild",
+                format!(
+                    "colors {} · play styles {} · keeping {}",
+                    if colors.is_empty() { "colorless".to_string() } else { colors.clone() },
+                    if themes.is_empty() { "none found".to_string() } else { themes.join(", ") },
+                    if keep.is_empty() { "nothing named".to_string() } else { keep.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ") },
+                ),
+            );
+
+            let theme = themes.join(crate::archetype::THEME_SEPARATOR);
+            let mut generated = generate_highlander(&colors, &theme, power, true, crate::budget::Budget::default(), &db, |p| {
+                job.progress(p.percent.max(12), p.step, p.detail)
+            })?;
+
+            // Named cards go in, each replacing the last spell the builder
+            // added that isn't itself a named card.
+            for card in &keep {
+                if generated.deck.main.iter().any(|e| e.name.eq_ignore_ascii_case(&card.name)) {
+                    continue;
+                }
+                let slot = generated.deck.main.iter().rposition(|e| {
+                    !keep.iter().any(|k| k.name.eq_ignore_ascii_case(&e.name))
+                        && db.get_card(&e.name).ok().flatten().map(|c| !c.type_line.to_ascii_lowercase().contains("land")).unwrap_or(false)
+                });
+                if let Some(slot) = slot {
+                    generated.deck.main[slot] = DeckEntry::new(1, card.name.clone());
+                }
+            }
+
+            generated.deck.name = format!("{name} - Rebuilt");
+            let saved = engine.save_generated(generated, &format!("Rebuilt by the agent at power {power}: {}", message.trim()))?;
+            Ok(json!({ "name": saved, "kept": keep.iter().map(|c| c.name.clone()).collect::<Vec<_>>() }))
+        })
+    }
+
     fn save_generated(&self, mut generated: GeneratedDeck, message: &str) -> Result<String> {
         let name = self.unique_name(&generated.deck.name)?;
         generated.deck.name = name.clone();
@@ -1628,7 +1722,10 @@ impl Engine {
                 "installed": crate::local_llm::is_installed(p),
             }))
             .collect();
+        let disk_mb: u64 = crate::local_llm::PRESETS.iter().map(crate::local_llm::disk_mb).sum();
         Ok(json!({
+            "disk_mb": disk_mb,
+            "loaded": crate::local_llm::loaded_model(),
             // Android has no llama.cpp or Ollama server; it needs the engine
             // compiled into the app (or an online API).
             "available": built_in || self.platform != "android",
@@ -1713,11 +1810,14 @@ impl Engine {
                 let pct = if total == 0 { 0 } else { (done * 99 / total) as u16 };
                 job.progress(pct.max(1), format!("Downloading the {} model", preset.name), format!("{done} of {total} MB"));
             })?;
-            // Use the model just downloaded.
+            // Use the model just downloaded, unless an online AI is set up
+            // (switching is one tap on the model's Use button).
             let mut config = AiConfig::load_or_create();
-            config.set_provider(AiProvider::LlamaCpp);
-            config.model = preset.id.to_string();
-            config.save()?;
+            if !(config.provider == AiProvider::Api && !config.api_key.is_empty()) {
+                config.set_provider(AiProvider::LlamaCpp);
+                config.model = preset.id.to_string();
+                config.save()?;
+            }
             engine.ai_status()
         }))
     }
@@ -1829,7 +1929,7 @@ impl Engine {
         }
         let engine = self.clone();
         Ok(self.jobs.spawn("agent_chat", &name.clone(), move |job| {
-            job.progress(20, "Thinking", "");
+            job.progress(10, "Reading the deck", name.clone());
             let deck = engine.load(&name)?;
             let path = engine.deck_path(&name)?;
             let db = CardDb::open(DB_PATH)?;
@@ -1844,7 +1944,16 @@ impl Engine {
                 .filter(|m| m.role == "user" || m.role == "assistant")
                 .map(|m| (m.role.clone(), m.content.clone()))
                 .collect();
-            let reply = match crate::deck_chat::ai_answer(&facts, &turns, &message, &history.agent_last_brief) {
+            struct Progress<'a>(&'a crate::jobs::JobHandle);
+            impl crate::deck_chat::AnswerProgress for Progress<'_> {
+                fn step(&self, step: &str, detail: String) {
+                    self.0.progress(50, step, detail);
+                }
+                fn text(&self, text: &str) {
+                    self.0.partial(text);
+                }
+            }
+            let reply = match crate::deck_chat::ai_answer(&facts, &turns, &message, &history.agent_last_brief, &Progress(&job)) {
                 Ok(reply) if !reply.is_empty() => reply,
                 result => {
                     // Someone who set up an online AI should hear why it didn't answer.

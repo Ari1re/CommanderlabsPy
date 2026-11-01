@@ -29,6 +29,40 @@ const ARCHIDEKT_REFERENCE_LIMIT: usize = 24;
 const MOXFIELD_REFERENCE_LIMIT: usize = 24;
 const CEDH_REFERENCE_LIMIT: usize = 32;
 const NEW_DECK_FETCH_BUDGET_PER_SOURCE: usize = 12;
+
+/// How much reference material one run gathers.
+#[derive(Debug, Clone, Copy)]
+pub struct ReferenceDepth {
+    /// New decks fetched per source page.
+    pub fetch_budget: usize,
+    /// Archidekt search pages read per run.
+    pub pages: u32,
+    /// A cached snapshot with fewer decks than this is topped up instead of
+    /// reused as is.
+    pub min_decks: usize,
+}
+
+impl ReferenceDepth {
+    pub const PEER: Self = Self { fetch_budget: NEW_DECK_FETCH_BUDGET_PER_SOURCE, pages: 1, min_decks: 0 };
+    pub const DEEP: Self = Self { fetch_budget: 24, pages: 3, min_decks: 30 };
+}
+
+thread_local! {
+    static DEPTH: std::cell::Cell<ReferenceDepth> = const { std::cell::Cell::new(ReferenceDepth::PEER) };
+}
+
+/// Run `f` gathering references at `depth` (peer-based generation uses
+/// [`ReferenceDepth::PEER`]; deep learning generation reads more).
+pub fn with_depth<T>(depth: ReferenceDepth, f: impl FnOnce() -> T) -> T {
+    let previous = DEPTH.with(|d| d.replace(depth));
+    let out = f();
+    DEPTH.with(|d| d.set(previous));
+    out
+}
+
+fn fetch_budget() -> usize {
+    DEPTH.with(|d| d.get().fetch_budget)
+}
 const MAX_REFERENCE_DECKS: usize = 120;
 const MAX_COMMANDER_ARCHIVE_DECKS: usize = 500;
 const NORMAL_COMBO_ANALYSIS_LIMIT: usize = 24;
@@ -303,7 +337,8 @@ pub fn gather_reference_decks(
         commander_names.join(" + ")
     };
 
-    if let Some(mut cached) = load_cache(&query, bracket) {
+    let depth = DEPTH.with(|d| d.get());
+    if let Some(mut cached) = load_cache(&query, bracket).filter(|c| c.deck_count() >= depth.min_decks) {
             // Reconcile snapshot data into the per-source cache.
         hydrate_reference_decks_from_source_cache(
             &mut cached.decks,
@@ -355,28 +390,34 @@ pub fn gather_reference_decks(
 
     let mut crawl = load_crawl_state(&query);
 
-    let archidekt = fetch_archidekt_references(
-        commander_names,
-        ARCHIDEKT_REFERENCE_LIMIT,
-        crawl.archidekt_page,
-    );
-
-    logging::record(
-        "REF",
-        format!(
-            "ARCHIDEKT DISCOVERY • page={} • usable={} • next_page={}",
+    for _ in 0..depth.pages.max(1) {
+        let archidekt = fetch_archidekt_references(
+            commander_names,
+            ARCHIDEKT_REFERENCE_LIMIT,
             crawl.archidekt_page,
-            archidekt.len(),
-            crawl.archidekt_page.saturating_add(1),
-        ),
-    );
+        );
 
-    decks.extend(archidekt);
-    crawl.archidekt_page = if crawl.archidekt_page >= 20 {
-        1
-    } else {
-        crawl.archidekt_page + 1
-    };
+        logging::record(
+            "REF",
+            format!(
+                "ARCHIDEKT DISCOVERY • page={} • usable={} • next_page={}",
+                crawl.archidekt_page,
+                archidekt.len(),
+                crawl.archidekt_page.saturating_add(1),
+            ),
+        );
+
+        let empty = archidekt.is_empty();
+        decks.extend(archidekt);
+        crawl.archidekt_page = if crawl.archidekt_page >= 20 {
+            1
+        } else {
+            crawl.archidekt_page + 1
+        };
+        if empty {
+            break;
+        }
+    }
 
     // Moxfield's search can't filter Pauper Commander decks by commander.
     let moxfield = if pdh {
@@ -603,7 +644,7 @@ fn fetch_archidekt_references(
             continue;
         }
 
-        if network_fetches >= NEW_DECK_FETCH_BUDGET_PER_SOURCE {
+        if network_fetches >= fetch_budget() {
             break;
         }
 
@@ -734,7 +775,7 @@ fn fetch_moxfield_references(
             continue;
         }
 
-        if network_fetches >= NEW_DECK_FETCH_BUDGET_PER_SOURCE {
+        if network_fetches >= fetch_budget() {
             break;
         }
 
@@ -846,7 +887,7 @@ fn fetch_cedh_ddb_references(
             continue;
         }
 
-        if network_fetches >= NEW_DECK_FETCH_BUDGET_PER_SOURCE {
+        if network_fetches >= fetch_budget() {
             break;
         }
 
