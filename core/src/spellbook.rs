@@ -16,6 +16,9 @@ pub struct ComboLine {
     pub spellbook_url: String,
     pub bracket: Option<u8>,
     pub almost: bool,
+    /// Pieces the deck doesn't run yet (filled for combos it could add).
+    #[serde(default)]
+    pub missing: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -24,9 +27,20 @@ pub struct ComboReport {
     pub almost_included: usize,
     pub summary_lines: Vec<String>,
     pub variants: Vec<ComboLine>,
+    /// Combos the deck has none or few pieces of but could add, found by
+    /// searching Spellbook (see [`search_combos`]).
+    #[serde(default)]
+    pub possible: Vec<ComboLine>,
 }
 
 pub fn find_my_combos(deck: &ParsedDeck) -> Result<ComboReport> {
+    find_my_combos_where(deck, |_| true)
+}
+
+/// [`find_my_combos`] keeping only combos `keep` accepts (for example, ones
+/// whose missing card is legal in the deck's format). Filtering happens
+/// before the list is cut to 25, so a strict format still gets a full list.
+pub fn find_my_combos_where(deck: &ParsedDeck, keep: impl Fn(&ComboLine) -> bool) -> Result<ComboReport> {
     let commanders = deck
         .commanders
         .iter()
@@ -69,14 +83,18 @@ pub fn find_my_combos(deck: &ParsedDeck) -> Result<ComboReport> {
         .cloned()
         .unwrap_or_default();
 
-    let included = included_items.len();
-    let almost_included = almost_items.len();
+    let included_lines: Vec<ComboLine> =
+        included_items.iter().filter_map(|item| parse_variant(item, false)).filter(|c| keep(c)).collect();
+    let almost_lines: Vec<ComboLine> =
+        almost_items.iter().filter_map(|item| parse_variant(item, true)).filter(|c| keep(c)).collect();
+    let included = included_lines.len();
+    let almost_included = almost_lines.len();
 
     let mut variants = Vec::new();
     let mut summary_lines = Vec::new();
 
-    for item in included_items.iter().take(25) {
-        if let Some(combo) = parse_variant(item, false) {
+    for combo in included_lines.into_iter().take(25) {
+        {
             summary_lines.push(format!(
                 "✓ {}{}",
                 combo.cards.join(" + "),
@@ -90,8 +108,8 @@ pub fn find_my_combos(deck: &ParsedDeck) -> Result<ComboReport> {
         }
     }
 
-    for item in almost_items.iter().take(25) {
-        if let Some(combo) = parse_variant(item, true) {
+    for combo in almost_lines.into_iter().take(25) {
+        {
             summary_lines.push(format!(
                 "+1 {}{}",
                 combo.cards.join(" + "),
@@ -116,7 +134,30 @@ pub fn find_my_combos(deck: &ParsedDeck) -> Result<ComboReport> {
         almost_included,
         summary_lines,
         variants,
+        possible: Vec::new(),
     })
+}
+
+/// Search Commander Spellbook's combos with its query syntax (for example
+/// `ci<=bg legal:pauper_commander`), most popular first.
+pub fn search_combos(query: &str, limit: usize) -> Result<Vec<ComboLine>> {
+    let response: Value = Client::new()
+        .get("https://backend.commanderspellbook.com/variants/")
+        .query(&[("q", query), ("ordering", "-popularity"), ("limit", &limit.to_string())])
+        .header("Accept", "application/json")
+        .send()
+        .context("Could not contact Commander Spellbook")?
+        .error_for_status()
+        .context("Commander Spellbook returned an HTTP error")?
+        .json()
+        .context("Could not parse Commander Spellbook response")?;
+    Ok(response
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| parse_variant(item, false))
+        .collect())
 }
 
 fn parse_variant(item: &Value, almost: bool) -> Option<ComboLine> {
@@ -149,6 +190,7 @@ fn parse_variant(item: &Value, almost: bool) -> Option<ComboLine> {
         spellbook_url,
         bracket,
         almost,
+        missing: Vec::new(),
     })
 }
 

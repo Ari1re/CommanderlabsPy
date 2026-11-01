@@ -22,6 +22,10 @@
   let starting = $state(false);
   let message = $state('');
   let thinking = $state(false);
+  /** A change request waiting for the user to pick a bracket. */
+  let pending = $state<string | null>(null);
+  /** Agent-side messages from this visit (bracket questions, run summaries). */
+  let notes = $state<{ after: number; content: string }[]>([]);
   let chatBox: HTMLDivElement | undefined = $state();
 
   onMount(async () => {
@@ -59,19 +63,66 @@
 
   async function run() {
     job = { id: 0, kind: 'agent', subject: name, status: 'running', percent: 0, step: 'Starting', detail: '', log: [], result: null, error: null };
+    scrollChat();
     try {
       agent = await runJob('agent_run', { name, bracket: target, intensity, brief }, (j) => (job = j), 1000);
-      app.toast('The agent finished testing.', 'success');
+      note(`Done. I tested ${agent?.rounds?.length ?? 0} versions at Bracket ${target}; the best ones are below. Your deck isn't changed until you save one.`);
     } catch (err) {
       app.error(err);
     } finally {
       job = null;
+      scrollChat();
     }
+  }
+
+  function note(content: string) {
+    notes = [...notes, { after: chat.length, content }];
+    scrollChat();
+  }
+
+  /** Does the message ask to change the deck (rather than ask about it)? */
+  function wantsChanges(text: string): boolean {
+    const t = text.toLowerCase();
+    if (/\b(optimi[sz]e|upgrade|tweak|rebuild|power (it |this )?(up|down)|make (it|this|the deck)|turn (it|this|the deck) into|tune)\b/.test(t)) return true;
+    // "What should I cut?" is a question; "Cut the weak ramp" is a request.
+    if (/^(what|which|how|why|is|are|does|do|when|who|where|should|could)\b/.test(t)) return false;
+    return /\b(faster|slower|stronger|weaker|swap|replace|lower the bracket|raise the bracket|more (consistent|interaction|ramp|removal|draw))\b/.test(t);
+  }
+
+  /** A bracket the message names ("bracket 3", "B4", "cEDH"), if any. */
+  function namedBracket(text: string): number | null {
+    const t = text.toLowerCase();
+    if (/\bcedh\b/.test(t)) return 5;
+    const m = /\b(?:bracket|b)\s*([1-5])\b/.exec(t);
+    if (m) return Number(m[1]);
+    for (const b of BRACKETS) if (new RegExp(`\\b${b.name.toLowerCase()}\\b`).test(t)) return b.n;
+    return null;
+  }
+
+  function startRun(n: number) {
+    target = n;
+    pending = null;
+    run();
   }
 
   async function send() {
     const text = message.trim();
     if (!text) return;
+    if (wantsChanges(text)) {
+      // Change requests go to the optimizer; only they need a bracket.
+      chat = [...chat, { role: 'user', content: text }];
+      message = '';
+      brief = text;
+      const n = namedBracket(text);
+      if (n) {
+        note(`Rebuilding and testing for Bracket ${n}.`);
+        startRun(n);
+      } else {
+        pending = text;
+        note('I can rebuild this deck and goldfish-test the versions. Which bracket should I aim for?');
+      }
+      return;
+    }
     chat = [...chat, { role: 'user', content: text }];
     message = '';
     thinking = true;
@@ -91,6 +142,8 @@
 
   async function clearChat() {
     chat = (await api<{ chat: ChatMessage[] }>('agent_chat_clear', { name })).chat;
+    notes = [];
+    pending = null;
   }
 
   async function save(iteration?: number) {
@@ -106,10 +159,10 @@
   const STARTERS = [
     'How do I mulligan this deck?',
     'How does this deck win?',
-    'What should I do in the first three turns?',
     'Which cards are the weakest?',
     'What are the combos?',
-    'Is the mana base good enough?',
+    'Upgrade this deck',
+    'Make it win faster',
   ];
 
   /** The chat can use an AI model: the built-in one is running, or an online API key is set. */
@@ -155,167 +208,140 @@
   let iterations = $derived<any[]>(agent?.top_iterations?.length ? agent.top_iterations : agent ? [{ round: 0, detected_bracket: agent.target_bracket, objective_score: null, deck: agent.best, testing: agent.final_testing, best: true }] : []);
 </script>
 
-<div class="layout">
-  <section class="chat panel">
-    <div class="row chat-head">
-      <h2>Ask about this deck</h2>
-      <span class="spacer"></span>
-      {#if chat.length}<button class="btn ghost small" onclick={clearChat}>Clear</button>{/if}
-    </div>
-    <div class="messages" bind:this={chatBox}>
-      {#if !chat.length}
-        <p class="small muted">
-          Ask anything about this deck: what a card does or why it's in, how cards work together, rules questions,
-          how to mulligan and pilot it, its combos, curve, mana, price or bracket, or what to cut and add.
-        </p>
+<section class="chat panel">
+  <div class="row chat-head">
+    <h2>Deck agent</h2>
+    <span class="spacer"></span>
+    {#if chat.length || notes.length}<button class="btn ghost small" onclick={clearChat}>Clear</button>{/if}
+  </div>
+  <div class="messages" bind:this={chatBox}>
+    {#if !chat.length && !notes.length}
+      <p class="small muted">
+        Ask anything about this deck (what a card does, how it wins, how to mulligan, its combos, mana or bracket), or ask
+        for changes ("upgrade it", "make it win faster", "turn it into stax"). For changes, the agent rebuilds the deck,
+        goldfish-tests each version and shows the best ones. Your deck isn't changed until you save one.
+      </p>
+      <div class="starters">
+        {#each STARTERS as q (q)}
+          <button class="chip" onclick={() => { message = q; send(); }}>{q}</button>
+        {/each}
+      </div>
+    {/if}
+    {#each chat as m, i (i)}
+      {#if m.role === 'assistant'}
+        <div class="msg assistant">{@html md(m.content)}</div>
+      {:else}
+        <div class="msg user">{m.content}</div>
+      {/if}
+      {#each notes.filter((n) => n.after === i + 1) as n, j (j)}<div class="msg assistant">{n.content}</div>{/each}
+    {/each}
+    {#if thinking}<div class="msg assistant muted">Thinking…</div>{/if}
+
+    {#if pending}
+      <div class="msg assistant ask">
         <div class="starters">
-          {#each STARTERS as q (q)}
-            <button class="chip" onclick={() => { message = q; send(); }}>{q}</button>
+          {#each BRACKETS as b (b.n)}
+            <button class="chip" class:current={b.n === bracket} onclick={() => startRun(b.n)} title={b.blurb}>
+              {b.n} · {b.name}{b.n === bracket ? ' (now)' : ''}
+            </button>
           {/each}
         </div>
-      {/if}
-      {#each chat as m, i (i)}
-        {#if m.role === 'assistant'}
-          <div class="msg assistant">{@html md(m.content)}</div>
-        {:else}
-          <div class="msg user">{m.content}</div>
-        {/if}
-      {/each}
-      {#if thinking}<div class="msg assistant muted">Thinking…</div>{/if}
-    </div>
-    {#if ai && !chatAi && !chat.length}
-      <p class="small dim ai-note">
-        {ai.available ? 'No AI model is running, so answers come from Commander Lab\'s own analysis.' : 'Answers come from Commander Lab\'s own analysis.'}
-        For open-ended questions, {ai.available ? 'start an AI model' : 'add an online AI key'} in Settings → AI model.
-      </p>
-    {/if}
-    <form class="composer" onsubmit={(e) => { e.preventDefault(); send(); }}>
-      <textarea
-        class="input"
-        rows="2"
-        bind:value={message}
-        placeholder="Ask about a card, the plan, a rules question…"
-        onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-      ></textarea>
-      <button class="btn primary icon" aria-label="Send" disabled={thinking || !message.trim()}><Icon name="play" size={16} /></button>
-    </form>
-  </section>
-  <section class="stack">
-    <div>
-      <h2>Optimize the deck</h2>
-      <p class="dim small">
-        Describe what you want. The agent researches the commander and reference decks, rebuilds candidate lists,
-        goldfishes each one, and ranks them. Your deck isn't changed until you save a result.
-      </p>
-    </div>
-
-    {#if ai && !ai.available}
-      <p class="note small">The local AI model isn't available on Android. The agent still runs its research and simulations without it.</p>
-    {:else if ai && !ai.running}
-      <div class="note small row">
-        <span>The AI model isn't running. The agent works without it, but writes better plans with it.</span>
-        <button class="btn small" onclick={startAi} disabled={starting}>{starting ? 'Starting… (first start downloads the model)' : 'Start AI model'}</button>
+        <label class="field depth"><span class="small dim">Testing depth</span>
+          <select class="input" bind:value={intensity}>
+            <option value="quick">Quick (1 round)</option>
+            <option value="standard">Standard (3 rounds)</option>
+            <option value="thorough">Thorough (5 rounds)</option>
+            <option value="exhaustive">Exhaustive (8 rounds)</option>
+          </select>
+        </label>
       </div>
     {/if}
 
-    <label class="field">
-      <span>What should the agent do?</span>
-      <textarea class="input" rows="4" bind:value={brief} placeholder="Win faster without relying on the commander. Keep the graveyard package. Or: turn it into a stax deck that locks the table. Use this list as a reference: https://www.moxfield.com/decks/…"></textarea>
-      <span class="small dim">Say it in your own words. The agent reads what you ask for (including your last few chat messages) and optimizes for that.</span>
-    </label>
-
-    <div class="opts">
-      <label class="field"><span>Bracket</span>
-        <select class="input" bind:value={target}>
-          {#each BRACKETS as b (b.n)}<option value={b.n}>{b.n} · {b.name}</option>{/each}
-        </select>
-      </label>
-      <label class="field"><span>Testing depth</span>
-        <select class="input" bind:value={intensity}>
-          <option value="quick">Quick (1 round)</option>
-          <option value="standard">Standard (3 rounds)</option>
-          <option value="thorough">Thorough (5 rounds)</option>
-          <option value="exhaustive">Exhaustive (8 rounds)</option>
-        </select>
-      </label>
-    </div>
-
     {#if job}
-      <div class="running panel">
+      <div class="msg assistant running">
         <div class="row"><b>{job.step}</b><span class="spacer"></span><span class="num small">{job.percent}%</span></div>
         <div class="progress"><i style:width="{job.percent}%"></i></div>
         <p class="small dim">{job.detail}</p>
         <ol class="log small">{#each job.log.slice(-6) as l, i (i)}<li>{l}</li>{/each}</ol>
       </div>
-    {:else}
-      <div><button class="btn primary" onclick={run}><Icon name="sparkle" size={17} /> Run the agent</button></div>
-    {/if}
-
-    {#if agent}
-      <h3>Results</h3>
-      <p class="small dim">Ranked by the agent's objective score at Bracket {agent.target_bracket}.</p>
-      <ol class="results">
-        {#each iterations as it, i (i)}
-          {@const g = it.testing?.goldfish}
-          <li class="panel res">
-            <div class="row">
-              <b>{i === 0 ? 'Best version' : `Round ${it.round}`}</b>
-              <span class="badge">Bracket {it.detected_bracket}</span>
-              <span class="spacer"></span>
-              <button class="btn small" onclick={() => save(it.best ? undefined : i)}>Save as new deck</button>
-            </div>
-            {#if g}
-              <div class="stats small">
-                <span>Most likely win: <b>{turn(g.most_likely_combo_turn)}</b></span>
-                <span>Median win: <b>{turn(g.median_combo_turn)}</b></span>
-                <span>Keepable hands: <b class="num">{Math.round(g.keepable_pct)}%</b></span>
-                {#if it.stax?.median_lock_turn}<span>Median lock: <b>{turn(it.stax.median_lock_turn)}</b></span>{/if}
+    {:else if agent}
+      <div class="msg assistant results-msg">
+        <b>Agent results</b> <span class="small dim">· ranked at Bracket {agent.target_bracket}</span>
+        <ol class="results">
+          {#each iterations as it, i (i)}
+            {@const g = it.testing?.goldfish}
+            <li class="panel res">
+              <div class="row">
+                <b>{i === 0 ? 'Best version' : `Round ${it.round}`}</b>
+                <span class="badge">Bracket {it.detected_bracket}</span>
+                <span class="spacer"></span>
+                <button class="btn small" onclick={() => save(it.best ? undefined : i)}>Save as new deck</button>
               </div>
-            {/if}
-          </li>
-        {/each}
-      </ol>
-      {#if agent.rounds?.length}
-        <details>
-          <summary class="small dim">What the agent tried ({agent.rounds.length} rounds)</summary>
-          <ul class="rounds small">
-            {#each agent.rounds as r (r.round)}
-              <li>
-                <b>Round {r.round}</b> {r.accepted ? '· kept' : '· rejected'} — {r.summary}
-                {#if r.added_cards?.length}<div class="add">+ {r.added_cards.join(', ')}</div>{/if}
-                {#if r.removed_cards?.length}<div class="rem">− {r.removed_cards.join(', ')}</div>{/if}
-              </li>
-            {/each}
-          </ul>
-        </details>
-      {/if}
+              {#if g}
+                <div class="stats small">
+                  <span>Most likely win: <b>{turn(g.most_likely_combo_turn)}</b></span>
+                  <span>Median win: <b>{turn(g.median_combo_turn)}</b></span>
+                  <span>Keepable hands: <b class="num">{Math.round(g.keepable_pct)}%</b></span>
+                  {#if it.stax?.median_lock_turn}<span>Median lock: <b>{turn(it.stax.median_lock_turn)}</b></span>{/if}
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+        {#if agent.rounds?.length}
+          <details>
+            <summary class="small dim">What the agent tried ({agent.rounds.length} rounds)</summary>
+            <ul class="rounds small">
+              {#each agent.rounds as r (r.round)}
+                <li>
+                  <b>Round {r.round}</b> {r.accepted ? '· kept' : '· rejected'} — {r.summary}
+                  {#if r.added_cards?.length}<div class="add">+ {r.added_cards.join(', ')}</div>{/if}
+                  {#if r.removed_cards?.length}<div class="rem">− {r.removed_cards.join(', ')}</div>{/if}
+                </li>
+              {/each}
+            </ul>
+          </details>
+        {/if}
+      </div>
     {/if}
-  </section>
-
-</div>
+  </div>
+  {#if ai && !chatAi}
+    <div class="small dim ai-note row">
+      {#if ai.uses_built_in && !ai.models?.some((m: any) => m.installed)}
+        <span>No AI model is downloaded, so answers come from Commander Lab's own analysis. Download one in Settings → AI model.</span>
+      {:else if ai.available}
+        <span>No AI model is running, so answers come from Commander Lab's own analysis.</span>
+        <button class="btn small" onclick={startAi} disabled={starting}>{starting ? 'Starting…' : 'Start AI model'}</button>
+      {:else}
+        <span>Answers come from Commander Lab's own analysis. For open-ended questions, add an online AI key in Settings → AI model.</span>
+      {/if}
+    </div>
+  {/if}
+  <form class="composer" onsubmit={(e) => { e.preventDefault(); send(); }}>
+    <textarea
+      class="input"
+      rows="2"
+      bind:value={message}
+      placeholder="Ask about the deck, or ask for changes: “upgrade it”, “make it faster at bracket 3”…"
+      onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+    ></textarea>
+    <button class="btn primary icon" aria-label="Send" disabled={thinking || !!job || !message.trim()}><Icon name="play" size={16} /></button>
+  </form>
+</section>
 
 <style>
-  .layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(300px, 1fr);
-    gap: 2rem;
-    align-items: start;
-  }
-  .note {
-    padding: 0.7rem 0.9rem;
-    border-radius: var(--r-sm);
-    border: 1px dashed var(--line);
-    color: var(--text-2);
-  }
-  .opts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-    gap: 0.75rem;
-  }
-  .running {
+  .running,
+  .ask,
+  .results-msg {
     display: grid;
     gap: 0.5rem;
-    padding: 1rem;
+    width: 100%;
+  }
+  .depth {
+    max-width: 240px;
+  }
+  .chip.current {
+    border-color: var(--brass);
   }
   .log {
     margin: 0;
@@ -353,11 +379,11 @@
     color: var(--danger);
   }
   .chat {
-    position: sticky;
-    top: 4.5rem;
     display: grid;
     grid-template-rows: auto 1fr auto;
-    height: min(78vh, 760px);
+    height: min(80vh, 820px);
+    max-width: 980px;
+    margin: 0 auto;
     overflow: hidden;
   }
   .chat:has(.ai-note) {
@@ -387,6 +413,7 @@
   .ai-note {
     margin: 0;
     padding: 0.5rem 1rem 0;
+    gap: 0.6rem;
   }
   .msg.assistant {
     white-space: normal;
@@ -438,13 +465,9 @@
   .composer textarea {
     resize: none;
   }
-  @media (max-width: 1000px) {
-    .layout {
-      grid-template-columns: minmax(0, 1fr);
-    }
+  @media (max-width: 700px) {
     .chat {
-      position: static;
-      height: 70vh;
+      height: 75vh;
     }
   }
 </style>

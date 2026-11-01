@@ -44,7 +44,7 @@ use crate::{
         delete_sources_sidecar, load_sources_for_deck, save_sources_for_deck,
         sources_for_existing_deck, DeckSource,
     },
-    spellbook::find_my_combos,
+    spellbook::{find_my_combos_where, search_combos, ComboLine},
     user_reference::import_user_reference,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -240,6 +240,8 @@ impl Engine {
             }
             "save_deck_text" => self.save_deck_text(&arg::<String>(a, "name")?, &arg::<String>(a, "text")?, opt(a, "overwrite").unwrap_or(false)),
             "import_url" => Ok(json!({ "job": self.start_import_url(arg(a, "url")?, opt(a, "name")) })),
+            "precons" => to_value(crate::precons::list()?),
+            "import_precon" => Ok(json!({ "job": self.start_import_precon(arg(a, "file")?, opt(a, "name")) })),
             "delete_deck" => self.delete_deck(&arg::<String>(a, "name")?),
             "rename_deck" => self.rename_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
             "duplicate_deck" => self.duplicate_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
@@ -349,6 +351,16 @@ impl Engine {
             "ai_status" => self.ai_status(),
             "ai_config_set" => self.ai_config_set(a),
             "ai_start" => Ok(json!({ "job": self.start_ai_runtime() })),
+            "ai_model_download" => Ok(json!({ "job": self.start_model_download(arg(a, "model")?)? })),
+            "ai_model_delete" => {
+                let id: String = arg(a, "model")?;
+                let preset = crate::local_llm::preset(&id).ok_or_else(|| anyhow!("Unknown model {id}"))?;
+                if let Some(mut runtime) = self.ai_runtime.lock().unwrap().take() {
+                    runtime.shutdown();
+                }
+                crate::local_llm::delete(preset)?;
+                self.ai_status()
+            }
             "ai_stop" => {
                 if let Some(mut runtime) = self.ai_runtime.lock().unwrap().take() {
                     runtime.shutdown();
@@ -801,6 +813,19 @@ impl Engine {
         })
     }
 
+    fn start_import_precon(self: &Arc<Self>, file: String, name: Option<String>) -> u64 {
+        let engine = self.clone();
+        self.jobs.spawn("import_precon", &file.clone(), move |job| {
+            job.progress(20, "Downloading the precon list", file.clone());
+            let mut deck = crate::precons::load(&file)?;
+            let wanted = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| deck.name.clone());
+            let final_name = engine.unique_name(&wanted)?;
+            deck.name = final_name.clone();
+            engine.commit(&final_name, &PathBuf::from(DECKS_DIR).join(format!("{final_name}.txt")), &deck, "Imported precon from MTGJSON")?;
+            Ok(json!({ "name": final_name }))
+        })
+    }
+
     fn sidecars(path: &Path) -> Vec<PathBuf> {
         vec![
             path.with_extension("plan.md"),
@@ -1014,11 +1039,81 @@ impl Engine {
         self.jobs.spawn("combos", &name.clone(), move |job| {
             job.progress(20, "Asking Commander Spellbook", name.clone());
             let deck = engine.load(&name)?;
-            let report = find_my_combos(&deck)?;
+            let db = CardDb::open(DB_PATH)?;
+            let format = deck.format;
+            let commanders: Vec<Card> = deck.commanders.iter().filter_map(|e| db.get_card(&e.name).ok().flatten()).collect();
+            let in_deck: std::collections::HashSet<String> = deck
+                .commanders
+                .iter()
+                .chain(deck.main.iter())
+                .map(|e| db.get_card(&e.name).ok().flatten().map(|c| c.name).unwrap_or_else(|| e.name.clone()).to_lowercase())
+                .collect();
+            let identity = if format.has_commander() && !commanders.is_empty() {
+                crate::commander::combined_identity(&commanders)
+            } else {
+                let mut colors = String::new();
+                for e in &deck.main {
+                    if let Ok(Some(c)) = db.get_card(&e.name) {
+                        colors.extend(c.color_identity.chars().filter(|ch| !colors.contains(*ch)).collect::<Vec<_>>());
+                    }
+                }
+                colors
+            };
+            // Pieces the deck doesn't run yet, or None if one of them can't
+            // go in this deck (wrong format, e.g. a rare in Pauper
+            // Commander, or outside its colors).
+            let missing = |combo: &ComboLine| -> Option<Vec<String>> {
+                let mut out = Vec::new();
+                for piece in &combo.cards {
+                    let card = db.get_card(piece).ok().flatten()?;
+                    if in_deck.contains(&card.name.to_lowercase()) {
+                        continue;
+                    }
+                    if format.card_allowed(&card).is_err() || !identity_subset(&card.color_identity, &identity) {
+                        return None;
+                    }
+                    out.push(card.name);
+                }
+                Some(out)
+            };
+            let mut report = find_my_combos_where(&deck, |combo| missing(combo).is_some())?;
+
+            // Combos the deck could add: ones built around the commander
+            // first, then the most played in its colors and format.
+            job.progress(60, "Looking for combos you could add", "");
+            let legal = match format {
+                Format::Commander => "commander",
+                Format::Pdh => "pauper_commander",
+                Format::Canlander => "vintage",
+            };
+            let ci = if identity.is_empty() { "c".to_string() } else { identity.to_lowercase() };
+            let mut queries: Vec<String> =
+                commanders.iter().map(|c| format!("card:\"{}\" ci<={ci} legal:{legal}", c.name)).collect();
+            queries.push(format!("ci<={ci} legal:{legal}"));
+            let known: std::collections::HashSet<String> = report.variants.iter().map(|v| v.id.clone()).collect();
+            let mut possible: Vec<(bool, ComboLine)> = Vec::new();
+            for (i, query) in queries.iter().enumerate() {
+                let from_commander = i < commanders.len();
+                for mut combo in search_combos(query, if from_commander { 40 } else { 150 }).unwrap_or_default() {
+                    if known.contains(&combo.id) || possible.iter().any(|(_, p)| p.id == combo.id) {
+                        continue;
+                    }
+                    let Some(need) = missing(&combo) else { continue };
+                    if need.is_empty() {
+                        continue;
+                    }
+                    combo.missing = need;
+                    possible.push((from_commander, combo));
+                }
+            }
+            // Commander combos first, then the fewest cards to add; search
+            // order (popularity) breaks ties.
+            possible.sort_by_key(|(from_commander, combo)| (!*from_commander, combo.missing.len()));
+            report.possible = possible.into_iter().map(|(_, c)| c).take(40).collect();
+
             if let Ok(path) = engine.deck_path(&name) {
                 let _ = fs::write(path.with_extension("combos.json"), serde_json::to_string(&report)?);
             }
-            let db = CardDb::open(DB_PATH)?;
             let mut analysis = analyze_deck(&deck, &db)?;
             refine_with_combo_report(&mut analysis.bracket, &report);
             let cards = combo_card_images(&report, &deck, &db);
@@ -1522,8 +1617,24 @@ impl Engine {
                 .collect::<Vec<_>>()
         };
         let runtime = self.ai_runtime.lock().unwrap();
+        let built_in = crate::local_llm::available();
+        let models: Vec<Value> = crate::local_llm::PRESETS
+            .iter()
+            .map(|p| json!({
+                "model": p.id,
+                "name": p.name,
+                "description": p.description,
+                "size_mb": p.size_mb,
+                "installed": crate::local_llm::is_installed(p),
+            }))
+            .collect();
         Ok(json!({
-            "available": self.platform != "android",
+            // Android has no llama.cpp or Ollama server; it needs the engine
+            // compiled into the app (or an online API).
+            "available": built_in || self.platform != "android",
+            "built_in": built_in,
+            "uses_built_in": config.uses_built_in(),
+            "models": models,
             "running": runtime.is_some(),
             "status": runtime.as_ref().map(|r| r.status_line()),
             "config": {
@@ -1578,15 +1689,37 @@ impl Engine {
         }
         let engine = self.clone();
         self.jobs.spawn("ai_start", "", move |job| {
-            if engine.platform == "android" {
+            if engine.platform == "android" && !crate::local_llm::available() {
                 bail!("The local AI model isn't available on Android.");
             }
-            job.progress(10, "Starting AI backend", "First start may download the model.");
+            job.progress(10, "Starting AI backend", "Loading the model into memory.");
             let runtime = LocalAiRuntime::ensure_running()?;
             let line = runtime.status_line();
             *engine.ai_runtime.lock().unwrap() = Some(runtime);
             Ok(json!({ "status": line }))
         })
+    }
+
+    /// Download a built-in AI model, reporting progress in megabytes.
+    fn start_model_download(self: &Arc<Self>, id: String) -> Result<u64> {
+        let preset = crate::local_llm::preset(&id).ok_or_else(|| anyhow!("Unknown model {id}"))?;
+        if let Some(job) = self.jobs.running("ai_model_download", preset.id) {
+            return Ok(job);
+        }
+        let engine = self.clone();
+        Ok(self.jobs.spawn("ai_model_download", preset.id, move |job| {
+            job.progress(1, format!("Downloading the {} model", preset.name), format!("{} MB", preset.size_mb));
+            crate::local_llm::download(preset, |done, total| {
+                let pct = if total == 0 { 0 } else { (done * 99 / total) as u16 };
+                job.progress(pct.max(1), format!("Downloading the {} model", preset.name), format!("{done} of {total} MB"));
+            })?;
+            // Use the model just downloaded.
+            let mut config = AiConfig::load_or_create();
+            config.set_provider(AiProvider::LlamaCpp);
+            config.model = preset.id.to_string();
+            config.save()?;
+            engine.ai_status()
+        }))
     }
 
     fn agent_state(&self, name: &str) -> Result<Value> {
@@ -1719,7 +1852,9 @@ impl Engine {
                         (Err(err), AiProvider::Api) => format!(" (The online AI didn't answer: {err:#}.)"),
                         _ => String::new(),
                     };
-                    let how = if engine.platform == "android" {
+                    let how = if crate::local_llm::available() {
+                        "download and start an AI model in Settings → AI model"
+                    } else if engine.platform == "android" {
                         "add an online AI key in Settings → AI model"
                     } else {
                         "start an AI model in Settings → AI model"
@@ -2098,7 +2233,7 @@ impl Engine {
 /// chosen for them.
 fn combo_card_images(report: &ComboReport, deck: &ParsedDeck, db: &CardDb) -> Value {
     let mut out = Map::new();
-    for line in &report.variants {
+    for line in report.variants.iter().chain(report.possible.iter()) {
         for name in &line.cards {
             if out.contains_key(name) {
                 continue;

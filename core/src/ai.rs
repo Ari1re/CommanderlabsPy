@@ -21,7 +21,7 @@ use std::{
 const CONFIG_PATH: &str = "./data/ai_config.json";
 const LLAMA_BASE_URL: &str = "http://127.0.0.1:8080";
 const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
-const LLAMA_MODEL: &str = "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M";
+const LLAMA_MODEL: &str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M";
 const OLLAMA_MODEL: &str = "qwen2.5:7b-instruct";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,26 +63,22 @@ pub struct AiModelPreset {
     pub description: &'static str,
 }
 
-const LLAMA_MODELS: [AiModelPreset; 4] = [
+/// The built-in engine's downloadable models (see [`crate::local_llm::PRESETS`]).
+const LLAMA_MODELS: [AiModelPreset; 3] = [
     AiModelPreset {
-        name: "FAST",
-        model: "Qwen/Qwen2.5-3B-Instruct-GGUF:Q4_K_M",
-        description: "3B • fastest • lower memory",
+        name: "PHONE",
+        model: "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M",
+        description: "1.5B • recommended • runs on most phones",
+    },
+    AiModelPreset {
+        name: "LIGHT",
+        model: "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M",
+        description: "0.5B • smallest and fastest • older phones",
     },
     AiModelPreset {
         name: "BALANCED",
-        model: "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
-        description: "7B • recommended default",
-    },
-    AiModelPreset {
-        name: "QUALITY",
-        model: "Qwen/Qwen2.5-14B-Instruct-GGUF:Q4_K_M",
-        description: "14B • stronger reasoning • more VRAM/RAM",
-    },
-    AiModelPreset {
-        name: "MAX",
-        model: "Qwen/Qwen2.5-32B-Instruct-GGUF:Q4_K_M",
-        description: "32B • strongest local preset • heavy",
+        model: "Qwen/Qwen2.5-3B-Instruct-GGUF:Q4_K_M",
+        description: "3B • better answers • computers and newer phones",
     },
 ];
 
@@ -230,6 +226,15 @@ impl AiConfig {
                 self.model = self.api_model.clone();
             }
         }
+    }
+
+    /// True when requests go to the engine compiled into the app rather
+    /// than a llama.cpp server: the llama.cpp provider at its default local
+    /// address, in a build that includes the engine.
+    pub fn uses_built_in(&self) -> bool {
+        self.provider == AiProvider::LlamaCpp
+            && crate::llama::is_local_llama_url(&self.base_url)
+            && crate::local_llm::available()
     }
 
     pub fn cycle_provider(&mut self) {
@@ -444,6 +449,13 @@ impl LocalAi {
             .context("Could not initialize local AI HTTP client")?;
 
         let available = match config.provider {
+            AiProvider::LlamaCpp if config.uses_built_in() => {
+                let preset = crate::local_llm::resolve_installed(&config.model).ok_or_else(|| {
+                    anyhow!("No AI model is downloaded yet. Download one in Settings → AI model.")
+                })?;
+                vec![preset.id.to_string()]
+            }
+
             AiProvider::LlamaCpp => {
                 let url = format!(
                     "{}/v1/models",
@@ -575,6 +587,18 @@ impl LocalAi {
         }
 
         match self.config.provider {
+            AiProvider::LlamaCpp if self.config.uses_built_in() => {
+                let model = crate::local_llm::preset(&self.model)
+                    .ok_or_else(|| anyhow!("Unknown built-in AI model {}", self.model))?;
+                crate::local_llm::chat(&crate::local_llm::ChatRequest {
+                    model,
+                    system,
+                    turns,
+                    temperature: self.config.temperature as f32,
+                    json: json_mode,
+                })
+            }
+
             AiProvider::LlamaCpp => {
                 let url = openai_chat_url(&self.config.base_url);
 
