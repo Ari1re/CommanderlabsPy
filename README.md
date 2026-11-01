@@ -185,6 +185,7 @@ The **Search** tab works like Moxfield's card search, using Scryfall's search sy
 - Quick filters cover common searches: creatures, instants, ramp, card draw, removal, board wipes, tutors, counterspells, cheap cards.
 - Each result has **Deck**, **Side** and **Consider** buttons and a badge showing how many you already have. Tap the image to see it full size.
 - If the search has a mistake, Scryfall's explanation is shown. **Syntax guide** opens Scryfall's reference.
+- When a search finds nothing, Commander Lab suggests searches that do, with how many cards each finds. Card text uses current wording, so `o:unblockable` suggests `o:"can't be blocked"` and `otag:unblockable`, `o:etb` suggests `o:enters`, and a tag that doesn't exist (`otag:wrath`, `otag:card-draw`) suggests the real ones (`otag:board-wipe`, `otag:draw`). Tap one to run it.
 
 ### See cards you could add
 

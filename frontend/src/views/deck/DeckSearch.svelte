@@ -34,6 +34,8 @@
   let error = $state<string | null>(null);
   let warnings = $state<string[]>([]);
   let searched = $state('');
+  /** Searches that find cards, when this one found none. */
+  let suggestions = $state<{ q: string; reason: string; total: number }[]>([]);
   let adding = $state<string | null>(null);
 
   const ORDERS = [
@@ -102,8 +104,16 @@
     error = null;
     const nextPage = more ? page + 1 : 1;
     try {
-      const res = await api<{ total: number; has_more: boolean; cards: Result[]; warnings: string[] }>('scryfall_search', {
-        q,
+      const res = await api<{
+        total: number;
+        has_more: boolean;
+        cards: Result[];
+        warnings: string[];
+        query?: string;
+        suggestions?: { q: string; reason: string; total: number }[];
+      }>('scryfall_search', {
+        q: query.trim(),
+        filter: fits ? fitFilter : '',
         order,
         dir,
         unique,
@@ -113,8 +123,9 @@
       total = res.total;
       hasMore = res.has_more;
       warnings = res.warnings ?? [];
+      if (!more) suggestions = res.suggestions ?? [];
       page = nextPage;
-      searched = q;
+      searched = res.query ?? q;
     } catch (err) {
       error = (err as Error).message;
       if (!more) results = [];
@@ -205,11 +216,33 @@
   <p class="small dim">
     {total.toLocaleString()} card{total === 1 ? '' : 's'} for <code>{searched}</code>{#if warnings.length} · {warnings.join(' ')}{/if}
   </p>
+  {#if total === 0}
+    <div class="nothing panel">
+      {#if suggestions.length}
+        <b>Nothing matched. These find cards:</b>
+        <div class="suggest">
+          {#each suggestions as sg (sg.q)}
+            <button class="sg" onclick={() => { query = sg.q; search(); }}>
+              <code>{sg.q}</code>
+              <span class="small dim">{sg.total.toLocaleString()} cards · {sg.reason}</span>
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <b>Nothing matched.</b>
+        <p class="small dim">
+          Card text uses current Oracle wording, so search for what cards actually say (<code>o:"can't be blocked"</code>,
+          not <code>o:unblockable</code>), or try a Scryfall tag like <code>otag:removal</code>. Turning off
+          "Only cards that fit this deck" searches everything.
+        </p>
+      {/if}
+    </div>
+  {/if}
 {:else}
   <div class="help panel">
     <b>Search like on Scryfall</b>
     <ul class="small dim">
-      <li><code>t:creature o:"enters the battlefield"</code> creatures with enter abilities</li>
+      <li><code>t:creature o:enters</code> creatures with enter abilities · <code>o:"can't be blocked"</code> unblockable</li>
       <li><code>o:"-1/-1 counter" mv&lt;=3</code> cheap cards that use -1/-1 counters</li>
       <li><code>otag:ramp c:g</code> green ramp · <code>is:commander</code> possible commanders</li>
       <li><code>art:dragon</code> · <code>set:dmu</code> · <code>r:common</code> · <code>usd&lt;2</code> · <code>year&lt;2000</code></li>
@@ -260,6 +293,37 @@
 {/if}
 
 <style>
+  .nothing {
+    padding: 0.8rem 1rem;
+    display: grid;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+  .nothing p {
+    margin: 0;
+  }
+  .suggest {
+    display: grid;
+    gap: 0.4rem;
+  }
+  .sg {
+    display: grid;
+    gap: 0.15rem;
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--panel-2);
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+  }
+  .sg:hover {
+    border-color: var(--brass);
+  }
+  .sg code {
+    word-break: break-word;
+  }
   .bar {
     position: relative;
     display: flex;
