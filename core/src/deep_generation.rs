@@ -143,6 +143,9 @@ pub struct Evidence<'a> {
     pub roles: CardRoles,
     /// Target bracket: stronger decks lean harder on proven staples.
     pub bracket: u8,
+    /// Where the inclusion/synergy numbers come from ("EDHREC", or
+    /// "PDHREC" for Pauper Commander).
+    pub card_data: &'static str,
 }
 
 /// A card's tier, its score bonus and why, from its evidence.
@@ -168,7 +171,7 @@ pub fn assess(card: &Card, ev: &Evidence<'_>) -> (Option<Tier>, i32, Vec<String>
     }
 
     if inclusion > 0.0 {
-        reasons.push(format!("EDHREC: in {:.0}% of decks{}", inclusion * 100.0, if synergy > 0.0 { format!(", +{:.0}% synergy", synergy * 100.0) } else { String::new() }));
+        reasons.push(format!("{}: in {:.0}% of decks{}", ev.card_data, inclusion * 100.0, if synergy > 0.0 { format!(", +{:.0}% synergy", synergy * 100.0) } else { String::new() }));
     }
     if ev.reference_hits > 0 {
         reasons.push(format!("in {}/{} reference decks", ev.reference_hits, ev.reference_decks));

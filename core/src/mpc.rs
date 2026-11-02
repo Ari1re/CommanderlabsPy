@@ -60,6 +60,10 @@ pub struct MpcConfig {
     pub include_official: bool,
     /// List official art before community scans.
     pub prefer_official: bool,
+    /// Where MPC Autofill fills the project (see `mpc_autofill::SITES`).
+    pub autofill_site: String,
+    /// Browser MPC Autofill drives (see `mpc_autofill::BROWSERS`).
+    pub autofill_browser: String,
 }
 
 impl Default for MpcConfig {
@@ -75,6 +79,8 @@ impl Default for MpcConfig {
             max_candidates: 0,
             include_official: true,
             prefer_official: false,
+            autofill_site: "MakePlayingCards".to_string(),
+            autofill_browser: "chrome".to_string(),
         }
     }
 }

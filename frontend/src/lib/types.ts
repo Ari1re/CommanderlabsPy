@@ -47,6 +47,8 @@ export interface Entry {
   set_code?: string | null;
   collector_number?: string | null;
   foil?: boolean;
+  /** The player's tags ("Ramp", "Win Condition"…), Moxfield style. */
+  tags?: string[];
 }
 
 export interface Printing {
@@ -283,6 +285,8 @@ export interface MpcConfig {
   max_candidates: number;
   include_official: boolean;
   prefer_official: boolean;
+  autofill_site: string;
+  autofill_browser: string;
 }
 
 export interface Source {

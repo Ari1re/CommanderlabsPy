@@ -26,6 +26,34 @@
     download_failed: string[];
   } | null>(null);
   let exporting = $state<{ percent: number; detail: string } | null>(null);
+
+  // MPC Autofill desktop tool: fills the project into the printing site.
+  let autofill = $state<{ supported: boolean; installed: boolean; version: string; sites: string[]; browsers: string[] } | null>(null);
+  let filling = $state<{ percent: number; step: string; detail: string } | null>(null);
+  let filled = $state<{ terminal: string; site: string; browser: string; run_dir: string } | null>(null);
+  api<any>('mpc_autofill_status').then((s) => (autofill = s)).catch(() => (autofill = null));
+
+  const SITE_LABEL: Record<string, string> = {
+    MakePlayingCards: 'MakePlayingCards',
+    PrinterStudio: 'PrinterStudio (US)',
+    PrinterStudioUK: 'PrinterStudio (UK)',
+    PrinterStudioDE: 'PrinterStudio (DE)',
+    PrinterStudioES: 'PrinterStudio (ES)',
+    PrinterStudioFR: 'PrinterStudio (FR)',
+  };
+
+  async function fillOrder() {
+    filled = null;
+    filling = { percent: 0, step: 'Starting', detail: '' };
+    try {
+      filled = await runJob('mpc_autofill', { name }, (j) => (filling = { percent: j.percent, step: j.step, detail: j.detail }), 600);
+      if (autofill) autofill = { ...autofill, installed: true };
+    } catch (err) {
+      app.error(err);
+    } finally {
+      filling = null;
+    }
+  }
   let artFilter = $state<'all' | 'official' | 'community'>('all');
   let loadingMore = $state(false);
 
@@ -125,9 +153,53 @@
     <div class="row">
       <button class="btn ghost" onclick={() => (settingsOpen = !settingsOpen)}><Icon name="settings" size={16} /> Order options</button>
       <button class="btn" onclick={search} disabled={!!searching}><Icon name="search" size={16} /> {order.resolved ? 'Search again' : 'Find proxy art'}</button>
-      <button class="btn primary" onclick={exportOrder} disabled={!!exporting}><Icon name="download" size={16} /> {exporting ? 'Exporting…' : 'Export order'}</button>
+      <button class="btn" onclick={exportOrder} disabled={!!exporting}><Icon name="download" size={16} /> {exporting ? 'Exporting…' : 'Export order'}</button>
+      {#if autofill?.supported}
+        <button class="btn primary" onclick={fillOrder} disabled={!!filling || !order.resolved}>
+          <Icon name="external" size={16} /> {filling ? 'Starting…' : `Fill on ${SITE_LABEL[config?.autofill_site ?? 'MakePlayingCards'] ?? 'MakePlayingCards'}`}
+        </button>
+      {/if}
     </div>
   </div>
+
+  {#if autofill?.supported}
+    <section class="panel autofill">
+      <div class="row">
+        <div class="grow">
+          <b>Order on the printer's site</b>
+          <p class="small dim">
+            Runs the MPC Autofill desktop tool ({autofill.version}{autofill.installed ? '' : ', downloaded from GitHub the first time, about 50 MB'}).
+            It opens your browser, creates the project, uploads every card's art and saves it to your account. Then you
+            review it there and add it to your cart. It needs Chrome, Edge or Brave installed, and asks one question in its
+            window: start a new project, or add to one you saved.
+          </p>
+        </div>
+        {#if config}
+          <label class="field"><span class="small">Site</span>
+            <select class="input" value={config.autofill_site} onchange={(e) => setConfig({ autofill_site: (e.target as HTMLSelectElement).value })}>
+              {#each autofill.sites as s (s)}<option value={s}>{SITE_LABEL[s] ?? s}</option>{/each}
+            </select>
+          </label>
+          <label class="field"><span class="small">Browser</span>
+            <select class="input" value={config.autofill_browser} onchange={(e) => setConfig({ autofill_browser: (e.target as HTMLSelectElement).value })}>
+              {#each autofill.browsers as b (b)}<option value={b}>{b[0].toUpperCase() + b.slice(1)}</option>{/each}
+            </select>
+          </label>
+        {/if}
+      </div>
+      {#if filling}
+        <div class="progress"><i style:width="{filling.percent}%"></i></div>
+        <span class="small dim">{filling.step} {filling.detail}</span>
+      {:else if filled}
+        <p class="small ok">
+          MPC Autofill is running in {filled.terminal}. Follow it there: pick “Create a new project”, then let it upload.
+          When it finishes, check the project on {SITE_LABEL[filled.site] ?? filled.site} and add it to your cart.
+        </p>
+      {:else if !order.resolved}
+        <p class="small dim">Find proxy art first, so every card has an image to upload.</p>
+      {/if}
+    </section>
+  {/if}
 
   {#if searching}
     <div class="searching">
@@ -384,6 +456,18 @@
   }
   .cand.on {
     border-color: var(--brass);
+  }
+  .autofill {
+    display: grid;
+    gap: 0.5rem;
+    padding: 0.9rem 1rem;
+    margin-bottom: 1rem;
+  }
+  .autofill .grow {
+    flex: 1 1 22rem;
+  }
+  .autofill .ok {
+    color: var(--ok);
   }
   .exported {
     margin-top: 1.5rem;

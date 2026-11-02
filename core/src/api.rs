@@ -113,6 +113,7 @@ pub struct EntryView {
     pub set_code: Option<String>,
     pub collector_number: Option<String>,
     pub foil: bool,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -246,6 +247,8 @@ impl Engine {
             "rename_deck" => self.rename_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
             "duplicate_deck" => self.duplicate_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
             "edit_deck" => self.edit_deck(&arg::<String>(a, "name")?, a),
+            "edit_deck_bulk" => self.edit_deck_bulk(&arg::<String>(a, "name")?, a),
+            "auto_tag" => self.auto_tag(&arg::<String>(a, "name")?),
             "storage" => to_value(crate::storage::report()),
             "storage_clean" => self.storage_clean(&opt::<Vec<String>>(a, "ids").unwrap_or_default(), opt(a, "compact").unwrap_or(false)),
             "set_commanders" => self.set_commanders(
@@ -363,6 +366,14 @@ impl Engine {
             "mpc_search" => Ok(json!({ "job": self.start_mpc_search(arg(a, "name")?)? })),
             "mpc_select" => self.mpc_select(&arg::<String>(a, "name")?, arg(a, "index")?, opt(a, "back").unwrap_or(false), arg(a, "selected")?),
             "mpc_export" => Ok(json!({ "job": self.start_mpc_export(arg(a, "name")?) })),
+            "mpc_autofill_status" => Ok(json!({
+                "supported": crate::mpc_autofill::supported() && self.platform != "android",
+                "installed": crate::mpc_autofill::installed_executable().is_some(),
+                "version": crate::mpc_autofill::TOOL_VERSION,
+                "sites": crate::mpc_autofill::SITES,
+                "browsers": crate::mpc_autofill::BROWSERS,
+            })),
+            "mpc_autofill" => Ok(json!({ "job": self.start_mpc_autofill(arg(a, "name")?) })),
             "mpc_more" => self.mpc_more(&arg::<String>(a, "name")?, arg(a, "index")?, opt(a, "back").unwrap_or(false)),
 
             // --- AI -----------------------------------------------------------------
@@ -775,6 +786,7 @@ impl Engine {
                     set_code: entry.set_code.clone(),
                     collector_number: entry.collector_number.clone(),
                     foil: entry.foil,
+                    tags: entry.tags.clone(),
                 });
             }
         }
@@ -944,6 +956,37 @@ impl Engine {
         take
     }
 
+    /// Take up to `qty` copies (all if None) as an entry that keeps the
+    /// card's printing and tags.
+    fn take_entry(list: &mut Vec<DeckEntry>, card: &str, qty: Option<u32>) -> Option<DeckEntry> {
+        let index = list.iter().position(|e| e.name.eq_ignore_ascii_case(card))?;
+        let take = qty.unwrap_or(list[index].quantity).min(list[index].quantity);
+        let mut taken = list[index].clone();
+        taken.quantity = take;
+        list[index].quantity -= take;
+        if list[index].quantity == 0 {
+            list.remove(index);
+        }
+        Some(taken).filter(|e| e.quantity > 0)
+    }
+
+    /// Add an entry, merging copies and tags into one already there.
+    fn put_entry(list: &mut Vec<DeckEntry>, entry: DeckEntry) {
+        if entry.quantity == 0 {
+            return;
+        }
+        if let Some(existing) = list.iter_mut().find(|e| e.name.eq_ignore_ascii_case(&entry.name)) {
+            existing.quantity += entry.quantity;
+            for tag in entry.tags {
+                if !existing.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+                    existing.tags.push(tag);
+                }
+            }
+        } else {
+            list.push(entry);
+        }
+    }
+
     fn put(list: &mut Vec<DeckEntry>, card: &str, qty: u32) {
         if qty == 0 {
             return;
@@ -1053,6 +1096,7 @@ impl Engine {
             },
             "set_qty" => format!("Set {card} to {}", qty.unwrap_or(0)),
             "move" => format!("Moved {card} to {}", zone_label(&opt::<String>(args, "to").unwrap_or_default())),
+            "tags" => format!("Tagged {card}"),
             _ => action.clone(),
         };
 
@@ -1065,28 +1109,175 @@ impl Engine {
                 }
             }
             "set_qty" => {
+                // In place, so the printing and tags stay.
                 let list = Self::zone_mut(&mut deck, &zone)?;
-                Self::take(list, &card, None);
-                Self::put(list, &card, qty.unwrap_or(0));
+                let n = qty.unwrap_or(0);
+                match list.iter().position(|e| e.name.eq_ignore_ascii_case(&card) || e.name.eq_ignore_ascii_case(&card_arg)) {
+                    Some(i) if n == 0 => {
+                        list.remove(i);
+                    }
+                    Some(i) => list[i].quantity = n,
+                    None => Self::put(list, &card, n),
+                }
             }
             "move" => {
                 let to: String = arg(args, "to")?;
-                let moved = Self::take(Self::zone_mut(&mut deck, &zone)?, &card, qty);
-                let moved = if moved == 0 {
-                    Self::take(Self::zone_mut(&mut deck, &zone)?, &card_arg, qty)
-                } else {
-                    moved
-                };
-                if moved == 0 {
+                let taken = Self::take_entry(Self::zone_mut(&mut deck, &zone)?, &card, qty)
+                    .or_else(|| Self::take_entry(Self::zone_mut(&mut deck, &zone).ok()?, &card_arg, qty));
+                let Some(mut moved) = taken else {
                     bail!("{card} is not in the {zone}.");
+                };
+                if to == "commander" {
+                    moved.quantity = 1;
                 }
-                let to_list = Self::zone_mut(&mut deck, &to)?;
-                Self::put(to_list, &card, if to == "commander" { 1 } else { moved });
+                Self::put_entry(Self::zone_mut(&mut deck, &to)?, moved);
+            }
+            "tags" => {
+                // Replace the card's tags.
+                let tags: Vec<String> = opt(args, "tags").unwrap_or_default();
+                let list = Self::zone_mut(&mut deck, &zone)?;
+                let entry = list
+                    .iter_mut()
+                    .find(|e| e.name.eq_ignore_ascii_case(&card) || e.name.eq_ignore_ascii_case(&card_arg))
+                    .ok_or_else(|| anyhow!("{card} is not in the {zone}."))?;
+                entry.tags = clean_tags(tags);
             }
             other => bail!("Unknown edit action '{other}'"),
         }
 
         self.save(name, &deck, &message)?;
+        self.deck(name)
+    }
+
+    /// One edit to many cards, saved as one history step: `op` is
+    /// "add_tag", "remove_tag", "move" (to `to`) or "remove".
+    fn edit_deck_bulk(&self, name: &str, args: &Value) -> Result<Value> {
+        #[derive(serde::Deserialize)]
+        struct Target {
+            card: String,
+            zone: String,
+        }
+        let mut deck = self.load(name)?;
+        let targets: Vec<Target> = arg(args, "cards")?;
+        let op: String = arg(args, "op")?;
+        let tag = clean_tags(vec![opt::<String>(args, "tag").unwrap_or_default()]).pop();
+        let to: Option<String> = opt(args, "to");
+        if targets.is_empty() {
+            bail!("Select some cards first.");
+        }
+        let mut changed = 0;
+        for t in &targets {
+            match op.as_str() {
+                "add_tag" | "remove_tag" => {
+                    let tag = tag.as_ref().ok_or_else(|| anyhow!("Name the tag first."))?;
+                    if let Some(entry) = Self::zone_mut(&mut deck, &t.zone)?.iter_mut().find(|e| e.name.eq_ignore_ascii_case(&t.card)) {
+                        if op == "add_tag" {
+                            if !entry.tags.iter().any(|x| x.eq_ignore_ascii_case(tag)) {
+                                entry.tags.push(tag.clone());
+                                changed += 1;
+                            }
+                        } else {
+                            let before = entry.tags.len();
+                            entry.tags.retain(|x| !x.eq_ignore_ascii_case(tag));
+                            changed += usize::from(entry.tags.len() != before);
+                        }
+                    }
+                }
+                "move" => {
+                    let to = to.as_deref().ok_or_else(|| anyhow!("Choose where to move the cards."))?;
+                    if to == t.zone {
+                        continue;
+                    }
+                    if let Some(mut moved) = Self::take_entry(Self::zone_mut(&mut deck, &t.zone)?, &t.card, None) {
+                        if to == "commander" {
+                            moved.quantity = 1;
+                        }
+                        Self::put_entry(Self::zone_mut(&mut deck, to)?, moved);
+                        changed += 1;
+                    }
+                }
+                "remove" => {
+                    if Self::take_entry(Self::zone_mut(&mut deck, &t.zone)?, &t.card, None).is_some() {
+                        changed += 1;
+                    }
+                }
+                other => bail!("Unknown bulk edit '{other}'"),
+            }
+        }
+        if changed > 0 {
+            let message = match op.as_str() {
+                "add_tag" => format!("Tagged {changed} card(s) #{}", tag.unwrap_or_default()),
+                "remove_tag" => format!("Untagged {changed} card(s) #{}", tag.unwrap_or_default()),
+                "move" => format!("Moved {changed} card(s) to {}", to.unwrap_or_default()),
+                _ => format!("Removed {changed} card(s)"),
+            };
+            self.save(name, &deck, &message)?;
+        }
+        self.deck(name)
+    }
+
+    /// Tag every card by what it does: its roles (Ramp, Card Draw, Removal…),
+    /// Game Changer, combo pieces, and the deck's play styles. Adds to the
+    /// player's own tags; never removes them.
+    fn auto_tag(&self, name: &str) -> Result<Value> {
+        let mut deck = self.load(name)?;
+        let db = self.db.lock().unwrap();
+        let combo_cards: std::collections::HashSet<String> = self
+            .cached_combos(name)
+            .map(|r| r.variants.iter().filter(|v| !v.almost).flat_map(|v| v.cards.iter().map(|c| c.to_ascii_lowercase())).collect())
+            .unwrap_or_default();
+        let themes: Vec<crate::oracle_search::ThemeMatcher> = self
+            .cached_plan(name)
+            .map(|p| p.primary_tags)
+            .unwrap_or_default()
+            .iter()
+            .take(3)
+            .map(|t| crate::oracle_search::ThemeMatcher::new(t))
+            .collect();
+        let mut tagged = 0;
+        for entry in deck.commanders.iter_mut().chain(deck.main.iter_mut()).chain(deck.sideboard.iter_mut()).chain(deck.considering.iter_mut()) {
+            let Ok(Some(card)) = db.get_card(&entry.name) else { continue };
+            if card.is_basic {
+                continue;
+            }
+            // Lands only get Combo: role rules read utility lands oddly
+            // (Bojuka Bog "removes" a graveyard).
+            let land = card.type_line.to_ascii_lowercase().contains("land");
+            let roles = if land { crate::analysis::CardRoles::default() } else { classify_card(&card) };
+            let mut tags: Vec<String> = Vec::new();
+            for (on, tag) in [
+                (roles.ramp, "Ramp"),
+                (roles.draw, "Card Draw"),
+                (roles.tutor, "Tutor"),
+                (roles.removal, "Removal"),
+                (roles.counter, "Counterspell"),
+                (roles.wipe, "Board Wipe"),
+                (roles.protection, "Protection"),
+                (roles.recursion, "Recursion"),
+                (card.game_changer, "Game Changer"),
+                (combo_cards.contains(&card.name.to_ascii_lowercase()), "Combo"),
+            ] {
+                if on {
+                    tags.push(tag.to_string());
+                }
+            }
+            for m in themes.iter().filter(|_| !land) {
+                if m.matches(&card) {
+                    tags.push(m.theme.clone());
+                }
+            }
+            let before = entry.tags.len();
+            for tag in tags {
+                if !entry.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+                    entry.tags.push(tag);
+                }
+            }
+            tagged += usize::from(entry.tags.len() != before);
+        }
+        drop(db);
+        if tagged > 0 {
+            self.save(name, &deck, &format!("Auto-tagged {tagged} card(s)"))?;
+        }
         self.deck(name)
     }
 
@@ -1709,6 +1900,44 @@ impl Engine {
             engine.mpc_export(&name, |done, total| {
                 job.progress(5 + (done * 90 / total.max(1)) as u16, "Downloading official scans", format!("{done}/{total}"));
             })
+        })
+    }
+
+    /// Export the order and hand it to the MPC Autofill desktop tool, which
+    /// fills the project into the printing site in a browser.
+    fn start_mpc_autofill(self: &Arc<Self>, name: String) -> u64 {
+        let engine = self.clone();
+        self.jobs.spawn("mpc_autofill", &name.clone(), move |job| {
+            if engine.platform == "android" || !crate::mpc_autofill::supported() {
+                bail!("MPC Autofill runs on Windows, Linux and macOS. Export the order here and run it on a computer.");
+            }
+            job.progress(5, "Preparing the order", "");
+            let exported = engine.mpc_export(&name, |done, total| {
+                job.progress(5 + (done * 40 / total.max(1)) as u16, "Downloading official scans", format!("{done}/{total}"));
+            })?;
+            let Some(xml_path) = exported["xml_path"].as_str() else {
+                bail!("{}", exported["error"].as_str().unwrap_or("The order couldn't be written for MPC Autofill."));
+            };
+            let exe = match crate::mpc_autofill::installed_executable() {
+                Some(exe) => exe,
+                None => {
+                    job.progress(45, "Downloading MPC Autofill", format!("{} from GitHub (first time only)", crate::mpc_autofill::TOOL_VERSION));
+                    crate::mpc_autofill::install(|done, total| {
+                        job.progress(45 + (done * 45 / total.max(1)) as u16, "Downloading MPC Autofill", format!("{done} of {total} MB"));
+                    })?
+                }
+            };
+            job.progress(95, "Starting MPC Autofill", "");
+            let config = MpcConfig::load_or_create();
+            let stem = safe_deck_filename(&name);
+            let terminal = crate::mpc_autofill::launch(&exe, Path::new(xml_path), &stem, &config.autofill_site, &config.autofill_browser)?;
+            Ok(json!({
+                "terminal": terminal,
+                "site": config.autofill_site,
+                "browser": config.autofill_browser,
+                "run_dir": engine.root.join(crate::mpc_autofill::run_dir(&stem)).display().to_string(),
+                "cards": exported["text"].as_str().map(|t| t.lines().count()).unwrap_or(0),
+            }))
         })
     }
 
@@ -2680,4 +2909,16 @@ impl ComboFit {
         }
         Some(out)
     }
+}
+
+/// Tags as the player typed them: trimmed, no "#", no duplicates.
+fn clean_tags(tags: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in tags {
+        let tag = tag.trim().trim_start_matches('#').trim().to_string();
+        if !tag.is_empty() && !out.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+            out.push(tag);
+        }
+    }
+    out
 }

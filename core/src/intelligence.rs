@@ -455,10 +455,16 @@ where
             .then_with(|| a.name.cmp(&b.name))
     });
 
-    progress(
-        "[EVIDENCE] Building large reference corpus from Moxfield / Archidekt / cEDH and checking recurring Spellbook combos"
-            .to_string(),
-    );
+    let pdh = crate::format_sources::active_format() == crate::format::Format::Pdh;
+    progress(format!(
+        "[EVIDENCE] Building reference corpus from {} and checking recurring Spellbook combos",
+        match (pdh, bracket >= 5) {
+            (true, true) => "Archidekt Pauper EDH lists, competitive Pauper lists first",
+            (true, false) => "Archidekt Pauper EDH lists",
+            (false, true) => "Moxfield / Archidekt, cEDH Decklist Database first",
+            (false, false) => "Moxfield / Archidekt",
+        }
+    ));
 
     let references =
         gather_reference_decks(&commander_names, bracket);

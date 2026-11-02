@@ -447,6 +447,17 @@ pub fn gather_reference_decks(
         crawl.moxfield_page + 1
     };
 
+    // Pauper Commander's competitive lists: the cEDH Decklist Database has
+    // none, so read Archidekt's Pauper EDH lists titled as competitive.
+    if bracket >= 5 && pdh {
+        let competitive = fetch_archidekt_references_where(commander_names, CEDH_REFERENCE_LIMIT, 1, true);
+        logging::record(
+            "REF",
+            format!("COMPETITIVE PAUPER DISCOVERY • usable={}", competitive.len()),
+        );
+        decks.extend(competitive);
+    }
+
     if bracket >= 5 && !pdh {
         let cedh = fetch_cedh_ddb_references(
             commander_names,
@@ -488,13 +499,7 @@ pub fn gather_reference_decks(
     }
 
     if bracket >= 5 {
-        decks.sort_by_key(|deck| {
-            if deck.source.to_ascii_lowercase().contains("cedh") {
-                0
-            } else {
-                1
-            }
-        });
+        decks.sort_by_key(|deck| if is_cedh_source(deck) { 0 } else { 1 });
     }
 
     let combo_scan_limit = if bracket >= 5 {
@@ -580,6 +585,19 @@ fn fetch_archidekt_references(
     limit: usize,
     page: usize,
 ) -> Vec<ReferenceDeck> {
+    fetch_archidekt_references_where(commander_names, limit, page, false)
+}
+
+/// Archidekt lists for the commander. With `competitive`, reads a larger
+/// listing and keeps only decks titled as competitive, labelled
+/// [`COMPETITIVE_PAUPER_SOURCE`] (Pauper Commander's stand-in for the cEDH
+/// Decklist Database, which has no Pauper lists).
+fn fetch_archidekt_references_where(
+    commander_names: &[String],
+    limit: usize,
+    page: usize,
+    competitive: bool,
+) -> Vec<ReferenceDeck> {
     let Some(primary) = commander_names.first() else {
         return Vec::new();
     };
@@ -600,11 +618,11 @@ fn fetch_archidekt_references(
     let search_urls = [
         format!(
             "https://archidekt.com/api/decks/v3/?deckFormat={deck_format}&commanderName={encoded}&orderBy=-viewCount&page={page}&pageSize={}",
-            limit.max(10),
+            if competitive { 100 } else { limit.max(10) },
         ),
         format!(
             "https://archidekt.com/api/decks/v3/?deckFormat={deck_format}&name={encoded}&orderBy=-viewCount&page={page}&pageSize={}",
-            limit.max(10),
+            if competitive { 100 } else { limit.max(10) },
         ),
     ];
 
@@ -626,7 +644,11 @@ fn fetch_archidekt_references(
         }
     }
 
+    if competitive {
+        ids.retain(|(_, title)| is_competitive_title(title));
+    }
     ids.truncate(limit);
+    let label = if competitive { COMPETITIVE_PAUPER_SOURCE } else { "Archidekt" };
 
     let mut out = Vec::new();
     let mut network_fetches = 0usize;
@@ -634,11 +656,14 @@ fn fetch_archidekt_references(
     for (id, title) in ids {
         let public_url = format!("https://archidekt.com/decks/{id}");
 
-        if let Some(cached) = load_cached_reference_deck(&public_url) {
+        if let Some(mut cached) = load_cached_reference_deck(&public_url) {
             if reference_deck_matches_commanders(
                 &cached,
                 commander_names,
             ) {
+                if competitive {
+                    cached.source = label.to_string();
+                }
                 out.push(cached);
             }
             continue;
@@ -678,7 +703,7 @@ fn fetch_archidekt_references(
         }
 
         let reference = reference_from_parsed(
-            "Archidekt",
+            label,
             title,
             public_url,
             &deck,
@@ -691,7 +716,8 @@ fn fetch_archidekt_references(
     logging::record(
         "REF",
         format!(
-            "ARCHIDEKT FETCH BUDGET • page={} • network_deck_fetches={} • returned={}",
+            "ARCHIDEKT{} FETCH BUDGET • page={} • network_deck_fetches={} • returned={}",
+            if competitive { " COMPETITIVE PAUPER" } else { "" },
             page,
             network_fetches,
             out.len(),
@@ -815,10 +841,26 @@ fn fetch_moxfield_references(
 }
 
 /// Lists from the cEDH Decklist Database (competitive, tournament-proven).
+/// A competitive list: from the cEDH Decklist Database, a competitive
+/// Pauper Commander list, or titled as one. Bracket 5 builds weigh these
+/// first.
 pub fn is_cedh_source(deck: &ReferenceDeck) -> bool {
-    deck.source.to_ascii_lowercase().contains("cedh")
-        || deck.title.to_ascii_lowercase().contains("cedh")
+    let source = deck.source.to_ascii_lowercase();
+    source.contains("cedh") || source.contains("competitive") || deck.title.to_ascii_lowercase().contains("cedh")
 }
+
+/// Deck titles players use for competitive lists ("cEDH", "cPDH",
+/// "Competitive", "Tournament", "High Power"…). Used to pick competitive
+/// Pauper Commander lists, which have no database of their own.
+pub fn is_competitive_title(title: &str) -> bool {
+    let t = title.to_ascii_lowercase();
+    ["cedh", "cpdh", "competitive", "tournament", "high power", "high-power", "tryhard", "try-hard", "fast combo", "turbo"]
+        .iter()
+        .any(|marker| t.contains(marker))
+}
+
+/// The label competitive Pauper Commander lists from Archidekt carry.
+pub const COMPETITIVE_PAUPER_SOURCE: &str = "Archidekt (competitive Pauper)";
 
 fn fetch_cedh_ddb_references(
     commander_names: &[String],

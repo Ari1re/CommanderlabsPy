@@ -24,6 +24,10 @@ pub struct DeckEntry {
     pub collector_number: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub foil: bool,
+    /// The player's tags ("Ramp", "Win Condition"…), kept in the decklist
+    /// Moxfield's way: `1 Sol Ring #Ramp #Staple`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 impl DeckEntry {
@@ -39,6 +43,9 @@ impl DeckEntry {
         }
         if self.foil {
             out.push_str(" *F*");
+        }
+        for tag in &self.tags {
+            out.push_str(&format!(" #{tag}"));
         }
         out
     }
@@ -393,6 +400,7 @@ fn moxfield_line(entry: &DeckEntry, printing: &ExportPrinting) -> String {
             printing.collector_number.clone()
         },
         foil: entry.foil,
+        tags: entry.tags.clone(),
     }
     .line()
 }
@@ -572,9 +580,18 @@ fn parse_card_line(line: &str) -> Option<(DeckEntry, bool)> {
         .trim()
         .to_string();
 
+    // Moxfield tags: "#Ramp #Card Draw" ("#!Tag" marks a global tag).
+    let mut tags = Vec::new();
     if let Some(hash_pos) = name.find(" #") {
+        for tag in name[hash_pos..].split(" #") {
+            let tag = tag.trim().trim_start_matches('!').trim();
+            if !tag.is_empty() && !tags.iter().any(|t: &String| t.eq_ignore_ascii_case(tag)) {
+                tags.push(tag.to_string());
+            }
+        }
         name.truncate(hash_pos);
-        name = name.trim().to_string();
+        // "*F*" sits before the tags, so strip it again now it's last.
+        name = trailing_flags_re.replace(&name, "").trim().to_string();
     }
 
     static PRINTING_RE: OnceLock<Regex> = OnceLock::new();
@@ -622,6 +639,7 @@ fn parse_card_line(line: &str) -> Option<(DeckEntry, bool)> {
             set_code,
             collector_number,
             foil,
+            tags,
         },
         explicit_commander,
     ))
@@ -748,6 +766,18 @@ mod tests {
         let (entry, _) =
             parse_card_line("1 Eternal Witness (F08) 3 *F*").unwrap();
         assert_eq!(entry.name, "Eternal Witness");
+    }
+
+    #[test]
+    fn moxfield_tags_round_trip() {
+        let (entry, _) = parse_card_line("1 Sol Ring (CMM) 400 *F* #Ramp #!Card Draw").unwrap();
+        assert_eq!(entry.name, "Sol Ring");
+        assert_eq!(entry.set_code.as_deref(), Some("CMM"));
+        assert!(entry.foil);
+        assert_eq!(entry.tags, vec!["Ramp".to_string(), "Card Draw".to_string()]);
+        assert_eq!(entry.line(), "1 Sol Ring (CMM) 400 *F* #Ramp #Card Draw");
+        let (again, _) = parse_card_line(&entry.line()).unwrap();
+        assert_eq!(again, entry);
     }
 
     #[test]

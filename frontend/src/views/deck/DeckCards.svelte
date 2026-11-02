@@ -10,6 +10,15 @@
 
   let view = $state<'list' | 'visual'>('list');
   let sort = $state<'cmc' | 'name'>('cmc');
+  let groupBy = $state<'type' | 'tag' | 'cmc' | 'color'>('type');
+  /** Show only cards with this tag. */
+  let tagFilter = $state<string | null>(null);
+  let textFilter = $state('');
+  /** Selected cards, by key(): for bulk tagging and moving. */
+  let selected = $state<Set<string>>(new Set());
+  let bulkTag = $state('');
+  let tagDraft = $state('');
+  let autoTagging = $state(false);
   let hovered = $state<CardView | null>(null);
   let menuFor = $state<string | null>(null);
 
@@ -45,6 +54,56 @@
       app.error(err);
     }
   }
+
+  async function bulk(op: 'add_tag' | 'remove_tag' | 'move' | 'remove', extra: Record<string, unknown> = {}) {
+    const cards = deck.entries.filter((e) => selected.has(key(e))).map((e) => ({ card: e.name, zone: e.zone }));
+    if (!cards.length) return;
+    try {
+      const next = await api<Deck>('edit_deck_bulk', { name: deck.name, cards, op, ...extra });
+      onchange(next);
+      if (op === 'move' || op === 'remove') selected = new Set();
+      app.toast(
+        op === 'add_tag' ? `Tagged ${cards.length} card${cards.length === 1 ? '' : 's'} #${extra.tag}.`
+          : op === 'remove_tag' ? `Removed #${extra.tag} from ${cards.length} card${cards.length === 1 ? '' : 's'}.`
+          : op === 'move' ? `Moved ${cards.length} card${cards.length === 1 ? '' : 's'}.`
+          : `Removed ${cards.length} card${cards.length === 1 ? '' : 's'}.`,
+        'success',
+      );
+    } catch (err) {
+      app.error(err);
+    }
+  }
+
+  async function autoTag() {
+    autoTagging = true;
+    try {
+      onchange(await api<Deck>('auto_tag', { name: deck.name }));
+      app.toast('Tagged cards by what they do. Your own tags were kept.', 'success');
+    } catch (err) {
+      app.error(err);
+    } finally {
+      autoTagging = false;
+    }
+  }
+
+  function setTags(e: Entry, tags: string[]) {
+    edit({ action: 'tags', card: e.name, zone: e.zone, tags });
+  }
+
+  function toggleSelect(e: Entry) {
+    const next = new Set(selected);
+    const k = key(e);
+    if (next.has(k)) next.delete(k);
+    else next.add(k);
+    selected = next;
+  }
+
+  /** Every tag in the deck, with how many cards carry it. */
+  let allTags = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const e of deck.entries) for (const t of e.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + e.quantity);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  });
 
   async function add(card: CardView, zone: Zone = 'main') {
     await edit({ action: 'add', card: card.name, zone }, `Added ${card.name}.`);
@@ -83,19 +142,57 @@
     );
   }
 
-  let groups = $derived.by<Group[]>(() => {
-    const byKind = new Map<string, Entry[]>();
-    for (const e of deck.entries) {
-      const key =
-        e.zone === 'commander' ? 'Commander' : e.zone === 'sideboard' ? 'Sideboard' : e.zone === 'considering' ? 'Considering' : (e.card?.kind ?? 'Other');
-      if (!byKind.has(key)) byKind.set(key, []);
-      byKind.get(key)!.push(e);
+  const COLOR_NAME: Record<string, string> = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' };
+
+  /** The group(s) a main-deck card belongs to under the current grouping. */
+  function groupKeys(e: Entry): string[] {
+    if (groupBy === 'tag') return e.tags?.length ? e.tags : ['Untagged'];
+    if (groupBy === 'cmc') {
+      if (e.card?.kind === 'Land') return ['Lands'];
+      const v = Math.floor(e.card?.cmc ?? 0);
+      return [v >= 7 ? '7+ mana' : `${v} mana`];
     }
-    const order = [...KIND_ORDER, 'Sideboard', 'Considering'];
-    return order
-      .filter((k) => byKind.has(k))
+    if (groupBy === 'color') {
+      const id = e.card?.color_identity ?? '';
+      if (e.card?.kind === 'Land') return ['Lands'];
+      return [id.length === 0 ? 'Colorless' : id.length > 1 ? 'Multicolor' : COLOR_NAME[id] ?? id];
+    }
+    return [e.card?.kind ?? 'Other'];
+  }
+
+  function groupOrder(keys: string[]): string[] {
+    if (groupBy === 'type') return KIND_ORDER.filter((k) => keys.includes(k));
+    if (groupBy === 'cmc') return [...keys].sort((a, b) => (a === 'Lands' ? 1 : b === 'Lands' ? -1 : parseInt(a) - parseInt(b)));
+    if (groupBy === 'color') return ['White', 'Blue', 'Black', 'Red', 'Green', 'Multicolor', 'Colorless', 'Lands'].filter((k) => keys.includes(k));
+    // Tags: biggest first, untagged last.
+    return [...keys].sort((a, b) => (a === 'Untagged' ? 1 : b === 'Untagged' ? -1 : (allTags.find((t) => t[0] === b)?.[1] ?? 0) - (allTags.find((t) => t[0] === a)?.[1] ?? 0)));
+  }
+
+  let visible = $derived(
+    deck.entries.filter(
+      (e) =>
+        (!tagFilter || (e.tags ?? []).includes(tagFilter)) &&
+        (!textFilter.trim() || `${e.name} ${e.card?.type_line ?? ''} ${(e.tags ?? []).join(' ')}`.toLowerCase().includes(textFilter.trim().toLowerCase())),
+    ),
+  );
+
+  let groups = $derived.by<Group[]>(() => {
+    const byKey = new Map<string, Entry[]>();
+    const push = (k: string, e: Entry) => {
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k)!.push(e);
+    };
+    for (const e of visible) {
+      if (e.zone === 'commander') push('Commander', e);
+      else if (e.zone === 'sideboard') push('Sideboard', e);
+      else if (e.zone === 'considering') push('Considering', e);
+      else for (const k of groupKeys(e)) push(k, e);
+    }
+    const middle = groupOrder([...byKey.keys()].filter((k) => !['Commander', 'Sideboard', 'Considering'].includes(k)));
+    return ['Commander', ...middle, 'Sideboard', 'Considering']
+      .filter((k) => byKey.has(k))
       .map((k) => {
-        const entries = sorted(byKind.get(k)!);
+        const entries = sorted(byKey.get(k)!);
         return { title: k === 'Other' ? 'Unknown cards' : k, entries, count: entries.reduce((n, e) => n + e.quantity, 0) };
       });
   });
@@ -107,7 +204,8 @@
   }
 </script>
 
-<svelte:window onclick={() => (menuFor = null)} />
+<!-- Clicks in a card menu's tag box keep the menu open. -->
+<svelte:window onclick={(ev) => { if (!(ev.target as HTMLElement | null)?.closest('.menu-tags')) menuFor = null; }} />
 
 <div class="toolbar">
   <div class="add">
@@ -143,7 +241,49 @@
     <button aria-pressed={sort === 'cmc'} onclick={() => (sort = 'cmc')}>Mana value</button>
     <button aria-pressed={sort === 'name'} onclick={() => (sort = 'name')}>Name</button>
   </div>
+  <label class="group-by small">Group by
+    <select class="input" bind:value={groupBy}>
+      <option value="type">Type</option>
+      <option value="tag">Tag</option>
+      <option value="cmc">Mana value</option>
+      <option value="color">Color</option>
+    </select>
+  </label>
+  <button class="btn ghost" onclick={autoTag} disabled={autoTagging}>
+    <Icon name="sparkle" size={15} /> {autoTagging ? 'Tagging…' : 'Auto-tag'}
+  </button>
 </div>
+
+<div class="filters">
+  <input class="input filter" placeholder="Filter cards" bind:value={textFilter} aria-label="Filter cards by name, type or tag" />
+  {#if allTags.length}
+    <div class="tag-chips" role="group" aria-label="Filter by tag">
+      {#each allTags as [t, n] (t)}
+        <button class="chip" aria-pressed={tagFilter === t} onclick={() => (tagFilter = tagFilter === t ? null : t)}>#{t} <span class="muted num">{n}</span></button>
+      {/each}
+    </div>
+  {:else}
+    <span class="small muted">No tags yet. Auto-tag tags every card by its role (Ramp, Removal, Card Draw…), Game Changers, combo pieces and the deck's play styles; or tag cards from their menu.</span>
+  {/if}
+</div>
+
+{#if selected.size}
+  <div class="bulk panel" role="toolbar" aria-label="Selected cards">
+    <b class="small">{selected.size} selected</b>
+    <form class="row" onsubmit={(ev) => { ev.preventDefault(); if (bulkTag.trim()) bulk('add_tag', { tag: bulkTag.trim() }); }}>
+      <input class="input small-input" list="deck-tags" placeholder="Tag" bind:value={bulkTag} aria-label="Tag to add or remove" />
+      <button class="btn small" disabled={!bulkTag.trim()}>Add tag</button>
+      <button type="button" class="btn small ghost" disabled={!bulkTag.trim()} onclick={() => bulk('remove_tag', { tag: bulkTag.trim() })}>Remove tag</button>
+    </form>
+    <span class="spacer"></span>
+    <button class="btn small ghost" onclick={() => bulk('move', { to: 'main' })}>To deck</button>
+    <button class="btn small ghost" onclick={() => bulk('move', { to: 'sideboard' })}>To sideboard</button>
+    <button class="btn small ghost" onclick={() => bulk('move', { to: 'considering' })}>To Considering</button>
+    <button class="btn small ghost danger" onclick={() => bulk('remove')}>Remove</button>
+    <button class="btn small ghost" onclick={() => (selected = new Set())}>Clear</button>
+  </div>
+{/if}
+<datalist id="deck-tags">{#each allTags as [t] (t)}<option value={t}></option>{/each}</datalist>
 
 <div class="layout" class:visual={view === 'visual'}>
   <div class="groups">
@@ -153,13 +293,16 @@
         {#if view === 'list'}
           <ul class="rows">
             {#each g.entries as e (key(e))}
-              <li class="entry" onmouseenter={() => (hovered = e.card ? { ...e.card, image_uri: entryImage(e) } : null)}>
+              <li class="entry" class:picked={selected.has(key(e))} onmouseenter={() => (hovered = e.card ? { ...e.card, image_uri: entryImage(e) } : null)}>
+                <input type="checkbox" class="pick" class:on={selected.size > 0} checked={selected.has(key(e))} onchange={() => toggleSelect(e)} aria-label="Select {e.name}" />
                 <span class="qty num">{e.quantity}</span>
                 <button class="name" onclick={() => e.card && app.open(e.card, { deck: deck.name, entry: e })} class:unknown={!e.card}>
                   {e.name}
                   {#if e.card?.game_changer}<span class="gc" title="Game Changer">◆</span>{/if}
                   {#if e.set_code}<span class="set small muted">{e.set_code}</span>{/if}
                   {#if e.foil}<span class="foil-tag small">foil</span>{/if}
+                  {#each (e.tags ?? []).slice(0, 2) as t (t)}<span class="tag small" class:active={tagFilter === t}>#{t}</span>{/each}
+                  {#if (e.tags?.length ?? 0) > 2}<span class="tag small" title={e.tags!.slice(2).map((t) => `#${t}`).join(' ')}>+{e.tags!.length - 2}</span>{/if}
                 </button>
                 {#if e.card}<Mana cost={e.card.mana_cost} size={14} />{/if}
                 <span class="price small num muted">{e.card ? money(price(e.card, app.currency), app.currency) : 'not found'}</span>
@@ -187,6 +330,14 @@
                         {:else}
                           <button role="menuitem" onclick={() => edit({ action: 'move', card: e.name, zone: 'commander', to: 'main' })}>Move to the 99</button>
                         {/if}
+                        <div class="menu-tags" role="group" aria-label="Tags">
+                          {#each e.tags ?? [] as t (t)}
+                            <button class="tag removable small" aria-label="Remove tag {t}" onclick={() => setTags(e, (e.tags ?? []).filter((x) => x !== t))}>#{t} ×</button>
+                          {/each}
+                          <form onsubmit={(ev) => { ev.preventDefault(); if (tagDraft.trim()) { setTags(e, [...(e.tags ?? []), tagDraft.trim()]); tagDraft = ''; } }}>
+                            <input class="input small-input" list="deck-tags" placeholder="Add a tag" bind:value={tagDraft} aria-label="Add a tag to {e.name}" />
+                          </form>
+                        </div>
                         <button role="menuitem" class="danger" onclick={() => edit({ action: 'remove', card: e.name, zone: e.zone }, `Removed ${e.name}.`)}>Remove</button>
                       </div>
                     {/if}
@@ -277,6 +428,102 @@
   }
   .r-name {
     flex: 1;
+  }
+
+  .group-by {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--muted);
+  }
+  .group-by select {
+    width: auto;
+  }
+  .filters {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin: -0.5rem 0 1rem;
+  }
+  .filter {
+    max-width: 220px;
+  }
+  .tag-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .chip {
+    padding: 0.2rem 0.6rem;
+    border-radius: 99px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text-2);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .chip[aria-pressed='true'] {
+    border-color: var(--brass);
+    color: var(--brass-strong);
+  }
+  .bulk {
+    position: sticky;
+    top: 4rem;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 1rem;
+    border-color: var(--brass);
+  }
+  .bulk .danger {
+    color: var(--danger);
+  }
+  .small-input {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.85rem;
+    width: 9rem;
+  }
+  .tag {
+    margin-left: 0.3rem;
+    padding: 0 0.35rem;
+    border-radius: 99px;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 0.7rem;
+  }
+  .tag.active {
+    color: var(--brass-strong);
+  }
+  .pick {
+    opacity: 0;
+    margin: 0;
+  }
+  .entry:hover .pick,
+  .pick.on,
+  .pick:focus-visible {
+    opacity: 1;
+  }
+  .entry.picked {
+    background: color-mix(in srgb, var(--brass) 12%, transparent);
+  }
+  .menu-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    padding: 0.4rem 0.5rem;
+    border-top: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+    margin: 0.2rem 0;
+  }
+  .menu-tags .removable {
+    margin: 0;
+    border: 0;
+    cursor: pointer;
   }
 
   .layout {
@@ -464,6 +711,9 @@
       min-height: 38px;
     }
     .tools {
+      opacity: 1;
+    }
+    .pick {
       opacity: 1;
     }
     .price {

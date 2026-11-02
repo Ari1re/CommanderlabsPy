@@ -36,6 +36,7 @@ pub mod meta_sim;
 pub mod moxfield;
 pub mod precons;
 pub mod mpc;
+pub mod mpc_autofill;
 pub mod oracle_search;
 pub mod ollama;
 pub mod printings;

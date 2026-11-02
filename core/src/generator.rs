@@ -1648,6 +1648,7 @@ for template in relevant_templates
                     ai_key: ai_key.contains(&card.name.to_ascii_lowercase()),
                     roles,
                     bracket: target_bracket.bracket,
+                    card_data: if format == Format::Pdh { "PDHREC" } else { "EDHREC" },
                 },
             );
             evidence.insert(card.name.clone(), (tier, reasons));
@@ -2441,25 +2442,30 @@ notes.insert(
     if target_bracket.bracket >= 5 {
         notes.insert(
             1,
-            if reference_snapshot.cedh_deck_count > 0 {
-                format!(
+            match (format == Format::Pdh, reference_snapshot.cedh_deck_count > 0) {
+                (true, true) => format!(
+                    "Competitive Pauper sources first: card choices were scored mainly on {} competitive Pauper Commander list(s) from Archidekt for this commander; casual lists and PDHREC were used only as tiebreakers.",
+                    reference_snapshot.cedh_deck_count
+                ),
+                (true, false) => "No competitive Pauper Commander lists were found for this commander, so the power-5 build fell back to the most efficient commons, PDHREC and casual Pauper EDH lists.".to_string(),
+                (false, true) => format!(
                     "cEDH sources first: card choices were scored mainly on {} cEDH Decklist Database list(s) for this commander; casual decklists and EDHREC were used only as tiebreakers.",
                     reference_snapshot.cedh_deck_count
-                )
-            } else {
-                "No cEDH Decklist Database lists were found for this commander, so the Bracket 5 build fell back to high-power public decklists and EDHREC.".to_string()
+                ),
+                (false, false) => "No cEDH Decklist Database lists were found for this commander, so the Bracket 5 build fell back to high-power public decklists and EDHREC.".to_string(),
             },
         );
     }
 
     if reference_snapshot.deck_count() > 0 {
         notes.push(format!(
-            "Compared against {} cached/public reference deck(s) from Archidekt, Moxfield{}. Deep Learn also measured recurring card pairs and {} distinct complete Spellbook combo line(s) across the corpus.",
+            "Compared against {} cached/public reference deck(s) from {}{}. Deep Learn also measured recurring card pairs and {} distinct complete Spellbook combo line(s) across the corpus.",
             reference_snapshot.deck_count(),
-            if target_bracket.bracket >= 5 {
-                ", and cEDH Decklist Database-linked lists"
-            } else {
-                ""
+            if format == Format::Pdh { "Archidekt's Pauper EDH lists" } else { "Archidekt, Moxfield" },
+            match (target_bracket.bracket >= 5, format == Format::Pdh) {
+                (true, true) => ", competitive Pauper Commander lists first",
+                (true, false) => ", and cEDH Decklist Database-linked lists",
+                _ => "",
             },
             reference_snapshot.combo_frequency.len(),
         ));
@@ -2530,9 +2536,21 @@ notes.insert(
         use crate::deep_generation::{GenerationReport, Pick, SourceLine, TierCounts};
         let status = |n: usize| if n > 0 { "used" } else { "empty" }.to_string();
         let mut report_sources = vec![
-            SourceLine { name: "EDHREC".into(), status: status(edhrec_build_cards.len()), detail: format!("{} cards with inclusion and synergy", edhrec_build_cards.len()) },
+            SourceLine {
+                // Pauper Commander's card data comes from PDHREC.
+                name: if format == Format::Pdh { "PDHREC".into() } else { "EDHREC".into() },
+                status: status(edhrec_build_cards.len()),
+                detail: format!("{} cards with inclusion and synergy", edhrec_build_cards.len()),
+            },
         ];
-        for site in ["Archidekt", "Moxfield", "cEDH Decklist Database"] {
+        let sites: &[&str] = if format == Format::Pdh {
+            if target_bracket.bracket >= 5 { &["Archidekt", crate::references::COMPETITIVE_PAUPER_SOURCE] } else { &["Archidekt"] }
+        } else if target_bracket.bracket >= 5 {
+            &["Archidekt", "Moxfield", "cEDH Decklist Database"]
+        } else {
+            &["Archidekt", "Moxfield"]
+        };
+        for site in sites.iter().copied() {
             let n = decks_from(site);
             report_sources.push(SourceLine {
                 name: format!("{site} decklists"),

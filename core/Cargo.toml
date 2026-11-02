@@ -24,6 +24,7 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # Built-in AI engine (llama.cpp compiled in). Off by default because it needs
 # a C++ toolchain and CMake; the desktop/Android app turns it on.
 llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["common", "android-static-stdcxx"], optional = true }
+zip = { version = "9.2.2", default-features = false, features = ["deflate"] }
 
 [features]
 local-llm = ["dep:llama-cpp-2"]
