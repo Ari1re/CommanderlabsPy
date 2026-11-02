@@ -246,6 +246,8 @@ impl Engine {
             "rename_deck" => self.rename_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
             "duplicate_deck" => self.duplicate_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
             "edit_deck" => self.edit_deck(&arg::<String>(a, "name")?, a),
+            "storage" => to_value(crate::storage::report()),
+            "storage_clean" => self.storage_clean(&opt::<Vec<String>>(a, "ids").unwrap_or_default(), opt(a, "compact").unwrap_or(false)),
             "set_commanders" => self.set_commanders(
                 &arg::<String>(a, "name")?,
                 &arg::<Vec<String>>(a, "commanders")?,
@@ -998,6 +1000,34 @@ impl Engine {
         };
         self.save(name, &deck, &message)?;
         self.deck(name)
+    }
+
+    /// Clean storage categories and/or compact the card database. Decks,
+    /// settings and the game log are never touched.
+    fn storage_clean(&self, ids: &[String], compact: bool) -> Result<Value> {
+        let busy: Vec<String> = self
+            .jobs
+            .list()
+            .into_iter()
+            .filter(|j| matches!(j.status, crate::jobs::JobStatus::Running))
+            .map(|j| j.step.clone())
+            .collect();
+        if !busy.is_empty() {
+            bail!("Wait until the running task finishes ({}), then clean.", busy.join(", "));
+        }
+        let before = crate::storage::report();
+        let (_, mut problems) = crate::storage::clean(ids)?;
+        if compact {
+            if let Err(err) = self.db.lock().unwrap().compact() {
+                problems.push(format!("Compacting the card database: {err}"));
+            }
+        }
+        let after = crate::storage::report();
+        Ok(json!({
+            "freed": before.total.saturating_sub(after.total),
+            "problems": problems,
+            "storage": after,
+        }))
     }
 
     /// Moxfield-style editing: add, remove, set quantity, move between zones.

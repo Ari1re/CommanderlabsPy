@@ -42,6 +42,7 @@ pub mod printings;
 pub mod references;
 pub mod scryfall_search;
 pub mod share;
+pub mod storage;
 pub mod simulation;
 pub mod sources;
 pub mod spellbook;

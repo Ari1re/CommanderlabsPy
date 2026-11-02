@@ -72,6 +72,14 @@ pub struct CardDb {
     conn: Connection,
 }
 
+impl CardDb {
+    /// Fold the write-ahead log back in and rebuild the file without free
+    /// space (Settings → Storage → Compact).
+    pub fn compact(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+    }
+}
+
 /// A card's default printing as recorded from Scryfall Oracle bulk data.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PrintingInfo {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.35.0
+
+- **Settings → Storage: see what uses space and clean it without losing decks.** Shows Commander Lab's total size and each part: deck research (EDHREC, PDHREC, decklists), card images, printings and tags, AI web research, logs, leftover downloads, AI models and the card database. Tick what to clean, or **Select all caches** (everything but AI models), and clean.
+  - **Compact the card database** keeps it but reclaims space left over from card data updates (42 MB in one test).
+  - Decks with their history and plans, exported files, settings, the game log and your reference decks are listed as kept and are never deleted.
+  - Cleaning waits for running tasks (a build or download) to finish, and everything cleaned is downloaded or rebuilt again when needed.
+
 ## 0.34.0
 
 - **Change a deck's commander.** **⋯ → Change commander…** sets a new commander or partner pair, for example to rebuild a precon around another legend. Choose where the old commander goes (into the deck, sideboard, Considering, or out). Cards outside the new colors stay and are flagged.

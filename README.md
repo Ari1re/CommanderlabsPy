@@ -325,6 +325,15 @@ When a new build is published, Commander Lab shows an **Update** button (in the 
 
 Choose a dark, light or system theme, show prices in USD, EUR or MTGO tix, update card data, and set up the AI model.
 
+**Storage** shows how much space Commander Lab uses and what it's for, and cleans what can be downloaded or rebuilt again, without touching your decks:
+
+- **Deck research**: saved EDHREC, PDHREC, decklist and tournament data (the next build per commander re-downloads it)
+- **Card images**, **Printings and tags**, **AI web research**, **Logs**, and **Leftover downloads** (the raw card file and installed updates)
+- **AI models** (the built-in AI needs one downloaded again afterwards)
+- **Compact the card database**: kept, but compacting reclaims space left by card data updates, often tens of MB
+
+**Select all caches** picks everything except AI models. Decks, their history and plans, exported files, settings, the game log and the reference decks you added are never deleted and are listed as kept.
+
 ---
 
 ## Where your data lives

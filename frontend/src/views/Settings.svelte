@@ -6,6 +6,67 @@
 
   let checking = $state(false);
 
+  interface StorageCategory {
+    id: string;
+    label: string;
+    description: string;
+    bytes: number;
+    files: number;
+    warning: string | null;
+  }
+  interface Storage {
+    total: number;
+    cleanable: StorageCategory[];
+    card_db: number;
+    kept: { label: string; bytes: number }[];
+    other: number;
+    folder: string;
+  }
+  let storage = $state<Storage | null>(null);
+  let cleanPick = $state<string[]>([]);
+  let compact = $state(false);
+  let cleaning = $state(false);
+
+  function bytes(n: number) {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 ** 2) return `${(n / 1024).toFixed(0)} KB`;
+    if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(n < 10 * 1024 ** 2 ? 1 : 0)} MB`;
+    return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  }
+
+  async function loadStorage() {
+    try {
+      storage = await api<Storage>('storage');
+    } catch (err) {
+      app.error(err);
+    }
+  }
+
+  /** Caches only: everything cleanable except AI models (big, and needed for AI). */
+  function pickCaches() {
+    cleanPick = (storage?.cleanable ?? []).filter((c) => c.id !== 'models' && c.bytes > 0).map((c) => c.id);
+    compact = true;
+  }
+
+  let picked = $derived(
+    (storage?.cleanable ?? []).filter((c) => cleanPick.includes(c.id)).reduce((n, c) => n + c.bytes, 0),
+  );
+
+  async function cleanStorage() {
+    cleaning = true;
+    try {
+      const res = await api<{ freed: number; problems: string[]; storage: Storage }>('storage_clean', { ids: cleanPick, compact });
+      storage = res.storage;
+      cleanPick = [];
+      compact = false;
+      app.toast(res.problems.length ? `Freed ${bytes(res.freed)}. Some files couldn't be removed: ${res.problems.join('; ')}` : `Freed ${bytes(res.freed)}. Your decks weren't touched.`, res.problems.length ? 'error' : 'success');
+    } catch (err) {
+      app.error(err);
+    } finally {
+      cleaning = false;
+    }
+  }
+
   let { onUpdateCards }: { onUpdateCards: () => void } = $props();
 
   let ai = $state<any>(null);
@@ -13,6 +74,7 @@
   let starting = $state(false);
 
   onMount(async () => {
+    loadStorage();
     await app.refreshStatus();
     // Opening Settings always asks GitHub, so a new build shows up right away.
     checking = true;
@@ -251,6 +313,56 @@
   </section>
 
   <section>
+    <h2>Storage</h2>
+    {#if !storage}
+      <p class="small muted">Measuring…</p>
+    {:else}
+      <p class="dim">
+        Commander Lab uses <b>{bytes(storage.total)}</b>. Clean the caches below to free space; your decks, their history,
+        settings and game log are never deleted.
+      </p>
+      <div class="storage">
+        {#each storage.cleanable as c (c.id)}
+          <label class="store-row" class:empty={c.bytes === 0}>
+            <input type="checkbox" checked={cleanPick.includes(c.id)} disabled={c.bytes === 0}
+              onchange={(e) => (cleanPick = (e.target as HTMLInputElement).checked ? [...cleanPick, c.id] : cleanPick.filter((x) => x !== c.id))} />
+            <span class="store-text">
+              <b>{c.label}</b>
+              <span class="small dim">{c.description}</span>
+              {#if c.warning && cleanPick.includes(c.id)}<span class="small warn">{c.warning}</span>{/if}
+            </span>
+            <span class="num store-size">{bytes(c.bytes)}</span>
+          </label>
+        {/each}
+        <label class="store-row">
+          <input type="checkbox" bind:checked={compact} />
+          <span class="store-text">
+            <b>Compact the card database</b>
+            <span class="small dim">Needed for everything, so it's kept, but compacting reclaims space left over from card data updates.</span>
+          </span>
+          <span class="num store-size">{bytes(storage.card_db)}</span>
+        </label>
+        {#each storage.kept as k (k.label)}
+          <div class="store-row kept">
+            <span class="lock" aria-hidden="true"><Icon name="check" size={14} /></span>
+            <span class="store-text"><b>{k.label}</b><span class="small dim">Kept</span></span>
+            <span class="num store-size">{bytes(k.bytes)}</span>
+          </div>
+        {/each}
+      </div>
+      <div class="row">
+        <button class="btn" onclick={pickCaches}>Select all caches</button>
+        <button class="btn primary" onclick={cleanStorage} disabled={cleaning || (!cleanPick.length && !compact)}>
+          <Icon name="trash" size={15} />
+          {cleaning ? 'Cleaning…' : cleanPick.length ? `Clean ${bytes(picked)}${compact ? ' and compact' : ''}` : compact ? 'Compact' : 'Clean'}
+        </button>
+        <button class="btn ghost" onclick={loadStorage} disabled={cleaning}><Icon name="refresh" size={15} /> Measure again</button>
+      </div>
+      <p class="small muted">Stored in {storage.folder}</p>
+    {/if}
+  </section>
+
+  <section>
     <h2>Card data</h2>
     <div class="setting">
       <div>
@@ -386,6 +498,49 @@
 </div>
 
 <style>
+  .storage {
+    display: grid;
+    gap: 1px;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    background: var(--line-soft);
+    margin-bottom: 0.75rem;
+  }
+  .store-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: start;
+    padding: 0.65rem 0.85rem;
+    background: var(--panel);
+    cursor: pointer;
+  }
+  .store-row.kept {
+    cursor: default;
+    background: var(--ink-2);
+  }
+  .store-row.empty {
+    opacity: 0.55;
+  }
+  .store-row input {
+    margin-top: 0.2rem;
+  }
+  .store-text {
+    display: grid;
+    gap: 0.1rem;
+  }
+  .store-size {
+    white-space: nowrap;
+    font-weight: 700;
+  }
+  .lock {
+    color: var(--ok);
+    margin-top: 0.15rem;
+  }
+  .warn {
+    color: var(--warn, var(--brass-strong));
+  }
   .title {
     margin-bottom: 1.5rem;
   }
