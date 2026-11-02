@@ -10,7 +10,8 @@
     name,
     analysis,
     onchange,
-  }: { name: string; analysis: Analysis | null; onchange: (d: Deck) => void } = $props();
+    format = 'commander',
+  }: { name: string; analysis: Analysis | null; onchange: (d: Deck) => void; format?: string } = $props();
 
   let sim = $state<Simulation | null>(null);
   let simBusy = $state(false);
@@ -29,6 +30,33 @@
   let speed = $state<any>(null);
   let speedBusy = $state('');
   let upTarget = $state(4);
+  /** Upgrade direction: play styles picked from the commander's themes, and/or typed. */
+  let themes = $state<{ name: string; reason: string }[] | null>(null);
+  let directions = $state<string[]>([]);
+  let customDirection = $state('');
+  let themesError = $state<string | null>(null);
+  let direction = $derived([...directions, ...(customDirection.trim() ? [customDirection.trim()] : [])].slice(0, 3).join(' + '));
+
+  async function loadThemes() {
+    if (themes || !analysis?.commanders?.length) return;
+    try {
+      const res = await api<{ themes: { name: string; reason: string }[] }>('generation_themes', {
+        commander: analysis.commanders.join(' + '),
+        format,
+      });
+      themes = res.themes.slice(0, 12);
+    } catch (err) {
+      themesError = (err as Error).message;
+      themes = [];
+    }
+  }
+  $effect(() => {
+    if (analysis?.commanders?.length) loadThemes();
+  });
+
+  function toggleDirection(t: string) {
+    directions = directions.includes(t) ? directions.filter((d) => d !== t) : [...directions, t].slice(-3);
+  }
   let upgrading = $state<{ percent: number; step: string } | null>(null);
 
   async function winSpeed() {
@@ -45,7 +73,12 @@
   async function upgrade() {
     upgrading = { percent: 0, step: 'Starting' };
     try {
-      const res = await runJob<{ name: string }>('upgrade', { name, bracket: upTarget }, (j) => (upgrading = { percent: j.percent, step: j.step }), 800);
+      const res = await runJob<{ name: string }>(
+        'upgrade',
+        { name, bracket: upTarget, direction: direction || null },
+        (j) => (upgrading = { percent: j.percent, step: j.step }),
+        800,
+      );
       app.toast(`Saved ${res.name}.`, 'success');
       go({ page: 'deck', name: res.name, tab: 'cards' });
     } catch (err) {
@@ -276,23 +309,63 @@
   </section>
 
   <section class="panel box">
-    <h3>Rebuild at another bracket</h3>
-    <p class="small dim">Keeps the cards that matter to your plan and rebuilds the rest to hit the bracket. Saved as a new deck; this one isn't changed.</p>
+    <h3>Upgrade to a bracket</h3>
+    <p class="small dim">
+      Pick the bracket and the direction to take the deck. It keeps the cards that matter to your plan and rebuilds the rest.
+      Saved as a new deck; this one isn't changed.
+    </p>
     {#if upgrading}
       <div class="progress"><i style:width="{upgrading.percent}%"></i></div>
       <p class="small dim">{upgrading.step}</p>
     {:else}
-      <div class="row">
+      <label class="field">
+        <span class="small">Bracket</span>
         <select class="input up" bind:value={upTarget}>
           {#each BRACKETS as b (b.n)}<option value={b.n}>Bracket {b.n} · {b.name}</option>{/each}
         </select>
-        <button class="btn" onclick={upgrade}><Icon name="build" size={15} /> Rebuild</button>
+      </label>
+      <div class="field">
+        <span class="small">Which direction? <span class="dim">Pick up to 3, or leave empty to keep its current style.</span></span>
+        {#if themes?.length}
+          <div class="chips" role="group" aria-label="Direction">
+            {#each themes as t (t.name)}
+              <button class="chip" aria-pressed={directions.includes(t.name)} title={t.reason} onclick={() => toggleDirection(t.name)}>{t.name}</button>
+            {/each}
+          </div>
+        {:else if themes === null && analysis?.commanders?.length}
+          <p class="small muted">Loading this commander's play styles…</p>
+        {/if}
+        <input class="input" bind:value={customDirection} placeholder="Or describe it: Landfall, -1/-1 counters, Elves, Spellslinger…" aria-label="Your own direction" />
+      </div>
+      <div class="row">
+        <button class="btn primary" onclick={upgrade}><Icon name="build" size={15} /> Upgrade to Bracket {upTarget}</button>
+        <span class="small dim">{direction ? `Toward ${direction}` : 'Keeping its current style'}</span>
       </div>
     {/if}
   </section>
 {/if}
 
 <style>
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+  .chip {
+    padding: 0.3rem 0.75rem;
+    border-radius: 99px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text-2);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+    font-size: 0.85rem;
+  }
+  .chip[aria-pressed='true'] {
+    border-color: var(--brass);
+    color: var(--brass-strong);
+  }
   .summary {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));

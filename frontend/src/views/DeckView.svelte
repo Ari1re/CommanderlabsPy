@@ -2,11 +2,12 @@
   import { onDestroy, onMount } from 'svelte';
   import { api, copyText, download, openExternal, runtime } from '../lib/api';
   import { app, go } from '../lib/store.svelte';
-  import type { Analysis, Deck } from '../lib/types';
+  import type { Analysis, CardView, Deck } from '../lib/types';
   import { artCrop, FORMATS, money, price } from '../lib/util';
   import Icon from '../components/Icon.svelte';
   import Identity from '../components/Identity.svelte';
   import Modal from '../components/Modal.svelte';
+  import CommanderPicker from '../components/CommanderPicker.svelte';
   import DeckCards from './deck/DeckCards.svelte';
   import DeckAnalysis from './deck/DeckAnalysis.svelte';
   import DeckCombos from './deck/DeckCombos.svelte';
@@ -25,7 +26,42 @@
   let analysis = $state<Analysis | null>(null);
   let loadError = $state<string | null>(null);
   let menu = $state(false);
-  let dialog = $state<null | 'rename' | 'duplicate' | 'delete' | 'text' | 'export' | 'share' | 'format'>(null);
+  let dialog = $state<null | 'rename' | 'duplicate' | 'delete' | 'text' | 'export' | 'share' | 'format' | 'commander'>(null);
+  /** Change commander: the new pick(s) and where the old commander goes. */
+  let newCommanders = $state<CardView[]>([]);
+  let oldTo = $state<'main' | 'sideboard' | 'considering' | 'remove'>('main');
+  let changingCommander = $state(false);
+
+  function openCommander() {
+    menu = false;
+    newCommanders = [];
+    oldTo = 'main';
+    dialog = 'commander';
+  }
+
+  async function changeCommander() {
+    if (!deck || !newCommanders.length) return;
+    changingCommander = true;
+    try {
+      const next = await api<Deck>('set_commanders', { name: deck.name, commanders: newCommanders.map((c) => c.name), old_to: oldTo });
+      updated(next);
+      const identity = new Set(newCommanders.flatMap((c) => (c.color_identity ?? '').split('')));
+      const outside = next.entries.filter(
+        (e) => e.zone === 'main' && (e.card?.color_identity ?? '').split('').some((c) => c && !identity.has(c)),
+      ).length;
+      app.toast(
+        outside
+          ? `${newCommanders.map((c) => c.name).join(' + ')} is your commander. ${outside} card${outside === 1 ? ' is' : 's are'} outside the new colors; they're listed under the legality badge.`
+          : `${newCommanders.map((c) => c.name).join(' + ')} is your commander.`,
+        outside ? 'info' : 'success',
+      );
+      dialog = null;
+    } catch (err) {
+      app.error(err);
+    } finally {
+      changingCommander = false;
+    }
+  }
   /** Bumped on every change so tabs that summarise the deck reload. */
   let version = $state(0);
   let input = $state('');
@@ -245,6 +281,9 @@
             <div class="menu" role="menu">
               <button role="menuitem" onclick={openText}><Icon name="edit" size={16} /> Edit as text</button>
               <button role="menuitem" onclick={() => { menu = false; dialog = 'format'; }}><Icon name="cards" size={16} /> Format: {deck.format_label}</button>
+              {#if fmt !== 'canlander'}
+                <button role="menuitem" onclick={openCommander}><Icon name="build" size={16} /> Change commander…</button>
+              {/if}
               <button role="menuitem" onclick={() => { menu = false; input = deck!.name; dialog = 'rename'; }}><Icon name="edit" size={16} /> Rename</button>
               <button role="menuitem" onclick={() => { menu = false; input = `${deck!.name} copy`; dialog = 'duplicate'; }}><Icon name="copy" size={16} /> Duplicate</button>
               <button role="menuitem" class="danger" onclick={() => { menu = false; dialog = 'delete'; }}><Icon name="trash" size={16} /> Delete</button>
@@ -271,13 +310,13 @@
     {:else if tab === 'suggestions'}
       <DeckSuggestions {deck} onchange={updated} />
     {:else if tab === 'analysis'}
-      <DeckAnalysis {name} {analysis} onchange={updated} />
+      <DeckAnalysis {name} {analysis} format={fmt} onchange={updated} />
     {:else if tab === 'play'}
       <DeckGuide {name} {version} />
     {:else if tab === 'history'}
       <DeckHistory {name} {version} onchange={updated} />
     {:else if tab === 'combos'}
-      <DeckCombos {name} />
+      <DeckCombos {name} format={fmt} deckBracket={analysis?.bracket.bracket ?? 3} />
     {:else if tab === 'proxies'}
       <DeckProxies {name} />
     {:else if tab === 'sources'}
@@ -290,6 +329,48 @@
 
 {#if dialog === 'share'}
   <ShareDialog {name} onclose={() => (dialog = null)} />
+{:else if dialog === 'commander'}
+  <Modal title="Change commander" onclose={() => (dialog = null)}>
+    <div class="stack">
+      <p class="dim">
+        Pick the new commander, for example to rebuild a precon around another legend. Your other cards stay; any outside the
+        new colors are flagged so you can swap them.
+      </p>
+      {#each newCommanders as c (c.name)}
+        <div class="row picked">
+          <Identity identity={c.color_identity} />
+          <b>{c.name}</b>
+          <span class="spacer"></span>
+          <button class="btn ghost small" onclick={() => (newCommanders = newCommanders.filter((x) => x.name !== c.name))}>Remove</button>
+        </div>
+      {/each}
+      {#if newCommanders.length < 2}
+        <CommanderPicker
+          format={fmt}
+          label={newCommanders.length ? 'Partner or Background (optional)' : 'New commander'}
+          placeholder={newCommanders.length ? 'Add a partner' : 'Search for a commander'}
+          onpick={(c) => { if (!newCommanders.some((x) => x.name === c.name)) newCommanders = [...newCommanders, c]; }}
+        />
+      {/if}
+      {#if deck?.entries.some((e) => e.zone === 'commander')}
+        <label class="field">
+          <span class="small">Current commander ({deck.entries.filter((e) => e.zone === 'commander').map((e) => e.name).join(' + ')})</span>
+          <select class="input" bind:value={oldTo}>
+            <option value="main">Move it into the deck</option>
+            <option value="sideboard">Move it to the sideboard</option>
+            <option value="considering">Move it to Considering</option>
+            <option value="remove">Remove it</option>
+          </select>
+        </label>
+      {/if}
+    </div>
+    {#snippet footer()}
+      <button class="btn" onclick={() => (dialog = null)}>Cancel</button>
+      <button class="btn primary" onclick={changeCommander} disabled={!newCommanders.length || changingCommander}>
+        {changingCommander ? 'Changing…' : 'Change commander'}
+      </button>
+    {/snippet}
+  </Modal>
 {:else if dialog === 'format'}
   <Modal title="Deck format" onclose={() => (dialog = null)}>
     <div class="stack">
@@ -390,6 +471,13 @@
 {/if}
 
 <style>
+  .picked {
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+  }
   .hero {
     position: relative;
     display: grid;

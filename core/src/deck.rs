@@ -531,7 +531,9 @@ fn parse_card_line(line: &str) -> Option<(DeckEntry, bool)> {
     static TRAILING_FLAGS_RE: OnceLock<Regex> = OnceLock::new();
 
     let quantity_re = QUANTITY_RE.get_or_init(|| {
-        Regex::new(r"(?i)^\s*(\d+)\s*(?:x\s*)?(.+?)\s*$")
+        // "1x Sol Ring" / "1 x Sol Ring": the x needs a space after it, or
+        // it eats the X of "1 Xantcha, Sleeper Agent" / "1 Xander's Lounge".
+        Regex::new(r"(?i)^\s*(\d+)\s*(?:x\s+)?(.+?)\s*$")
             .expect("valid quantity regex")
     });
 
@@ -847,5 +849,25 @@ mod considering_tests {
         let back = parse_deck_text("D", &text).unwrap();
         assert_eq!(back.considering[0].name, "Ponder");
         assert_eq!(back.sideboard[0].name, "Duress");
+    }
+}
+
+#[cfg(test)]
+mod x_name_tests {
+    use super::*;
+
+    #[test]
+    fn names_starting_with_x_keep_their_x() {
+        for (line, qty, name) in [
+            ("1 Xander's Lounge", 1, "Xander's Lounge"),
+            ("1 Xantcha, Sleeper Agent", 1, "Xantcha, Sleeper Agent"),
+            ("1x Xantcha, Sleeper Agent", 1, "Xantcha, Sleeper Agent"),
+            ("2x Sol Ring", 2, "Sol Ring"),
+            ("3 x Island", 3, "Island"),
+            ("1 Xenagos, God of Revels", 1, "Xenagos, God of Revels"),
+        ] {
+            let (entry, _) = parse_card_line(line).expect(line);
+            assert_eq!((entry.quantity, entry.name.as_str()), (qty, name), "{line}");
+        }
     }
 }

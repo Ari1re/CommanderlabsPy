@@ -3,7 +3,11 @@ use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 
-const URL: &str = "https://backend.commanderspellbook.com/find-my-combos";
+/// Commander Spellbook's API. COMMANDERLAB_SPELLBOOK_URL points it elsewhere
+/// (tests serve sample combos).
+fn base_url() -> String {
+    std::env::var("COMMANDERLAB_SPELLBOOK_URL").unwrap_or_else(|_| "https://backend.commanderspellbook.com".into())
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ComboLine {
@@ -59,7 +63,7 @@ pub fn find_my_combos_where(deck: &ParsedDeck, keep: impl Fn(&ComboLine) -> bool
     });
 
     let response: Value = Client::new()
-        .post(URL)
+        .post(format!("{}/find-my-combos", base_url()))
         .json(&body)
         .send()
         .context("Could not contact Commander Spellbook")?
@@ -142,7 +146,7 @@ pub fn find_my_combos_where(deck: &ParsedDeck, keep: impl Fn(&ComboLine) -> bool
 /// `ci<=bg legal:pauper_commander`), most popular first.
 pub fn search_combos(query: &str, limit: usize) -> Result<Vec<ComboLine>> {
     let response: Value = Client::new()
-        .get("https://backend.commanderspellbook.com/variants/")
+        .get(format!("{}/variants/", base_url()))
         .query(&[("q", query), ("ordering", "-popularity"), ("limit", &limit.to_string())])
         .header("Accept", "application/json")
         .send()

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.34.0
+
+- **Change a deck's commander.** **⋯ → Change commander…** sets a new commander or partner pair, for example to rebuild a precon around another legend. Choose where the old commander goes (into the deck, sideboard, Considering, or out). Cards outside the new colors stay and are flagged.
+- **Upgrade to a bracket, in the direction you choose.** Analysis' rebuild now asks which way to take the deck: pick up to three of the commander's popular play styles or type your own ("Infect", "Landfall"). Leave it empty to keep the current style.
+- **Combos: a Legal combos tab.** Every combo legal for your commander, colors and game type, up to the bracket you pick (starting at the deck's), commander combos first, with the cards you already run marked. Also reachable before checking the deck with **Browse legal combos**.
+- **Combos only use cards the format allows.** Every piece is checked now, including cards already in the deck, so a Pauper Commander deck only sees combos made of commons (your commander always counts). Combo results saved by older versions are re-checked when the Suggestions tab, deck chat or play guide use them.
+- **Fixed: cards whose names start with X.** "1 Xander's Lounge" or "1 Xantcha, Sleeper Agent" in a list lost the X (read like "1x ...") and weren't found.
+- **Fixed: Sides layout held long ways.** With the phone sideways, panels now face the top and bottom (the long edges) instead of being turned into short strips, and they follow you when you turn the phone. Upright with 3 players, the two players along the sides get two thirds of the height.
+
 ## 0.33.2
 
 - **Search: help when nothing matches.** A search that finds nothing now suggests searches that do, with card counts; tap one to run it.

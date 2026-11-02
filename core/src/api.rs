@@ -246,6 +246,11 @@ impl Engine {
             "rename_deck" => self.rename_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
             "duplicate_deck" => self.duplicate_deck(&arg::<String>(a, "name")?, &arg::<String>(a, "new_name")?),
             "edit_deck" => self.edit_deck(&arg::<String>(a, "name")?, a),
+            "set_commanders" => self.set_commanders(
+                &arg::<String>(a, "name")?,
+                &arg::<Vec<String>>(a, "commanders")?,
+                &opt::<String>(a, "old_to").unwrap_or_else(|| "main".into()),
+            ),
             "apply_suggestion" => self.apply_suggestion(&arg::<String>(a, "name")?, opt(a, "cut"), opt(a, "add")),
             "printings" => to_value(printings(&self.canonical(&arg::<String>(a, "card")?))?),
             "set_printing" => self.set_printing(&arg::<String>(a, "name")?, a),
@@ -271,7 +276,11 @@ impl Engine {
             // --- improvement --------------------------------------------------
             "guide" => self.guide(&arg::<String>(a, "name")?),
             "recommendations" => Ok(json!({ "job": self.start_recommendations(arg(a, "name")?) })),
-            "upgrade" => Ok(json!({ "job": self.start_upgrade(arg(a, "name")?, opt(a, "bracket").unwrap_or(3))? })),
+            "upgrade" => Ok(json!({ "job": self.start_upgrade(
+                arg(a, "name")?,
+                opt(a, "bracket").unwrap_or(3),
+                opt::<String>(a, "direction").filter(|d| !d.trim().is_empty()),
+            )? })),
             "win_speed" => Ok(json!({ "job": self.start_win_speed(arg(a, "name")?) })),
 
             // --- game tracker -------------------------------------------------
@@ -301,6 +310,7 @@ impl Engine {
             "analyze" => self.analyze(&arg::<String>(a, "name")?),
             "simulate" => self.simulate(&arg::<String>(a, "name")?, opt(a, "runs").unwrap_or(50_000)),
             "combos" => Ok(json!({ "job": self.start_combos(arg(a, "name")?) })),
+            "legal_combos" => Ok(json!({ "job": self.start_legal_combos(arg(a, "name")?, opt(a, "bracket")) })),
             "history" => {
                 let path = self.deck_path(&arg::<String>(a, "name")?)?;
                 Ok(json!({ "lines": render_history_lines(&path) }))
@@ -943,6 +953,53 @@ impl Engine {
         }
     }
 
+    /// Give a deck a new commander (or partner pair), for example to rebuild a
+    /// precon around another legend. The new commanders leave the deck's other
+    /// zones; the old ones go to `old_to` ("main", "sideboard", "considering"
+    /// or "remove"). Cards outside the new colors stay, and the legality check
+    /// lists them.
+    fn set_commanders(&self, name: &str, wanted: &[String], old_to: &str) -> Result<Value> {
+        let mut deck = self.load(name)?;
+        if !deck.format.has_commander() {
+            bail!("{} decks don't have a commander.", deck.format.label());
+        }
+        let wanted: Vec<String> = wanted.iter().map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect();
+        if wanted.is_empty() || wanted.len() > 2 {
+            bail!("Choose one commander, or two that can be partners.");
+        }
+        let spec = wanted.join(" + ");
+        let new_cards = {
+            let db = self.db.lock().unwrap();
+            if deck.format == Format::Pdh {
+                resolve_pdh_commanders(&spec, &db)?
+            } else {
+                resolve_generation_commanders(&spec, &db)?
+            }
+        };
+        let new_names: Vec<String> = new_cards.iter().map(|c| c.name.clone()).collect();
+        let old: Vec<String> = deck.commanders.iter().map(|e| e.name.clone()).collect();
+        for zone in ["main", "sideboard", "considering"] {
+            let list = Self::zone_mut(&mut deck, zone)?;
+            for n in &new_names {
+                Self::take(list, n, None);
+            }
+        }
+        deck.commanders = new_names.iter().map(|n| DeckEntry { quantity: 1, name: n.clone(), ..Default::default() }).collect();
+        let moved: Vec<&String> = old.iter().filter(|o| !new_names.iter().any(|n| n.eq_ignore_ascii_case(o))).collect();
+        if old_to != "remove" {
+            for o in &moved {
+                Self::put(Self::zone_mut(&mut deck, old_to)?, o, 1);
+            }
+        }
+        let message = if old.is_empty() {
+            format!("Commander set to {}", new_names.join(" + "))
+        } else {
+            format!("Commander changed from {} to {}", old.join(" + "), new_names.join(" + "))
+        };
+        self.save(name, &deck, &message)?;
+        self.deck(name)
+    }
+
     /// Moxfield-style editing: add, remove, set quantity, move between zones.
     fn edit_deck(&self, name: &str, args: &Value) -> Result<Value> {
         let mut deck = self.load(name)?;
@@ -1055,51 +1112,16 @@ impl Engine {
             let deck = engine.load(&name)?;
             let db = CardDb::open(DB_PATH)?;
             let format = deck.format;
-            let commanders: Vec<Card> = deck.commanders.iter().filter_map(|e| db.get_card(&e.name).ok().flatten()).collect();
-            let in_deck: std::collections::HashSet<String> = deck
-                .commanders
-                .iter()
-                .chain(deck.main.iter())
-                .map(|e| db.get_card(&e.name).ok().flatten().map(|c| c.name).unwrap_or_else(|| e.name.clone()).to_lowercase())
-                .collect();
-            let identity = if format.has_commander() && !commanders.is_empty() {
-                crate::commander::combined_identity(&commanders)
-            } else {
-                let mut colors = String::new();
-                for e in &deck.main {
-                    if let Ok(Some(c)) = db.get_card(&e.name) {
-                        colors.extend(c.color_identity.chars().filter(|ch| !colors.contains(*ch)).collect::<Vec<_>>());
-                    }
-                }
-                colors
-            };
-            // Pieces the deck doesn't run yet, or None if one of them can't
-            // go in this deck (wrong format, e.g. a rare in Pauper
-            // Commander, or outside its colors).
-            let missing = |combo: &ComboLine| -> Option<Vec<String>> {
-                let mut out = Vec::new();
-                for piece in &combo.cards {
-                    let card = db.get_card(piece).ok().flatten()?;
-                    if in_deck.contains(&card.name.to_lowercase()) {
-                        continue;
-                    }
-                    if format.card_allowed(&card).is_err() || !identity_subset(&card.color_identity, &identity) {
-                        return None;
-                    }
-                    out.push(card.name);
-                }
-                Some(out)
-            };
+            let fit = ComboFit::new(&deck, &db);
+            let commanders = fit.commanders.clone();
+            let identity = fit.identity.clone();
+            let missing = |combo: &ComboLine| fit.missing(combo, &db);
             let mut report = find_my_combos_where(&deck, |combo| missing(combo).is_some())?;
 
             // Combos the deck could add: ones built around the commander
             // first, then the most played in its colors and format.
             job.progress(60, "Looking for combos you could add", "");
-            let legal = match format {
-                Format::Commander => "commander",
-                Format::Pdh => "pauper_commander",
-                Format::Canlander => "vintage",
-            };
+            let legal = spellbook_legal(format);
             let ci = if identity.is_empty() { "c".to_string() } else { identity.to_lowercase() };
             let mut queries: Vec<String> =
                 commanders.iter().map(|c| format!("card:\"{}\" ci<={ci} legal:{legal}", c.name)).collect();
@@ -1108,7 +1130,7 @@ impl Engine {
             let mut possible: Vec<(bool, ComboLine)> = Vec::new();
             for (i, query) in queries.iter().enumerate() {
                 let from_commander = i < commanders.len();
-                for mut combo in search_combos(query, if from_commander { 40 } else { 150 }).unwrap_or_default() {
+                for mut combo in search_combos_lenient(query, if from_commander { 40 } else { 150 }) {
                     if known.contains(&combo.id) || possible.iter().any(|(_, p)| p.id == combo.id) {
                         continue;
                     }
@@ -2124,11 +2146,68 @@ impl Engine {
     // Play guide and improvements
     // -----------------------------------------------------------------------
 
+    /// The last combo check, re-filtered for the deck as it is now: results
+    /// saved by older versions (or before a format change) can hold combos
+    /// with cards the format doesn't allow.
     fn cached_combos(&self, name: &str) -> Option<ComboReport> {
         let path = self.deck_path(name).ok()?;
-        fs::read_to_string(path.with_extension("combos.json"))
+        let mut report: ComboReport = fs::read_to_string(path.with_extension("combos.json"))
             .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
+            .and_then(|t| serde_json::from_str(&t).ok())?;
+        let deck = self.load(name).ok()?;
+        let db = CardDb::open(DB_PATH).ok()?;
+        let fit = ComboFit::new(&deck, &db);
+        report.variants.retain(|c| fit.missing(c, &db).is_some());
+        report.possible.retain(|c| fit.missing(c, &db).is_some());
+        report.included = report.variants.iter().filter(|v| !v.almost).count();
+        report.almost_included = report.variants.iter().filter(|v| v.almost).count();
+        Some(report)
+    }
+
+    /// Combos legal for this deck's commander, colors and format, up to a
+    /// bracket, whether or not the deck runs them yet.
+    fn start_legal_combos(self: &Arc<Self>, name: String, bracket: Option<u8>) -> u64 {
+        let engine = self.clone();
+        self.jobs.spawn("legal_combos", &name.clone(), move |job| {
+            let deck = engine.load(&name)?;
+            let db = CardDb::open(DB_PATH)?;
+            let fit = ComboFit::new(&deck, &db);
+            let legal = spellbook_legal(deck.format);
+            let ci = if fit.identity.is_empty() { "c".to_string() } else { fit.identity.to_lowercase() };
+            let mut queries: Vec<(bool, String)> =
+                fit.commanders.iter().map(|c| (true, format!("card:\"{}\" ci<={ci} legal:{legal}", c.name))).collect();
+            queries.push((false, format!("ci<={ci} legal:{legal}")));
+            let mut found: Vec<(bool, ComboLine)> = Vec::new();
+            for (i, (from_commander, query)) in queries.iter().enumerate() {
+                job.progress(
+                    (15 + i * 60 / queries.len()) as u16,
+                    if *from_commander { "Combos with your commander" } else { "Combos in your colors" },
+                    query.clone(),
+                );
+                for mut combo in search_combos_lenient(query, if *from_commander { 100 } else { 250 }) {
+                    if found.iter().any(|(_, f)| f.id == combo.id) {
+                        continue;
+                    }
+                    // Brackets are Commander's; other formats list everything.
+                    if deck.format == Format::Commander {
+                        if let (Some(max), Some(b)) = (bracket, combo.bracket) {
+                            if b > max {
+                                continue;
+                            }
+                        }
+                    }
+                    let Some(need) = fit.missing(&combo, &db) else { continue };
+                    combo.almost = need.len() == 1;
+                    combo.missing = need;
+                    found.push((*from_commander, combo));
+                }
+            }
+            found.sort_by_key(|(from_commander, c)| (!*from_commander, c.missing.len()));
+            let combos: Vec<ComboLine> = found.into_iter().map(|(_, c)| c).take(80).collect();
+            let report = ComboReport { possible: combos.clone(), ..Default::default() };
+            let cards = combo_card_images(&report, &deck, &db);
+            Ok(json!({ "combos": combos, "cards": cards, "format": deck.format.label(), "identity": fit.identity }))
+        })
     }
 
     fn cached_plan(&self, name: &str) -> Option<GamePlan> {
@@ -2303,12 +2382,17 @@ impl Engine {
         })
     }
 
-    fn start_upgrade(self: &Arc<Self>, name: String, bracket: u8) -> Result<u64> {
+    /// Rebuild a deck at `bracket`, heading in `direction` (play styles joined
+    /// with " + ", or the user's own words); without one it keeps the deck's
+    /// current main style.
+    fn start_upgrade(self: &Arc<Self>, name: String, bracket: u8, direction: Option<String>) -> Result<u64> {
         let engine = self.clone();
         Ok(self.jobs.spawn("upgrade", &name.clone(), move |job| {
             let deck = engine.load(&name)?;
             let db = CardDb::open(DB_PATH)?;
-            let theme = engine.cached_plan(&name).and_then(|p| p.primary_tags.first().cloned());
+            let theme = direction
+                .clone()
+                .or_else(|| engine.cached_plan(&name).and_then(|p| p.primary_tags.first().cloned()));
             let mut generated = generate_ai_upgrade(
                 &deck,
                 GenerationBracket::new(bracket),
@@ -2317,8 +2401,15 @@ impl Engine {
                 &db,
                 |p| job.progress(p.percent, p.step, p.detail),
             )?;
-            generated.deck.name = format!("{name} - Bracket {bracket}");
-            let saved = engine.save_generated(generated, &format!("Upgraded from {name} to Bracket {bracket}"))?;
+            generated.deck.name = match &direction {
+                Some(d) => format!("{name} - Bracket {bracket} {d}"),
+                None => format!("{name} - Bracket {bracket}"),
+            };
+            let message = match &direction {
+                Some(d) => format!("Upgraded from {name} to Bracket {bracket}, toward {d}"),
+                None => format!("Upgraded from {name} to Bracket {bracket}"),
+            };
+            let saved = engine.save_generated(generated, &message)?;
             Ok(json!({ "name": saved }))
         }))
     }
@@ -2479,5 +2570,84 @@ mod goal_tests {
         assert!(goal_from_request("More stax pieces please") == OptimizationGoal::StaxLock);
         assert!(goal_from_request("Win faster and keep the graveyard package") == OptimizationGoal::FastWin);
         assert!(goal_from_request("") == OptimizationGoal::FastWin);
+    }
+}
+
+
+/// Commander Spellbook's name for a format, for `legal:` searches.
+fn spellbook_legal(format: Format) -> &'static str {
+    match format {
+        Format::Commander => "commander",
+        Format::Pdh => "pauper_commander",
+        Format::Canlander => "vintage",
+    }
+}
+
+/// A Spellbook search; if Spellbook rejects the `legal:` term, search without
+/// it (every piece is checked against the format locally anyway).
+fn search_combos_lenient(query: &str, limit: usize) -> Vec<ComboLine> {
+    match search_combos(query, limit) {
+        Ok(found) => found,
+        Err(_) => {
+            let relaxed: Vec<&str> = query.split(' ').filter(|t| !t.starts_with("legal:")).collect();
+            search_combos(&relaxed.join(" "), limit).unwrap_or_default()
+        }
+    }
+}
+
+/// Which combos a deck can use: every piece must be legal in its format and
+/// inside its colors (the commander itself always counts, even though a
+/// Pauper Commander commander is an uncommon).
+struct ComboFit {
+    format: Format,
+    commanders: Vec<Card>,
+    identity: String,
+    in_deck: std::collections::HashSet<String>,
+}
+
+impl ComboFit {
+    fn new(deck: &ParsedDeck, db: &CardDb) -> Self {
+        let commanders: Vec<Card> = deck.commanders.iter().filter_map(|e| db.get_card(&e.name).ok().flatten()).collect();
+        let in_deck = deck
+            .commanders
+            .iter()
+            .chain(deck.main.iter())
+            .map(|e| db.get_card(&e.name).ok().flatten().map(|c| c.name).unwrap_or_else(|| e.name.clone()).to_lowercase())
+            .collect();
+        let identity = if deck.format.has_commander() && !commanders.is_empty() {
+            crate::commander::combined_identity(&commanders)
+        } else {
+            let mut colors = String::new();
+            for e in &deck.main {
+                if let Ok(Some(c)) = db.get_card(&e.name) {
+                    for ch in c.color_identity.chars() {
+                        if !colors.contains(ch) {
+                            colors.push(ch);
+                        }
+                    }
+                }
+            }
+            colors
+        };
+        Self { format: deck.format, commanders, identity, in_deck }
+    }
+
+    /// The pieces the deck doesn't run yet, or None if any piece can't be
+    /// played in it (not legal in the format, outside its colors, or unknown).
+    fn missing(&self, combo: &ComboLine, db: &CardDb) -> Option<Vec<String>> {
+        let mut out = Vec::new();
+        for piece in &combo.cards {
+            let card = db.get_card(piece).ok().flatten()?;
+            if self.commanders.iter().any(|c| c.name == card.name) {
+                continue;
+            }
+            if self.format.card_allowed(&card).is_err() || !identity_subset(&card.color_identity, &self.identity) {
+                return None;
+            }
+            if !self.in_deck.contains(&card.name.to_lowercase()) {
+                out.push(card.name);
+            }
+        }
+        Some(out)
     }
 }

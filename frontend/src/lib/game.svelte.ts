@@ -176,12 +176,22 @@ export function layoutOf(s: Pick<GameState, 'layout' | 'tableMode'>): Layout {
   return s.layout ?? (s.tableMode ? 'table' : 'facing');
 }
 
-/** Rotation the layout gives the player at `index` (players fill the top row first). */
-export function layoutRotation(layout: Layout, index: number, count: number): Rotation {
+/** Whether the screen is wider than tall (phone held long ways). */
+export const screen = $state({ wide: typeof window !== 'undefined' && window.innerWidth > window.innerHeight });
+if (typeof window !== 'undefined') {
+  const update = () => (screen.wide = window.innerWidth > window.innerHeight);
+  window.addEventListener('resize', update);
+  window.addEventListener('orientationchange', update);
+}
+
+/** Rotation the layout gives the player at `index` (players fill the top row first).
+ *  `sides` faces the screen's long edges: the left and right columns on a tall
+ *  screen, the top and bottom rows on a wide one (phone held long ways). */
+export function layoutRotation(layout: Layout, index: number, count: number, wide = screen.wide): Rotation {
   if (layout === 'facing' || count < 2) return 0;
   const top = Math.floor(count / 2);
   const inTop = index < top;
-  if (layout === 'table') return inTop ? 180 : 0;
+  if (layout === 'table' || (layout === 'sides' && wide)) return inTop ? 180 : 0;
   const rowLen = inTop ? top : count - top;
   const col = inTop ? index : index - top;
   if (rowLen >= 2 && col === 0) return 90;

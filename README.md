@@ -165,6 +165,8 @@ Every generated deck is checked before it's saved: exactly 100 cards, singleton,
 
 ### Edit
 
+**⋯ → Change commander…** gives the deck a new commander (or partner pair), for example to rebuild a precon around another legend. Choose whether the old commander moves into the deck, the sideboard, Considering, or out. Cards outside the new colors stay and are flagged so you can swap them.
+
 The **Cards** tab groups the deck by type, like Moxfield.
 
 - Type in **Add a card** to search every card and press Enter to add it.
@@ -214,11 +216,17 @@ The **Analysis** tab covers:
 - legality problems
 - suggested cuts and adds
 
-You can also run a **50,000-game opening-hand simulation**, run a **goldfish test** to see how fast the deck wins, and **rebuild the deck at another bracket** as a new copy.
+You can also run a **50,000-game opening-hand simulation**, run a **goldfish test** to see how fast the deck wins, and **upgrade the deck to a bracket** as a new copy. Pick the bracket and the direction to take it: up to three of the commander's popular play styles, or your own words ("Infect", "Landfall", "Elves"). Leave the direction empty to keep its current style.
 
 ### Combos
 
 The **Combos** tab checks Commander Spellbook for combos already in your deck and combos you're one card away from, with step-by-step instructions. Each combo shows images of its cards. A card you're missing is outlined and marked **Add this**; tap any card to see it full size and add it. The result also refines the bracket estimate.
+
+Every card in a listed combo is legal in the deck's format and colors, cards you already run included (your commander always counts). A Pauper Commander deck only sees combos made of commons.
+
+- **Have or almost have**: combos in the deck and ones you're a card away from.
+- **Could add**: combos you don't run yet, your commander's first.
+- **Legal combos**: every combo legal for your commander, colors and game type, up to the bracket you pick (B1–B5, starting at the deck's bracket; Pauper Commander and Canadian Highlander list them all). Cards you already run are marked. **Browse legal combos** works before you've checked the deck.
 
 ### Learn how to play it
 
@@ -292,7 +300,7 @@ The **Game** tab turns your phone into a life counter for 2–6 players.
 
   Modes without commander damage hide it.
 
-- **Panels face** sets the layout: **Across** (the top row faces the players opposite), **Sides** (the left and right columns face the long edges of the table) or **All me**. Change it any time from the center button, and anyone can turn just their own panel with **Rotate my panel** in their menu.
+- **Panels face** sets the layout: **Across** (the top row faces the players opposite), **Sides** (panels face the screen's long edges: the left and right columns with the phone upright, the top and bottom when it's held long ways; it follows you when you turn the phone) or **All me**. Change it any time from the center button, and anyone can turn just their own panel with **Rotate my panel** in their menu.
 
 - **Tap** the left or right side of a panel for −1 / +1. **Hold** for −10 / +10.
 - **Swipe** up or down on a panel (or tap ⋯) for that player's menu. It has **Set life total**, commander damage taken, poison, commander tax, energy, experience, rad, tickets, custom counters, Monarch/Initiative/City's blessing, background art from any card, and concede.

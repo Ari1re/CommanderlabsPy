@@ -4,7 +4,7 @@
   import type { Bracket, CardView, ComboLine } from '../../lib/types';
   import Icon from '../../components/Icon.svelte';
 
-  let { name }: { name: string } = $props();
+  let { name, format = 'commander', deckBracket = 3 }: { name: string; format?: string; deckBracket?: number } = $props();
 
   interface Report {
     included: number;
@@ -26,7 +26,41 @@
   let bracket = $state<Bracket | null>(null);
   let busy = $state(false);
   let error = $state<string | null>(null);
-  let tab = $state<'have' | 'add'>('have');
+  let tab = $state<'have' | 'add' | 'legal'>('have');
+  /** "Legal combos": every combo legal for the commander, colors and format, up to a bracket. */
+  let legal = $state<ComboLine[] | null>(null);
+  let legalBusy = $state(false);
+  let legalError = $state<string | null>(null);
+  let legalFor = $state<{ format: string; identity: string } | null>(null);
+  let maxBracket = $state<number>(5);
+  $effect.pre(() => {
+    // Start at the deck's own bracket.
+    maxBracket = Math.max(1, Math.min(5, deckBracket));
+  });
+  let isCommander = $derived(format === 'commander');
+
+  async function loadLegal() {
+    legalBusy = true;
+    legalError = null;
+    try {
+      const res = await runJob<{ combos: ComboLine[]; cards?: Record<string, ComboCard>; format: string; identity: string }>('legal_combos', {
+        name,
+        bracket: isCommander ? maxBracket : null,
+      });
+      legal = res.combos;
+      cards = { ...cards, ...(res.cards ?? {}) };
+      legalFor = { format: res.format, identity: res.identity };
+    } catch (err) {
+      legalError = (err as Error).message;
+    } finally {
+      legalBusy = false;
+    }
+  }
+
+  function openLegal() {
+    tab = 'legal';
+    if (!legal && !legalBusy) loadLegal();
+  }
   let show = $state<'all' | 'complete' | 'almost'>('all');
   let open = $state<string | null>(null);
 
@@ -54,7 +88,9 @@
   }
 
   let shown = $derived(
-    tab === 'add'
+    tab === 'legal'
+      ? (legal ?? [])
+      : tab === 'add'
       ? (report?.possible ?? [])
       : (report?.variants ?? []).filter((v) => show === 'all' || (show === 'almost' ? v.almost : !v.almost)),
   );
@@ -69,9 +105,14 @@
       suggested. The result also refines the bracket estimate.
     </p>
     {#if error}<p class="err">{error}</p>{/if}
-    <button class="btn primary" onclick={run} disabled={busy}>
-      <Icon name="combo" size={18} /> {busy ? 'Checking Commander Spellbook…' : 'Find combos'}
-    </button>
+    <div class="row">
+      <button class="btn primary" onclick={run} disabled={busy}>
+        <Icon name="combo" size={18} /> {busy ? 'Checking Commander Spellbook…' : 'Find combos'}
+      </button>
+      <button class="btn" onclick={() => { report = { included: 0, almost_included: 0, variants: [], possible: [] }; openLegal(); }}>
+        Browse legal combos
+      </button>
+    </div>
   </div>
 {:else}
   <div class="row head">
@@ -81,6 +122,9 @@
       </button>
       <button aria-pressed={tab === 'add'} onclick={() => (tab = 'add')}>
         Could add ({report.possible?.length ?? 0})
+      </button>
+      <button aria-pressed={tab === 'legal'} onclick={openLegal}>
+        Legal combos{legal ? ` (${legal.length})` : ''}
       </button>
     </div>
     <span class="spacer"></span>
@@ -97,11 +141,27 @@
         <button aria-pressed={show === 'almost'} onclick={() => (show = 'almost')}>One card away</button>
       </div>
     </div>
+  {:else if tab === 'legal'}
+    <div class="legal-head head">
+      <p class="dim small">
+        Every combo legal for {legalFor ? `${legalFor.format}${legalFor.identity ? ` in ${legalFor.identity}` : ''}` : 'this deck'}{isCommander ? `, up to Bracket ${maxBracket}` : ''}:
+        combos with your commander first, then the fewest cards to add. Cards you already run are marked.
+      </p>
+      {#if isCommander}
+        <div class="segmented" role="group" aria-label="Highest bracket">
+          {#each [1, 2, 3, 4, 5] as b (b)}
+            <button aria-pressed={maxBracket === b} onclick={() => { maxBracket = b; loadLegal(); }}>B{b}</button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+    {#if legalBusy}<p class="muted">Searching Commander Spellbook…</p>{/if}
+    {#if legalError}<p class="err">{legalError}</p>{/if}
   {:else}
     <p class="dim small head">Combos you don't run yet, legal in this deck's format and colors. Ones built around your commander come first, then the fewest cards to add.</p>
   {/if}
 
-  {#if shown.length === 0}
+  {#if shown.length === 0 && !(tab === 'legal' && legalBusy)}
     <p class="muted">No combos in this view.</p>
   {/if}
 
@@ -109,8 +169,12 @@
     {#each shown as v (v.id)}
       <li class="panel combo" class:almost={v.almost}>
         <button class="summary" onclick={() => (open = open === v.id ? null : v.id)} aria-expanded={open === v.id}>
-          {#if tab === 'add'}
-            <span class="badge">+{v.missing?.length ?? 0} card{(v.missing?.length ?? 0) === 1 ? '' : 's'}</span>
+          {#if tab === 'add' || tab === 'legal'}
+            {#if tab === 'legal' && !(v.missing?.length)}
+              <span class="badge brass">In deck</span>
+            {:else}
+              <span class="badge">+{v.missing?.length ?? 0} card{(v.missing?.length ?? 0) === 1 ? '' : 's'}</span>
+            {/if}
           {:else}
             <span class="badge" class:brass={!v.almost}>{v.almost ? '+1 card' : 'In deck'}</span>
           {/if}
@@ -156,6 +220,17 @@
 {/if}
 
 <style>
+  .legal-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+  }
+  .legal-head p {
+    margin: 0;
+    max-width: 60ch;
+  }
   .head {
     margin-bottom: 1rem;
   }

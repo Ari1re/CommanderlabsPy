@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { api } from '../lib/api';
   import { app } from '../lib/store.svelte';
-  import { cmdLethalOf, fmtClock, game, GAME_MODES, gameMode, isOut, LAYOUTS, layoutOf, MANA_COLORS, newPlayer, panelRotation, PLAYER_COLORS, type GameRecord, type Layout, type Player } from '../lib/game.svelte';
+  import { cmdLethalOf, fmtClock, game, screen, GAME_MODES, gameMode, isOut, LAYOUTS, layoutOf, MANA_COLORS, newPlayer, panelRotation, PLAYER_COLORS, type GameRecord, type Layout, type Player } from '../lib/game.svelte';
   import type { CardView, DeckSummary } from '../lib/types';
   import { symbolUrl } from '../lib/util';
   import Icon from '../components/Icon.svelte';
@@ -154,6 +154,11 @@
     return ps.length === 1 ? [ps] : [ps.slice(0, top), ps.slice(top)];
   });
   const rot = (id: number) => (s ? panelRotation(s, id) : 0);
+  /** Sides layout on a tall screen with 3 players: the lone player at the end
+   *  needs less height than the two turned sideways along the long edges. */
+  let rowSizes = $derived(
+    s && rows.length === 2 && layoutOf(s) === 'sides' && !screen.wide && rows[0].length === 1 && rows[1].length >= 2 ? '1fr 2fr' : undefined,
+  );
   let activePlayer = $derived(s?.active != null ? s.players.find((p) => p.id === s!.active) : null);
 
   function openEdit(id: number) {
@@ -236,7 +241,7 @@
 <svelte:window onkeydown={onkey} />
 
 {#if game.playing && s}
-  <div class="table" class:wide={s.players.length <= 2}>
+  <div class="table" class:wide={s.players.length <= 2} style:grid-template-rows={rowSizes}>
     {#each rows as row, r (r)}
       <div class="trow" style:--cols={row.length}>
         {#each row as p (p.id)}
