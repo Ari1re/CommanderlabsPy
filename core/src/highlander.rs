@@ -206,6 +206,7 @@ pub fn generate_highlander<F>(
     power: u8,
     use_deep_search: bool,
     budget: crate::budget::Budget,
+    requests: &crate::generator::BuildRequests,
     db: &CardDb,
     mut progress: F,
 ) -> Result<GeneratedDeck>
@@ -292,6 +293,13 @@ where
         _ => 40,
     };
     let spell_target = 100 - land_target;
+    // Requests: left-out cards leave the pool; requested cards (and every
+    // card of a requested combo) go in first, within the 10-point limit.
+    let excluded: HashSet<String> = requests.exclude.iter().map(|n| n.trim().to_ascii_lowercase()).collect();
+    pool.retain(|c| !excluded.contains(&c.name.to_ascii_lowercase()));
+    let wanted: Vec<String> = requests.include.iter().chain(requests.combos.iter().flatten()).map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
+    let mut request_notes: Vec<String> = Vec::new();
+
     let goal = targets(style);
 
     // Score once.
@@ -318,6 +326,32 @@ where
     let mut points_used = 0u32;
     let mut main = Vec::<DeckEntry>::new();
     let mut picked_points = Vec::<(String, u32)>::new();
+    let mut included_requests: Vec<String> = Vec::new();
+    for name in &wanted {
+        let Some(card) = db.get_card(name).ok().flatten() else {
+            request_notes.push(format!("Couldn't find a card named \"{name}\"."));
+            continue;
+        };
+        let Some(i) = pool.iter().position(|c| c.name == card.name) else {
+            request_notes.push(format!("Left out {}: not legal in Canadian Highlander or outside these colors.", card.name));
+            continue;
+        };
+        if used.contains(&i) {
+            continue;
+        }
+        let points = canlander_points(&card.name);
+        if points_used + points > CANLANDER_MAX_POINTS {
+            request_notes.push(format!("Left out {}: it costs {points} points, over the 10-point limit.", card.name));
+            continue;
+        }
+        used.insert(i);
+        if points > 0 {
+            points_used += points;
+            picked_points.push((card.name.clone(), points));
+        }
+        main.push(DeckEntry::new(1, card.name.clone()));
+        included_requests.push(card.name.clone());
+    }
 
     while main.len() < spell_target {
         let mut best: Option<(usize, i32)> = None;
@@ -568,6 +602,20 @@ where
     ];
     if let Some(note) = budget_note {
         notes.push(note);
+    }
+    if !requests.is_empty() {
+        let mut note = String::from("Your requests: ");
+        if !included_requests.is_empty() {
+            note.push_str(&format!("included {}. ", included_requests.join(", ")));
+        }
+        if !requests.exclude.is_empty() {
+            note.push_str(&format!("Left out on request: {}. ", requests.exclude.join(", ")));
+        }
+        if !requests.instructions.trim().is_empty() {
+            note.push_str(&format!("Instructions: \"{}\". ", requests.instructions.trim()));
+        }
+        note.push_str(&request_notes.join(" "));
+        notes.insert(0, note.trim().to_string());
     }
     if use_deep_search && !card_themes.is_empty() {
         let picked: Vec<String> = main

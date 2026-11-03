@@ -899,8 +899,31 @@ where
     Ok(generated)
 }
 
+/// The player's own requests for a build (Build screen → Your requests):
+/// cards to include ("pet cards"), combos to include, cards to leave out, and
+/// instructions in their own words.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BuildRequests {
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Each combo is its card names.
+    #[serde(default)]
+    pub combos: Vec<Vec<String>>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Given to the AI model when AI help is on, and kept in the notes.
+    #[serde(default)]
+    pub instructions: String,
+}
+
+impl BuildRequests {
+    pub fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.combos.is_empty() && self.exclude.is_empty() && self.instructions.trim().is_empty()
+    }
+}
+
 /// Extra choices for a generation run.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct GenerationOptions {
     /// Commander or Pauper Commander (Canadian Highlander has its own builder).
     pub format: Format,
@@ -913,6 +936,8 @@ pub struct GenerationOptions {
     pub ai_assist: bool,
     /// Deep learning (default) or peer-based generation.
     pub engine: crate::deep_generation::GenerationEngine,
+    /// Cards, combos and instructions the player asked for.
+    pub requests: BuildRequests,
 }
 
 /// Shortcut: Commander format, no budget, default engine (deep learning).
@@ -1038,7 +1063,68 @@ where
     // Legal in the format and inside the per-card price ceiling (worked out
     // from what's left of the budget after the commander).
     let card_budget = budget.after_spending(commanders.iter().map(crate::budget::price).sum());
-    let allowed = |card: &Card| format.card_allowed(card).is_ok() && card_budget.card_ok(card);
+    // The player's requests. Requested cards must be legal and in the colors
+    // (they're included even over the per-card budget); left-out cards never
+    // enter the pool, even through combos or the AI.
+    let requests = options.requests.clone();
+    let excluded: HashSet<String> = requests
+        .exclude
+        .iter()
+        .filter_map(|n| db.get_card(n).ok().flatten().map(|c| c.name.to_ascii_lowercase()).or_else(|| Some(n.trim().to_ascii_lowercase())))
+        .collect();
+    let mut request_notes: Vec<String> = Vec::new();
+    let mut requested_cards: Vec<Card> = Vec::new();
+    let mut requested_combos: Vec<GeneratedCombo> = Vec::new();
+    {
+        let take = |name: &str, notes: &mut Vec<String>| -> Option<Card> {
+            let Some(card) = db.get_card(name.trim()).ok().flatten() else {
+                notes.push(format!("Couldn't find a card named \"{}\".", name.trim()));
+                return None;
+            };
+            if commanders.iter().any(|c| c.name == card.name) {
+                return None;
+            }
+            if let Err(why) = format.card_allowed(&card) {
+                notes.push(format!("Left out {}: {why}.", card.name));
+                return None;
+            }
+            if !identity_subset(&card.color_identity, &identity) {
+                notes.push(format!("Left out {}: it's outside the commander's colors.", card.name));
+                return None;
+            }
+            Some(card)
+        };
+        for name in &requests.include {
+            if let Some(card) = take(name, &mut request_notes) {
+                if !requested_cards.iter().any(|c| c.name == card.name) {
+                    requested_cards.push(card);
+                }
+            }
+        }
+        for combo in &requests.combos {
+            let cards: Vec<Card> = combo.iter().filter_map(|n| take(n, &mut request_notes)).collect();
+            if cards.len() == combo.iter().filter(|n| !n.trim().is_empty()).count() && !cards.is_empty() {
+                requested_combos.push(GeneratedCombo {
+                    cards: cards.iter().map(|c| c.name.clone()).collect(),
+                    result: "Your combo".into(),
+                    source: "Your request".into(),
+                });
+                for card in cards {
+                    if !requested_cards.iter().any(|c| c.name == card.name) {
+                        requested_cards.push(card);
+                    }
+                }
+            } else {
+                request_notes.push(format!("Couldn't include the combo {}: one of its cards can't go in this deck.", combo.join(" + ")));
+            }
+        }
+    }
+    let requested_names: HashSet<String> = requested_cards.iter().map(|c| c.name.to_ascii_lowercase()).collect();
+    let allowed = |card: &Card| {
+        format.card_allowed(card).is_ok()
+            && card_budget.card_ok(card)
+            && !excluded.contains(&card.name.to_ascii_lowercase())
+    };
     let commander_entries = commanders
         .iter()
         .map(|card| DeckEntry {
@@ -1110,7 +1196,7 @@ where
     if options.ai_assist {
         progress(GenerationProgress::new(18, "Asking the AI model", "Themes, key cards and cards to avoid"));
         let edhrec_names: Vec<String> = commander_edhrec_themes.iter().take(6).map(|t| t.name.clone()).collect();
-        match crate::ai::generation_hints(&commanders, &edhrec_names, selected_theme, target_bracket.bracket, format.label()) {
+        match crate::ai::generation_hints(&commanders, &edhrec_names, selected_theme, target_bracket.bracket, format.label(), &requests) {
             Ok(hints) => {
                 progress(GenerationProgress::new(
                     20,
@@ -1479,6 +1565,42 @@ where
     // Step 5: win packages, best evidence first. Combos go in before any other
     // spell so the picker builds around them.
     let templates = combo_templates();
+
+    // Step 4b: the player's requested cards and combos go in first, so the
+    // rest of the build works around them.
+    for card in &requested_cards {
+        if main.len() >= spell_target && !card.type_line.to_ascii_lowercase().contains("land") {
+            request_notes.push(format!("No room left for {}.", card.name));
+            continue;
+        }
+        let key = card.name.to_ascii_lowercase();
+        if !used.insert(key.clone()) {
+            continue;
+        }
+        role_counts.add_card(card, classify_card(card));
+        if card_matches_theme(card, selected_theme) {
+            theme_cards += 1;
+        }
+        if card_matches_engine(card, &commander_engine_terms) {
+            commander_engine_cards += 1;
+        }
+        if edhrec_signals.contains_key(&key) {
+            edhrec_core_cards += 1;
+        }
+        main.push(DeckEntry { quantity: 1, name: card.name.clone(), ..Default::default() });
+    }
+    seeded_combos.extend(requested_combos.iter().cloned());
+    if !requested_cards.is_empty() {
+        progress(GenerationProgress::new(
+            33,
+            "Your requests",
+            format!(
+                "Included {}{}",
+                requested_cards.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "),
+                if requested_combos.is_empty() { String::new() } else { format!(" • {} combo(s) of yours", requested_combos.len()) }
+            ),
+        ));
+    }
 
     progress(GenerationProgress::new(
         34,
@@ -2537,6 +2659,7 @@ if budget.is_set() {
         .iter()
         .map(|e| e.name.to_ascii_lowercase())
         .chain(final_combos.iter().flat_map(|c| c.cards.iter()).map(|n| n.to_ascii_lowercase()))
+        .chain(requested_names.iter().cloned())
         .collect();
     if budget.total.is_some() {
         progress(GenerationProgress::new(96, "Fitting the budget", budget.describe()));
@@ -2580,6 +2703,84 @@ if budget.is_set() {
         note.push_str(&format!("Deck price: ${:.2}.", report.after));
     }
     notes.push(note.trim().to_string());
+}
+
+// The player's requests win over every later pass (bracket lock, integrity,
+// budget): put back any requested card something cut.
+if !requested_cards.is_empty() {
+    let mut protect = requested_combos.clone();
+    protect.push(GeneratedCombo { cards: requested_cards.iter().map(|c| c.name.clone()).collect(), result: String::new(), source: String::new() });
+    protect.extend(final_combos.iter().cloned());
+    for card in &requested_cards {
+        let present = deck.main.iter().any(|e| e.name.eq_ignore_ascii_case(&card.name));
+        if present {
+            continue;
+        }
+        let restored = if card.type_line.to_ascii_lowercase().contains("land") {
+            // A land replaces a basic.
+            if let Some(i) = deck.main.iter().position(|e| db.get_card(&e.name).ok().flatten().is_some_and(|c| c.is_basic)) {
+                if deck.main[i].quantity > 1 {
+                    deck.main[i].quantity -= 1;
+                } else {
+                    deck.main.remove(i);
+                }
+                deck.main.push(DeckEntry { quantity: 1, name: card.name.clone(), ..Default::default() });
+                true
+            } else {
+                false
+            }
+        } else {
+            replace_low_plan_card(&mut deck, card, db, &tags, &protect)?
+        };
+        if !restored {
+            request_notes.push(format!("Couldn't keep {} in the deck.", card.name));
+        }
+    }
+}
+if !requests.is_empty() {
+    let mut note = String::from("Your requests: ");
+    let kept: Vec<&str> = requested_cards
+        .iter()
+        .filter(|c| deck.main.iter().any(|e| e.name.eq_ignore_ascii_case(&c.name)))
+        .map(|c| c.name.as_str())
+        .collect();
+    if !kept.is_empty() {
+        note.push_str(&format!("included {}. ", kept.join(", ")));
+    }
+    let over_bracket: Vec<&str> = requested_cards
+        .iter()
+        .filter(|c| c.game_changer && target_bracket.max_game_changers() == 0 && kept.contains(&c.name.as_str()))
+        .map(|c| c.name.as_str())
+        .collect();
+    if !over_bracket.is_empty() && format.is_commander() {
+        note.push_str(&format!(
+            "{} {} a Game Changer, which Bracket {} doesn't normally allow; your request came first. ",
+            over_bracket.join(", "),
+            if over_bracket.len() == 1 { "is" } else { "are" },
+            target_bracket.bracket
+        ));
+    }
+    if !requested_combos.is_empty() {
+        note.push_str(&format!(
+            "Combos: {}. ",
+            requested_combos.iter().map(|c| c.cards.join(" + ")).collect::<Vec<_>>().join("; ")
+        ));
+    }
+    if !requests.exclude.is_empty() {
+        note.push_str(&format!("Left out on request: {}. ", requests.exclude.join(", ")));
+    }
+    if !requests.instructions.trim().is_empty() {
+        note.push_str(&format!(
+            "Instructions: \"{}\"{}. ",
+            requests.instructions.trim(),
+            if options.ai_assist { " (given to the AI model)" } else { " (turn on AI help to have the AI model follow them)" }
+        ));
+    }
+    for n in &request_notes {
+        note.push_str(n);
+        note.push(' ');
+    }
+    notes.insert(0, note.trim().to_string());
 }
 
 // Win lines: which common ones the finished deck runs and why the rest

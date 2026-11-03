@@ -15,7 +15,9 @@ Also like Moxfield:
 - Keys on the card under the pointer or focused: + / − quantity, S
   sideboard, C Considering, M deck, Delete remove, X select, / add box,
   Esc clear selection.
-- The Images view shows tags and has selection boxes too.
+- Edit mode (the Edit button, remembered): everything above only shows
+  while editing; otherwise the deck is read-only. Tags never show on the
+  cards themselves, only as the sections of Group by Tag.
 -->
 <script lang="ts">
   import { api } from '../../lib/api';
@@ -40,6 +42,30 @@ Also like Moxfield:
   let autoTagging = $state(false);
   let hovered = $state<CardView | null>(null);
   let menuFor = $state<string | null>(null);
+  /** Edit mode, like Moxfield's: off shows the deck read-only (no add box,
+   * quantity buttons, menus, tick boxes, dragging or shortcuts). Remembered. */
+  let editing = $state(readEditing());
+  function readEditing() {
+    try {
+      return localStorage.getItem('cl.cardsEditing') === '1';
+    } catch {
+      return false;
+    }
+  }
+  function setEditing(on: boolean) {
+    editing = on;
+    if (!on) {
+      selected = new Set();
+      menuFor = null;
+      query = '';
+      results = [];
+    }
+    try {
+      localStorage.setItem('cl.cardsEditing', on ? '1' : '0');
+    } catch {
+      /* private mode: just this session */
+    }
+  }
 
   // --- add-card search ----------------------------------------------------
   let query = $state('');
@@ -155,6 +181,10 @@ Also like Moxfield:
   let dropTarget = $state<string | null>(null);
 
   function startDrag(ev: DragEvent, e: Entry, group: string) {
+    if (!editing) {
+      ev.preventDefault();
+      return;
+    }
     dragging = selected.has(key(e)) ? deck.entries.filter((x) => selected.has(key(x))) : [e];
     dragFrom = group;
     ev.dataTransfer?.setData('text/plain', e.name);
@@ -215,6 +245,7 @@ Also like Moxfield:
   let addInput: HTMLInputElement | undefined = $state();
 
   function shortcut(ev: KeyboardEvent) {
+    if (!editing) return;
     const t = ev.target as HTMLElement | null;
     if (ev.ctrlKey || ev.metaKey || ev.altKey || t?.closest('input, textarea, select, [contenteditable]')) return;
     if (ev.key === '/') {
@@ -338,6 +369,10 @@ Also like Moxfield:
 <svelte:window onclick={(ev) => { if (!(ev.target as HTMLElement | null)?.closest('.menu-tags')) menuFor = null; }} onkeydown={shortcut} />
 
 <div class="toolbar">
+  <button class="btn" class:primary={!editing} aria-pressed={editing} onclick={() => setEditing(!editing)}>
+    <Icon name={editing ? 'check' : 'edit'} size={15} /> {editing ? 'Done editing' : 'Edit'}
+  </button>
+  {#if editing}
   <div class="add">
     <Icon name="search" size={17} />
     <input
@@ -364,6 +399,7 @@ Also like Moxfield:
       </ul>
     {/if}
   </div>
+  {/if}
   <div class="segmented" role="group" aria-label="View">
     <button aria-pressed={view === 'list'} onclick={() => (view = 'list')}>List</button>
     <button aria-pressed={view === 'visual'} onclick={() => (view = 'visual')}>Images</button>
@@ -380,14 +416,18 @@ Also like Moxfield:
       <option value="color">Color</option>
     </select>
   </label>
-  <button class="btn ghost" onclick={autoTag} disabled={autoTagging}>
-    <Icon name="sparkle" size={15} /> {autoTagging ? 'Tagging…' : 'Auto-tag'}
-  </button>
+  {#if editing}
+    <button class="btn ghost" onclick={autoTag} disabled={autoTagging}>
+      <Icon name="sparkle" size={15} /> {autoTagging ? 'Tagging…' : 'Auto-tag'}
+    </button>
+  {/if}
 </div>
 
 <div class="filters">
   <input class="input filter" placeholder="Filter cards" bind:value={textFilter} aria-label="Filter cards by name, type or tag" />
-  {#if allTags.length}
+  {#if !editing}
+    <!-- Tags show as sections in Group by Tag; the chips are for editing. -->
+  {:else if allTags.length}
     <div class="tag-chips" role="group" aria-label="Filter by tag">
       {#each allTags as [t, n] (t)}
         <button class="chip" aria-pressed={tagFilter === t} onclick={() => (tagFilter = tagFilter === t ? null : t)}>#{t} <span class="muted num">{n}</span></button>
@@ -398,7 +438,7 @@ Also like Moxfield:
   {/if}
 </div>
 
-{#if selected.size}
+{#if editing && selected.size}
   <div class="bulk panel" role="toolbar" aria-label="Selected cards">
     <b class="small">{selected.size} selected</b>
     <form class="row" onsubmit={(ev) => { ev.preventDefault(); if (bulkTag.trim()) bulk('add_tag', { tag: bulkTag.trim() }); }}>
@@ -438,24 +478,25 @@ Also like Moxfield:
                 class="entry"
                 class:picked={selected.has(key(e))}
                 class:dragging={dragging.some((d) => key(d) === key(e))}
-                draggable="true"
+                draggable={editing}
                 ondragstart={(ev) => startDrag(ev, e, g.title)}
                 ondragend={endDrag}
                 onmouseenter={() => { hovered = e.card ? { ...e.card, image_uri: entryImage(e) } : null; keyTarget = e; }}
                 onfocusin={() => (keyTarget = e)}
               >
-                <input type="checkbox" class="pick" class:on={selected.size > 0} checked={selected.has(key(e))} onchange={() => toggleSelect(e)} aria-label="Select {e.name}" />
+                {#if editing}
+                  <input type="checkbox" class="pick" class:on={selected.size > 0} checked={selected.has(key(e))} onchange={() => toggleSelect(e)} aria-label="Select {e.name}" />
+                {/if}
                 <span class="qty num">{e.quantity}</span>
                 <button class="name" onclick={() => e.card && app.open(e.card, { deck: deck.name, entry: e })} class:unknown={!e.card}>
                   {e.name}
                   {#if e.card?.game_changer}<span class="gc" title="Game Changer">◆</span>{/if}
                   {#if e.set_code}<span class="set small muted">{e.set_code}</span>{/if}
                   {#if e.foil}<span class="foil-tag small">foil</span>{/if}
-                  {#each (e.tags ?? []).slice(0, 2) as t (t)}<span class="tag small" class:active={tagFilter === t}>#{t}</span>{/each}
-                  {#if (e.tags?.length ?? 0) > 2}<span class="tag small" title={e.tags!.slice(2).map((t) => `#${t}`).join(' ')}>+{e.tags!.length - 2}</span>{/if}
                 </button>
                 {#if e.card}<Mana cost={e.card.mana_cost} size={14} />{/if}
                 <span class="price small num muted">{e.card ? money(price(e.card, app.currency), app.currency) : 'not found'}</span>
+                {#if editing}
                 <span class="tools">
                   {#if e.zone !== 'commander'}
                     <button class="btn ghost small icon" aria-label="Add one" onclick={() => edit({ action: 'add', card: e.name, zone: e.zone })}><Icon name="plus" size={15} /></button>
@@ -493,6 +534,7 @@ Also like Moxfield:
                     {/if}
                   </span>
                 </span>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -503,7 +545,7 @@ Also like Moxfield:
                 class="image-cell"
                 class:picked={selected.has(key(e))}
                 class:dragging={dragging.some((d) => key(d) === key(e))}
-                draggable="true"
+                draggable={editing}
                 role="listitem"
                 ondragstart={(ev) => startDrag(ev, e, g.title)}
                 ondragend={endDrag}
@@ -518,12 +560,8 @@ Also like Moxfield:
                   {/if}
                   {#if e.quantity > 1}<span class="stack-qty num">×{e.quantity}</span>{/if}
                 </button>
-                <input type="checkbox" class="pick img-pick" class:on={selected.size > 0} checked={selected.has(key(e))} onchange={() => toggleSelect(e)} aria-label="Select {e.name}" />
-                {#if e.tags?.length}
-                  <span class="img-tags">
-                    {#each e.tags.slice(0, 3) as t (t)}<span class="tag small" class:active={tagFilter === t}>#{t}</span>{/each}
-                    {#if e.tags.length > 3}<span class="tag small">+{e.tags.length - 3}</span>{/if}
-                  </span>
+                {#if editing}
+                  <input type="checkbox" class="pick img-pick" class:on={selected.size > 0} checked={selected.has(key(e))} onchange={() => toggleSelect(e)} aria-label="Select {e.name}" />
                 {/if}
               </div>
             {/each}
@@ -533,10 +571,12 @@ Also like Moxfield:
     {/each}
   </div>
 
+  {#if editing}
   <p class="keys small muted">
     Keys on the card under the pointer: <kbd>+</kbd> <kbd>−</kbd> quantity · <kbd>S</kbd> sideboard · <kbd>C</kbd> Considering ·
     <kbd>M</kbd> deck · <kbd>Del</kbd> remove · <kbd>X</kbd> select · <kbd>/</kbd> add a card. Drag cards onto a group to move or retag them.
   </p>
+  {/if}
 
   {#if view === 'list'}
     <aside class="preview">
@@ -578,21 +618,6 @@ Also like Moxfield:
     width: 20px;
     height: 20px;
     z-index: 2;
-  }
-  .img-tags {
-    position: absolute;
-    left: 4px;
-    right: 4px;
-    bottom: 8%;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 2px;
-    justify-content: center;
-    pointer-events: none;
-  }
-  .img-tags .tag {
-    background: rgba(13, 10, 18, 0.82);
-    color: #fff;
   }
   .keys {
     grid-column: 1 / -1;
@@ -731,9 +756,6 @@ Also like Moxfield:
     background: var(--panel-2);
     color: var(--muted);
     font-size: 0.7rem;
-  }
-  .tag.active {
-    color: var(--brass-strong);
   }
   .pick {
     opacity: 0;

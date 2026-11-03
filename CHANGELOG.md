@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.37.0
+
+- **Your requests when building a deck.** The Build screen has a **Your requests** section:
+  - **Always include**: pet cards, added first and kept through every later step (bracket lock, legality check, budget), even over the per-card budget.
+  - **Combos to include**: pick each card, then add the combo; it becomes one of the deck's win lines.
+  - **Leave out**: cards that never go in, even through combos, win lines or the AI.
+  - **Instructions** in your own words, followed by the AI model when "Let the AI model help" is on, and kept in the deck notes.
+  - The notes list what was included, and why anything couldn't be (not legal, outside the colors), including when a pet Game Changer goes over the bracket. Works for Canadian Highlander too, within the 10-point limit.
+- **Cards tab: edit mode.** The deck opens read-only; **Edit** shows the add box, quantity buttons, card menus, tick boxes, dragging and shortcuts, and **Done editing** hides them. The choice is remembered.
+- **Tags only as sections.** Tags no longer show on cards in the list or image view; use **Group by Tag** to see them as sections. The tag filter chips show while editing.
+
 ## 0.36.0
 
 - **Generated decks study how the commander's decks win.** Deep learn generation reads the reference decklists for recurring combos and finishers (overruns, drains, alternate wins, extra combats, damage doublers, infect) and how many decks run each. The most common finishers that fit the deck's format, colors, budget and bracket are added while it's built.

@@ -1599,6 +1599,7 @@ pub fn generation_hints(
     user_themes: &str,
     bracket: u8,
     format: &str,
+    requests: &crate::generator::BuildRequests,
 ) -> Result<GenerationHints> {
     let ai = LocalAi::connect()?;
     let commander_text = commanders
@@ -1612,7 +1613,8 @@ pub fn generation_hints(
         "Format: {format}. Target bracket: {bracket} (1 casual … 5 cEDH).\n\
          Commander:\n{commander_text}\n\n\
          Popular themes on EDHREC: {}.\n\
-         Themes the player asked for: {}.\n\n\
+         Themes the player asked for: {}.\n\
+         {}\n\
          Reply with JSON shaped like this example (different content):\n\
          {{\"themes\": [\"Tokens\", \"Aristocrats\"], \
          \"key_cards\": [\"Skullclamp\", \"Pitiless Plunderer\", \"Grave Pact\"], \
@@ -1621,6 +1623,20 @@ pub fn generation_hints(
          Give up to 3 themes, 10 to 15 key cards that make this commander's plan work, and up to 5 cards to avoid.",
         if edhrec_themes.is_empty() { "unknown".to_string() } else { edhrec_themes.join(", ") },
         if user_themes.trim().is_empty() { "none, choose for them" } else { user_themes },
+        {
+            let mut r = String::new();
+            if !requests.instructions.trim().is_empty() {
+                r.push_str(&format!("The player's instructions (follow them): {}\n", requests.instructions.trim()));
+            }
+            let wanted: Vec<String> = requests.include.iter().cloned().chain(requests.combos.iter().map(|c| c.join(" + "))).collect();
+            if !wanted.is_empty() {
+                r.push_str(&format!("Already in the deck at the player's request (build around them): {}\n", wanted.join(", ")));
+            }
+            if !requests.exclude.is_empty() {
+                r.push_str(&format!("Never suggest: {}\n", requests.exclude.join(", ")));
+            }
+            r
+        },
     );
     let value = ai.chat_json(system, &prompt)?;
     // Small models stray from the shape (numbers in a name list, a string

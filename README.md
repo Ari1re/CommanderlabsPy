@@ -149,6 +149,8 @@ Commander brackets only apply to Commander. For PDH the power level sets how har
 
 **Budget**: choose a total for the whole deck ($50, $100, $250, $500 or your own amount) and, if you like, the most any one card may cost. Prices are Scryfall's US dollar (TCGplayer) prices. The total includes the commander, which always stays. Cards over the limit never enter the build. If the finished deck still costs too much, its most expensive cards are swapped for cheaper ones that do the same job at a similar mana value, and expensive lands become cheaper lands in your colors or basics. The deck's notes list the swaps and the final price. Budgets work in every format.
 
+**Your requests** (on the Build screen): cards to **always include** (your pet cards), **combos to include** (pick each card, then add the combo), cards to **leave out**, and **instructions** in your own words. Requested cards go in first and are kept through every later step, even over the per-card budget or a bracket's Game Changer limit (the notes say so). They must be legal and in your colors, and anything that can't go in is explained in the deck notes. Left-out cards never enter the build. Instructions are followed by the AI model when **Let the AI model help** is on, and kept in the notes either way.
+
 **Deep card search** (a switch on the Build screen) reads the rules text of every card in Scryfall's database for cards that fit your play styles, including older cards no decklist runs. A -1/-1 counters deck picks up wither and persist creatures, for example. The deck's notes say which cards came from the search and why.
 
 At **Bracket 5 (cEDH)**, the generator builds from cEDH Decklist Database lists first; casual decklists and EDHREC only break ties. The deck's notes say which sources were used.
@@ -167,7 +169,7 @@ Every generated deck is checked before it's saved: exactly 100 cards, singleton,
 
 **⋯ → Change commander…** gives the deck a new commander (or partner pair), for example to rebuild a precon around another legend. Choose whether the old commander moves into the deck, the sideboard, Considering, or out. Cards outside the new colors stay and are flagged so you can swap them.
 
-The **Cards** tab is a Moxfield-style editor.
+The **Cards** tab is a Moxfield-style editor. It opens read-only; tap **Edit** to change the deck (and **Done editing** to finish). Tags don't show on the cards; choose **Group by Tag** to see the deck in tag sections.
 
 - Type in **Add a card** to search every card and press Enter to add it. Like Moxfield, it takes a quantity and tags: `2x Sol Ring #Ramp #Mana`.
 - **Group by** type, tag, mana value or color. Tag chips filter the list; **Auto-tag** tags every card by its role.

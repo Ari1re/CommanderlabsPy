@@ -18,6 +18,7 @@ Things to work on:
   import CommanderPicker from '../components/CommanderPicker.svelte';
   import Identity from '../components/Identity.svelte';
   import Icon from '../components/Icon.svelte';
+  import CardInput from '../components/CardInput.svelte';
 
   interface Theme {
     name: string;
@@ -35,6 +36,17 @@ Things to work on:
   let format = $state<FormatId>('commander');
   let deep = $state(false);
   let aiAssist = $state(false);
+  /** Your requests: pet cards, combos to include, cards to leave out, instructions. */
+  let include = $state<string[]>([]);
+  let combos = $state<string[][]>([]);
+  let comboDraft = $state<string[]>([]);
+  let exclude = $state<string[]>([]);
+  let instructions = $state('');
+  let requestCount = $derived(include.length + combos.length + exclude.length + (instructions.trim() ? 1 : 0));
+
+  function addUnique(list: string[], name: string) {
+    return list.some((n) => n.toLowerCase() === name.toLowerCase()) ? list : [...list, name];
+  }
   /** An AI model the generator can ask: a downloaded built-in model, a running server, or an online API key. */
   let aiReady = $state(false);
   api<any>('ai_status')
@@ -194,6 +206,7 @@ Things to work on:
           colors: colorSpec,
           budget_total: total,
           budget_card: cardCap,
+          requests: { include, combos, exclude, instructions },
         },
         (j) => (job = j),
         800,
@@ -435,6 +448,63 @@ Things to work on:
       </label>
       {/if}
 
+      <details class="requests panel" open={requestCount > 0}>
+        <summary>
+          <b>Your requests</b>
+          <span class="small dim">{requestCount ? `${requestCount} added` : 'Pet cards, combos, cards to leave out, instructions'}</span>
+        </summary>
+        <div class="stack">
+          <div class="req">
+            <span class="small"><b>Always include</b> <span class="dim">your pet cards; they're added first and kept through every later step</span></span>
+            <CardInput label="Card to include" placeholder="Search a card to include" onpick={(n) => (include = addUnique(include, n))} />
+            {#if include.length}
+              <div class="req-chips">
+                {#each include as n (n)}<button class="req-chip" onclick={() => (include = include.filter((x) => x !== n))} aria-label="Remove {n}">{n} ×</button>{/each}
+              </div>
+            {/if}
+          </div>
+
+          {#if format !== 'canlander'}
+            <div class="req">
+              <span class="small"><b>Combos to include</b> <span class="dim">pick each card, then add the combo</span></span>
+              <div class="row combo-row">
+                <CardInput label="Combo card" placeholder={comboDraft.length ? 'Next card in the combo' : 'First card in the combo'} onpick={(n) => (comboDraft = addUnique(comboDraft, n))} />
+                <button class="btn" disabled={comboDraft.length < 2} onclick={() => { combos = [...combos, comboDraft]; comboDraft = []; }}>Add combo</button>
+              </div>
+              {#if comboDraft.length}
+                <div class="req-chips">
+                  <span class="small dim">New combo:</span>
+                  {#each comboDraft as n, i (n)}{#if i > 0}<span class="dim">+</span>{/if}<button class="req-chip" onclick={() => (comboDraft = comboDraft.filter((x) => x !== n))}>{n} ×</button>{/each}
+                </div>
+              {/if}
+              {#if combos.length}
+                <div class="req-chips">
+                  {#each combos as c, i (i)}<button class="req-chip combo" onclick={() => (combos = combos.filter((_, j) => j !== i))} aria-label="Remove combo {c.join(' + ')}">{c.join(' + ')} ×</button>{/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <div class="req">
+            <span class="small"><b>Leave out</b> <span class="dim">cards you never want in this deck</span></span>
+            <CardInput label="Card to leave out" placeholder="Search a card to leave out" onpick={(n) => (exclude = addUnique(exclude, n))} />
+            {#if exclude.length}
+              <div class="req-chips">
+                {#each exclude as n (n)}<button class="req-chip out" onclick={() => (exclude = exclude.filter((x) => x !== n))} aria-label="Remove {n}">{n} ×</button>{/each}
+              </div>
+            {/if}
+          </div>
+
+          <label class="req">
+            <span class="small"><b>Instructions</b>
+              <span class="dim">{aiReady && format !== 'canlander' ? 'followed by the AI model when "Let the AI model help" is on, and kept in the deck notes' : 'kept in the deck notes; set up an AI model in Settings to have it follow them'}</span>
+            </span>
+            <textarea class="input" rows="3" bind:value={instructions} placeholder="Lean on tokens over counters. No infinite combos. Keep lots of instant-speed interaction."></textarea>
+          </label>
+          <p class="small muted">Requested cards must be legal and in your colors; anything that can't go in is explained in the deck notes. They're included even over the per-card budget.</p>
+        </div>
+      </details>
+
       {#if aiReady && format !== 'canlander'}
         <label class="deep panel">
           <input type="checkbox" bind:checked={aiAssist} />
@@ -474,6 +544,50 @@ Things to work on:
 {/if}
 
 <style>
+  .requests {
+    padding: 0.8rem 1rem;
+  }
+  .requests summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    cursor: pointer;
+  }
+  .requests .stack {
+    margin-top: 0.75rem;
+  }
+  .req {
+    display: grid;
+    gap: 0.4rem;
+  }
+  .combo-row {
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+  }
+  .req-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .req-chip {
+    padding: 0.25rem 0.65rem;
+    border-radius: 99px;
+    border: 1px solid var(--brass);
+    background: var(--panel-2);
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+  .req-chip.out {
+    border-color: var(--danger);
+  }
+  .req-chip.combo {
+    border-style: dashed;
+  }
   .head {
     display: grid;
     gap: 0.5rem;

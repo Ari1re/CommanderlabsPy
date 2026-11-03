@@ -489,6 +489,7 @@ impl Engine {
                         &opt::<String>(a, "engine")
                             .unwrap_or_else(|| read_settings().get("generation").and_then(Value::as_str).unwrap_or_default().to_string()),
                     ),
+                    requests: opt(a, "requests").unwrap_or_default(),
                 },
                 opt(a, "colors").unwrap_or_default(),
             )? })),
@@ -1742,7 +1743,7 @@ impl Engine {
         Ok(self.jobs.spawn("generate", &label, move |job| {
             let db = CardDb::open(DB_PATH)?;
             let generated = if options.format == Format::Canlander {
-                generate_highlander(&colors, &theme, bracket, options.deep_search, options.budget, &db, |p| {
+                generate_highlander(&colors, &theme, bracket, options.deep_search, options.budget, &options.requests, &db, |p| {
                     job.progress(p.percent, p.step, p.detail)
                 })?
             } else {
@@ -1750,7 +1751,7 @@ impl Engine {
                     &commander,
                     &theme,
                     GenerationBracket::new(bracket),
-                    options,
+                    options.clone(),
                     &db,
                     |p| job.progress(p.percent, p.step, p.detail),
                 )?
@@ -1829,7 +1830,7 @@ impl Engine {
             );
 
             let theme = themes.join(crate::archetype::THEME_SEPARATOR);
-            let mut generated = generate_highlander(&colors, &theme, power, true, crate::budget::Budget::default(), &db, |p| {
+            let mut generated = generate_highlander(&colors, &theme, power, true, crate::budget::Budget::default(), &Default::default(), &db, |p| {
                 job.progress(p.percent.max(12), p.step, p.detail)
             })?;
 
