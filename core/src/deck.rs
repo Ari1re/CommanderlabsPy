@@ -1,3 +1,18 @@
+//! Decklists: parsing, writing and the deck data types.
+//!
+//! How it fits: decks are plain text files (Moxfield-style) so they survive
+//! outside the app. [`parse_deck_text`] reads nearly any export format:
+//! "Commander"/"Deck" headings, `*CMDR*`, printings `(SET) 123`, `*F*` foil
+//! and Moxfield tags `#Ramp`. [`deck_to_text`] / [`write_deck_file`] write
+//! them back, keeping printings and tags. [`DeckEntry`] is one line;
+//! [`ParsedDeck`] holds the zones (commanders, main, sideboard, considering).
+//!
+//! Things to work on:
+//! - The line parser is a series of regexes and string cuts; the order of
+//!   steps matters (foil before tags bit us). A small tokenizer would be
+//!   sturdier.
+//! - Archidekt-style categories ("[Ramp]") could map to tags on import.
+
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -31,6 +46,7 @@ pub struct DeckEntry {
 }
 
 impl DeckEntry {
+    /// A plain line: no printing, foil or tags.
     pub fn new(quantity: u32, name: impl Into<String>) -> Self {
         Self { quantity, name: name.into(), ..Default::default() }
     }
@@ -67,10 +83,13 @@ pub struct ParsedDeck {
     pub considering: Vec<DeckEntry>,
 }
 
+/// Serde helper: Commander is the default, so it isn't written out.
 fn is_commander_format(f: &crate::format::Format) -> bool {
     f.is_commander()
 }
 
+/// Which part of a list a line belongs to while parsing ("Ignore" covers
+/// tokens, companions, wishlists).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
     Main,
@@ -80,6 +99,9 @@ enum Section {
     Ignore,
 }
 
+/// A card line as read, with its section, whether it carried a commander
+/// marker, and which blank-line-separated block it was in (used to guess
+/// the commander when the list doesn't say).
 #[derive(Debug, Clone)]
 struct ParsedLine {
     entry: DeckEntry,
@@ -88,6 +110,8 @@ struct ParsedLine {
     block: usize,
 }
 
+/// Every deck file in the folder (.txt, .dek, .deck), named by file name,
+/// sorted by name. Sidecars (.plan.json…) are skipped by extension.
 pub fn load_deck_files(directory: &str) -> Result<Vec<DeckFile>> {
     fs::create_dir_all(directory)?;
 
@@ -128,6 +152,7 @@ pub fn load_deck_files(directory: &str) -> Result<Vec<DeckFile>> {
     Ok(decks)
 }
 
+/// Read and parse a deck file; the file name becomes the deck name.
 pub fn parse_deck_file(path: &Path) -> Result<ParsedDeck> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("Could not read {}", path.display()))?;
@@ -140,6 +165,17 @@ pub fn parse_deck_file(path: &Path) -> Result<ParsedDeck> {
     parse_deck_text(name, &text)
 }
 
+/// Parse nearly any decklist export. Reads line by line: comments
+/// (`// Format: …` sets the format), section headings, card lines. Then
+/// decides the commander, in order:
+/// 1. a "Commander" section or a `*CMDR*`-style marker;
+/// 2. one or two cards whose name matches the deck/file name exactly;
+/// 3. a last block of 1–2 single cards after 80+ cards (how many exports
+///    put the commander at the end);
+/// 4. otherwise no commander.
+/// TODO: guesses 2 and 3 also run for Canadian Highlander lists, which have
+/// no commander; skipping them when `format` isn't a commander format would
+/// be safer.
 pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
     let filename_hints = commander_filename_hints(deck_name);
     let mut format = crate::format::Format::Commander;
@@ -196,6 +232,8 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
         });
     }
 
+    // Sideboard and Considering lines are set aside; the rest decide the
+    // commander below.
     let mut sideboard = Vec::new();
     let mut considering = Vec::new();
     let mut included = Vec::new();
@@ -335,6 +373,9 @@ pub fn parse_deck_text(deck_name: &str, text: &str) -> Result<ParsedDeck> {
     })
 }
 
+/// Write a deck in Commander Lab's own format (Moxfield-compatible): an
+/// optional `// Format:` line, then Commander, Deck, Sideboard and
+/// Considering sections, each line with printing, foil and tags.
 pub fn deck_to_text(deck: &ParsedDeck) -> String {
     let mut out = String::new();
 
@@ -389,6 +430,7 @@ pub struct ExportPrinting {
     pub collector_number: Option<String>,
 }
 
+/// One export line: the deck's own printing if set, else the default one.
 fn moxfield_line(entry: &DeckEntry, printing: &ExportPrinting) -> String {
     DeckEntry {
         quantity: entry.quantity,
@@ -438,6 +480,7 @@ where
     out
 }
 
+/// Save a deck as text (no versioning; `Engine::commit` does that).
 pub fn write_deck_file(path: &Path, deck: &ParsedDeck) -> Result<()> {
     fs::write(path, deck_to_text(deck))
         .with_context(|| format!("Could not write {}", path.display()))?;
@@ -445,6 +488,8 @@ pub fn write_deck_file(path: &Path, deck: &ParsedDeck) -> Result<()> {
     Ok(())
 }
 
+/// A name that's safe as a file name on every platform: letters, digits,
+/// spaces, `-`, `_`, `,` and `'`; everything else becomes `_`.
 pub fn safe_deck_filename(name: &str) -> String {
     let cleaned = name
         .chars()
@@ -471,6 +516,8 @@ pub fn safe_deck_filename(name: &str) -> String {
     }
 }
 
+/// Recognise a section heading in any common spelling ("Commander:",
+/// "[Sideboard]", "Maybeboard"…).
 fn detect_section_header(line: &str) -> Option<Section> {
     let heading = line
         .trim_matches('/')
@@ -527,12 +574,17 @@ fn format_comment(line: &str) -> Option<crate::format::Format> {
     key.trim().eq_ignore_ascii_case("format").then(|| crate::format::Format::parse(value))
 }
 
+/// Lines starting with //, # or ; are comments.
 fn is_comment(line: &str) -> bool {
     line.starts_with("//")
         || line.starts_with('#')
         || line.starts_with(';')
 }
 
+/// Parse "1 Name (SET) 123 *F* #Tag" (and "1x Name", markers, Arena-style
+/// suffixes). Returns the entry and whether it was marked as a commander.
+/// Order matters: commander markers, trailing flags, tags, printing, flags
+/// again, then name clean-up.
 fn parse_card_line(line: &str) -> Option<(DeckEntry, bool)> {
     static QUANTITY_RE: OnceLock<Regex> = OnceLock::new();
     static SET_SUFFIX_RE: OnceLock<Regex> = OnceLock::new();
@@ -645,6 +697,7 @@ fn parse_card_line(line: &str) -> Option<(DeckEntry, bool)> {
     ))
 }
 
+/// `*CMDR*`, `[Commander]`, `{cmdr}` and similar markers.
 fn contains_commander_marker(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
 
@@ -660,6 +713,7 @@ fn contains_commander_marker(value: &str) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
+/// Remove those markers from a card name.
 fn strip_commander_markers(value: &str) -> String {
     let mut result = value.to_string();
 
@@ -683,6 +737,7 @@ fn strip_commander_markers(value: &str) -> String {
     result.trim().to_string()
 }
 
+/// "Front / Back" or "Front /// Back" → "Front // Back".
 pub fn normalize_multiface_separator(value: &str) -> String {
     static SINGLE_SLASH_RE: OnceLock<Regex> = OnceLock::new();
 
@@ -694,6 +749,7 @@ pub fn normalize_multiface_separator(value: &str) -> String {
     re.replace_all(value.trim(), " // ").to_string()
 }
 
+/// Squeeze runs of whitespace to single spaces.
 fn collapse_spaces(value: &str) -> String {
     value
         .split_whitespace()
@@ -701,6 +757,8 @@ fn collapse_spaces(value: &str) -> String {
         .join(" ")
 }
 
+/// Possible commander names from a deck name: split on " + ", " & " or
+/// " | " for partner decks, else the whole name.
 fn commander_filename_hints(deck_name: &str) -> Vec<String> {
     for separator in [" + ", " & ", " | "] {
         if deck_name.contains(separator) {
@@ -715,6 +773,8 @@ fn commander_filename_hints(deck_name: &str) -> Vec<String> {
     vec![normalize_for_matching(deck_name)]
 }
 
+/// Does a deck-name hint name this card? Exact match on the full name or a
+/// face, or a face that starts with the hint ("Kefka" → "Kefka, Court Mage").
 fn filename_matches_card(filename_hint: &str, card_name: &str) -> bool {
     if filename_hint.is_empty() {
         return false;
@@ -741,6 +801,7 @@ fn filename_matches_card(filename_hint: &str, card_name: &str) -> bool {
     false
 }
 
+/// Lowercase letters/digits separated by single spaces, for name hints.
 fn normalize_for_matching(value: &str) -> String {
     value
         .chars()
@@ -823,6 +884,7 @@ mod tests {
         assert_eq!(deck.sideboard.len(), 1);
     }
 
+    /// Test helper: a sample decklist from the test fixtures folder, if present.
     fn fixture(name: &str) -> Option<String> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")

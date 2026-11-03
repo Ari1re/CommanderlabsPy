@@ -1,3 +1,12 @@
+//! Ollama as the local AI provider.
+//!
+//! How it fits: [`OllamaRuntime`] checks for Ollama, can start it, and pulls
+//! the configured model. `ai.rs` talks to it over HTTP. Hidden on Android.
+//!
+//! Things to work on:
+//! - Model presets are Qwen2.5 tags; newer small models may be better for
+//!   card text. Keep presets in one table shared with the built-in engine.
+
 use crate::{
     ai::{AiConfig, AiProvider},
     logging,
@@ -28,6 +37,7 @@ pub enum OllamaStartupState {
 }
 
 impl OllamaStartupState {
+    /// What happened when starting Ollama, in words.
     pub fn status_line(&self) -> String {
         match self {
             Self::Disabled =>
@@ -66,6 +76,10 @@ pub struct OllamaRuntime {
 }
 
 impl OllamaRuntime {
+    /// Make Ollama usable (only when it's the selected provider): use an
+    /// external address as is; otherwise find or (Windows only) install Ollama,
+    /// start `ollama serve`, wait until it answers, and pull the model if
+    /// missing. Always returns a runtime whose state says what happened.
     pub fn ensure_running() -> Self {
         let config = AiConfig::load_or_create();
 
@@ -346,6 +360,7 @@ impl OllamaRuntime {
         }
     }
 
+    /// Build the runtime and log its state.
     fn new(
         child: Option<Child>,
         managed_background_server: bool,
@@ -366,6 +381,7 @@ impl OllamaRuntime {
         }
     }
 
+    /// Can requests be sent now?
     pub fn is_ready(&self) -> bool {
         let server_ready = matches!(
             self.state,
@@ -378,6 +394,7 @@ impl OllamaRuntime {
         server_ready && self.model_status.contains("ready")
     }
 
+    /// State plus model status, for Settings.
     pub fn status_line(&self) -> String {
         format!(
             "{} • {}",
@@ -386,6 +403,8 @@ impl OllamaRuntime {
         )
     }
 
+    /// Stop the Ollama server if Commander Lab started it (not one that was
+    /// already running).
     pub fn shutdown(&mut self) {
         if self.child.is_none()
             && self.managed_background_server
@@ -459,11 +478,13 @@ impl OllamaRuntime {
 }
 
 impl Drop for OllamaRuntime {
+    /// Stop the server when the runtime is dropped.
     fn drop(&mut self) {
         self.shutdown();
     }
 }
 
+/// Is this Ollama's default local address (one the app may start itself)?
 fn is_local_ollama_url(url: &str) -> bool {
     let lower = url
         .trim()
@@ -474,6 +495,7 @@ fn is_local_ollama_url(url: &str) -> bool {
         || lower == "http://localhost:11434"
 }
 
+/// Does Ollama answer at this address?
 fn server_responding(base_url: &str) -> bool {
     let Ok(client) = Client::builder()
         .timeout(Duration::from_millis(900))
@@ -497,6 +519,7 @@ fn server_responding(base_url: &str) -> bool {
         .is_some()
 }
 
+/// Is the model already pulled (`/api/tags`)?
 fn model_available(
     base_url: &str,
     requested_model: &str,
@@ -549,6 +572,7 @@ fn model_available(
         .unwrap_or(false)
 }
 
+/// Pull the model if it isn't there yet.
 fn ensure_model_available(
     base_url: &str,
     model: &str,
@@ -578,6 +602,7 @@ fn ensure_model_available(
     }
 }
 
+/// Download a model through Ollama (`/api/pull`), printing progress.
 fn pull_model_with_progress(
     base_url: &str,
     model: &str,
@@ -674,6 +699,7 @@ fn pull_model_with_progress(
     }
 }
 
+/// Windows: install Ollama with its official PowerShell script.
 #[cfg(windows)]
 fn install_ollama_if_supported() -> Result<bool, String> {
     println!(
@@ -721,11 +747,13 @@ fn install_ollama_if_supported() -> Result<bool, String> {
     Ok(true)
 }
 
+/// Other platforms: no automatic install (false = not installed).
 #[cfg(not(windows))]
 fn install_ollama_if_supported() -> Result<bool, String> {
     Ok(false)
 }
 
+/// After installing, wait for the program to appear.
 fn wait_for_ollama_executable(
     timeout: Duration,
 ) -> Option<PathBuf> {
@@ -744,6 +772,7 @@ fn wait_for_ollama_executable(
     }
 }
 
+/// Where Ollama is installed: the usual Windows folders, else on PATH.
 fn find_ollama_executable() -> Option<PathBuf> {
     if let Some(path) = find_in_path() {
         return Some(path);
@@ -787,6 +816,7 @@ fn find_ollama_executable() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
+/// Look for `ollama` on PATH.
 fn find_in_path() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -834,6 +864,7 @@ fn find_in_path() -> Option<PathBuf> {
     }
 }
 
+/// Start `ollama serve` in the background with its output captured.
 fn spawn_ollama_server(
     executable: &Path,
 ) -> std::io::Result<Child> {

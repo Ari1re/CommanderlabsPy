@@ -4,14 +4,21 @@
 //! cards and counts. Printings and the sideboard are optional extras.
 //!
 //! Formats (all decode on any device, no server involved):
-//! * `CLD2:` + Base45(deflate(payload)) — used in QR codes. Base45 only uses
-//!   QR "alphanumeric" characters, which pack ~30% denser than bytes.
+//! * `commanderlab://deck/CLD2.…` — what QR codes hold: the text code as an
+//!   app link, so a phone camera offers to open it in Commander Lab (the app
+//!   registers the scheme; see desktop/src-tauri). About 30% denser than the
+//!   old Base45 QR, but a plain-text QR gave "no app can open this".
+//! * `CLD2:` + Base45(deflate(payload)) — older QR codes, still accepted.
 //! * `CLD2.` + base64url(deflate(payload)) — the copyable text code (no
 //!   spaces, survives chat apps).
 //! * `CLD1.` — older JSON codes, still accepted.
 //!
 //! Payload: `name \x1f decklist`, where the decklist is the normal text
 //! format.
+//!
+//! Things to work on:
+//! - Tags travel with the extras (like printings), which makes QR codes
+//!   denser. If codes get too big to scan, drop tags before printings.
 
 use crate::deck::{deck_to_text, DeckEntry, ParsedDeck};
 use anyhow::{anyhow, bail, Context, Result};
@@ -24,6 +31,8 @@ use std::io::{Read, Write};
 const V1: &str = "CLD1.";
 const V2_TEXT: &str = "CLD2.";
 const V2_QR: &str = "CLD2:";
+/// Prefix that makes a QR code an app link (`commanderlab://deck/<code>`).
+pub const APP_LINK: &str = "commanderlab://deck/";
 const SEP: char = '\u{1f}';
 const BASE45: &[u8; 45] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
 
@@ -56,6 +65,9 @@ pub fn essentials(deck: &ParsedDeck, extras: bool) -> ParsedDeck {
     }
 }
 
+/// Deflate "name␟decklist" at best compression. The "Deck" header line is
+/// dropped first (`parse_v2` puts it back), since every byte makes the QR
+/// denser.
 fn compressed(name: &str, deck: &ParsedDeck) -> Result<Vec<u8>> {
     // "Deck" header and the trailing newline carry no information.
     let text = deck_to_text(deck).replacen("\nDeck\n", "\n", 1);
@@ -68,16 +80,17 @@ fn compressed(name: &str, deck: &ParsedDeck) -> Result<Vec<u8>> {
 pub struct ShareCodes {
     /// Copyable text code.
     pub text: String,
-    /// Denser code for the QR image.
+    /// What the QR image holds: the text code as a commanderlab:// link.
     pub qr: String,
 }
 
+/// Both share codes for a deck from the same compressed bytes: base64url text
+/// to copy, and Base45 for the QR. `extras` keeps printings, sideboard and
+/// tags.
 pub fn encode_deck(name: &str, deck: &ParsedDeck, extras: bool) -> Result<ShareCodes> {
     let bytes = compressed(name, &essentials(deck, extras))?;
-    Ok(ShareCodes {
-        text: format!("{V2_TEXT}{}", URL_SAFE_NO_PAD.encode(&bytes)),
-        qr: format!("{V2_QR}{}", base45_encode(&bytes)),
-    })
+    let text = format!("{V2_TEXT}{}", URL_SAFE_NO_PAD.encode(&bytes));
+    Ok(ShareCodes { qr: format!("{APP_LINK}{text}"), text })
 }
 
 /// Legacy text code (kept for tests / older callers).
@@ -88,6 +101,7 @@ pub fn encode(name: &str, deck_text: &str) -> Result<String> {
     Ok(format!("{V1}{}", URL_SAFE_NO_PAD.encode(enc.finish()?)))
 }
 
+/// Undo the deflate, capped at 4 MB so a crafted code can't blow up memory.
 fn inflate(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     DeflateDecoder::new(bytes)
@@ -126,12 +140,17 @@ pub fn decode(code: &str) -> Result<(String, String)> {
     bail!("That isn't a Commander Lab share code.")
 }
 
+/// The base64url characters after the prefix, stopping at the first other
+/// character (end of a pasted message, a quote, a space).
 fn b64_body(s: &str) -> String {
     s.chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .collect()
 }
 
+/// Split the inflated payload into (name, deck text) and rebuild what
+/// `compressed` stripped: the "Deck" header after the commander block, and a
+/// leading "// Format:" line kept in front.
 fn parse_v2(bytes: &[u8]) -> Result<(String, String)> {
     let text = String::from_utf8(bytes.to_vec()).context("The share code is damaged.")?;
     let (name, deck) = text.split_once(SEP).ok_or_else(|| anyhow!("The share code is damaged."))?;
@@ -154,6 +173,10 @@ fn parse_v2(bytes: &[u8]) -> Result<(String, String)> {
     Ok((name.to_string(), format!("{prefix}{deck}")))
 }
 
+/// RFC 9285 Base45: two bytes become three characters (one byte becomes two),
+/// all from the QR alphanumeric set.
+// Only tests make Base45 now (to check old QR codes still decode).
+#[cfg_attr(not(test), allow(dead_code))]
 fn base45_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 3 / 2 + 2);
     for chunk in bytes.chunks(2) {
@@ -172,6 +195,8 @@ fn base45_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// Reverse of `base45_encode`. None on a character outside the alphabet, a
+/// group that overflows, or a dangling single character.
 fn base45_decode(s: &str) -> Option<Vec<u8>> {
     let vals: Vec<u32> = s
         .bytes()
@@ -248,6 +273,7 @@ mod tests {
     use super::*;
     use crate::deck::parse_deck_text;
 
+    /// Test helper: a small deck with a printing and a sideboard card.
     fn sample() -> ParsedDeck {
         let mut text = String::from("Commander\n1 Atraxa, Praetors' Voice\n\nDeck\n");
         for i in 0..90 {
@@ -255,6 +281,14 @@ mod tests {
         }
         text.push_str("9 Forest (SLD) 2080\n\nSideboard\n1 Arcane Signet\n");
         parse_deck_text("Big", &text).unwrap()
+    }
+
+    #[test]
+    fn qr_holds_an_app_link_that_decodes() {
+        let codes = encode_deck("Link", &sample(), false).unwrap();
+        assert!(codes.qr.starts_with("commanderlab://deck/CLD2."));
+        assert_eq!(decode(&codes.qr).unwrap(), decode(&codes.text).unwrap());
+        assert!(qr_svg(&codes.qr).is_ok());
     }
 
     #[test]

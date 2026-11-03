@@ -1,3 +1,7 @@
+<!--
+Share a deck as a QR code or copyable code (`share`). "Extras" adds
+printings, sideboard, Considering and tags, which makes the code denser.
+-->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, copyText } from '../lib/api';
@@ -43,7 +47,7 @@
       {#if share.svg}
         <div class="qr">{@html share.svg}</div>
         <p class="dim small center">
-          On the other device, open Commander Lab → <b>Add a deck</b> → <b>Scan or paste a share code</b> and point the camera here.
+          Scan with the phone's camera to open it in the Commander Lab app, or in the app go to <b>Add a deck</b> → <b>Share code</b> → <b>Scan a QR code</b>.
         </p>
       {:else}
         <p class="dim">{share.error}</p>

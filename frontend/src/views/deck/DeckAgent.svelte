@@ -1,3 +1,15 @@
+<!--
+AI Agent tab: one chat. Questions are answered from the deck (with an AI
+model if one is set up, else Commander Lab's own analysis), showing each
+step and streaming the built-in model's answer. Change requests ("upgrade
+it", "make it faster") run the optimizer; it asks for a bracket (or power
+level in PDH/Highlander) only if the message didn't name one. Highlander
+decks are rebuilt with the Highlander builder instead.
+
+Things to work on:
+- "Is this a change request?" is decided by keyword rules in this file
+  (`wantsChanges`); an AI model, when available, could classify instead.
+-->
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { api, runJob, type Job } from '../../lib/api';

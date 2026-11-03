@@ -7,6 +7,26 @@
 //! All file paths are relative to the data directory; [`Engine::new`] makes it
 //! the process working directory, which is what the engine modules expect
 //! (`./decks`, `./data`, `./exports`).
+//!
+//! How it fits: the engine owns the open card database, the AI runtime and
+//! cached MPC orders. Long work (generation, combos, MPC, AI) starts a
+//! background job (`jobs.rs`) and the UI polls `job` for progress. Decks are
+//! text files under `decks/` with sidecars next to them (`.plan.json`,
+//! `.combos.json`, `.sources.json`, agent history); every save is a version
+//! in History (`versions.rs`).
+//!
+//! Finding things: search for the command name in [`Engine::call`]'s `match`
+//! to get to its handler. `deck()` builds the deck screen; `edit_deck`,
+//! `edit_deck_bulk` and `auto_tag` change decks.
+//!
+//! Things to work on:
+//! - ~2,900 lines. Split by area (deck library, editing, generation, MPC,
+//!   AI, agent) into submodules; the `match` can stay as the routing table.
+//! - The working-directory switch makes tests and two engines in one process
+//!   awkward; passing the root to each module would remove it.
+//! - Background jobs open their own `CardDb` instead of sharing the engine's.
+//! - Command names are plain strings on both sides; a shared list (or
+//!   generated TypeScript types) would catch typos at build time.
 
 use crate::{
     ai::{model_presets, AgentChatMessage, AiConfig, AiProvider},
@@ -64,6 +84,10 @@ const EXPORTS_DIR: &str = "./exports";
 const SETTINGS_PATH: &str = "./data/ui_settings.json";
 const GAMES_PATH: &str = "./data/games.json";
 
+/// The engine behind every command. `db` is the shared card database
+/// (behind a Mutex: one command uses it at a time), `jobs` the background
+/// jobs, `mpc_orders` the open proxy orders per deck (memory only), and
+/// `ai_runtime` the running local AI, if started.
 pub struct Engine {
     root: PathBuf,
     platform: String,
@@ -73,11 +97,13 @@ pub struct Engine {
     ai_runtime: Mutex<Option<LocalAiRuntime>>,
 }
 
+/// A required argument from the command's JSON; a clear error if missing.
 fn arg<T: DeserializeOwned>(args: &Value, key: &str) -> Result<T> {
     let value = args.get(key).cloned().unwrap_or(Value::Null);
     serde_json::from_value(value).with_context(|| format!("Missing or invalid argument '{key}'"))
 }
 
+/// An optional argument (missing, null or the wrong type all mean None).
 fn opt<T: DeserializeOwned>(args: &Value, key: &str) -> Option<T> {
     args.get(key)
         .cloned()
@@ -85,6 +111,7 @@ fn opt<T: DeserializeOwned>(args: &Value, key: &str) -> Option<T> {
         .and_then(|v| serde_json::from_value(v).ok())
 }
 
+/// Serialize a result for the front end.
 fn to_value<T: Serialize>(value: T) -> Result<Value> {
     serde_json::to_value(value).map_err(Into::into)
 }
@@ -93,6 +120,8 @@ fn to_value<T: Serialize>(value: T) -> Result<Value> {
 // View models
 // ---------------------------------------------------------------------------
 
+/// A card as the front end sees it: the card data plus its roles, its
+/// group ("Creature", "Land"…) and its default printing.
 #[derive(Debug, Clone, Serialize)]
 pub struct CardView {
     #[serde(flatten)]
@@ -104,6 +133,8 @@ pub struct CardView {
     pub double_faced: bool,
 }
 
+/// One line of a deck as the deck screen shows it: quantity, zone, the
+/// card (None if the name isn't in the card database), printing, foil, tags.
 #[derive(Debug, Clone, Serialize)]
 pub struct EntryView {
     pub quantity: u32,
@@ -116,6 +147,119 @@ pub struct EntryView {
     pub tags: Vec<String>,
 }
 
+/// Price a deck line as the player owns it: the chosen printing's prices
+/// (from the cached printing list, if the picker loaded it) and, for a foil,
+/// the foil price. A foil with no foil price, or a printing that isn't
+/// cached, keeps the price we have, so a line is never priced at nothing.
+fn price_entry(card: &mut Card, entry: &crate::deck::DeckEntry) {
+    let parse = |p: &Option<String>| p.as_deref().and_then(|s| s.parse::<f64>().ok());
+    if let (Some(set), Some(num)) = (&entry.set_code, &entry.collector_number) {
+        let printing = crate::printings::cached(&card.name)
+            .into_iter()
+            .find(|p| p.set_code.eq_ignore_ascii_case(set) && p.collector_number.eq_ignore_ascii_case(num));
+        if let Some(p) = printing {
+            let (usd, usd_foil, eur) = (parse(&p.price_usd), parse(&p.price_usd_foil), parse(&p.price_eur));
+            // Foil-only printings have no regular price; Scryfall still knows
+            // what they cost.
+            if usd.is_some() || usd_foil.is_some() {
+                card.price_usd = usd;
+                card.price_usd_foil = usd_foil;
+            }
+            if eur.is_some() {
+                card.price_eur = eur;
+                card.price_eur_foil = None;
+            }
+        }
+    }
+    if entry.foil {
+        card.price_usd = card.price_usd_foil.or(card.price_usd);
+        card.price_eur = card.price_eur_foil.or(card.price_eur);
+    } else if card.price_usd.is_none() {
+        card.price_usd = card.price_usd_foil;
+    }
+}
+
+/// Auto-tag roles for a land: "Mana Fixing" (two or more colours,
+/// any colour, or fetches), "Fetch Land", "Ramp" (taps for two or more mana:
+/// Ancient Tomb, Gaea's Cradle) and "Utility Land" (does something besides
+/// making mana and entering tapped: Bojuka Bog, Reliquary Tower). A land with
+/// none of these, basics included, is "Mana Base".
+fn land_tags(card: &Card) -> Vec<String> {
+    let oracle = card.oracle_text.to_ascii_lowercase();
+    let colors = card.produced_mana.chars().filter(|c| "WUBRG".contains(*c)).count();
+    // "Search your library for a Swamp or Mountain card" names no "land".
+    let fetch = oracle.contains("search your library for") && (oracle.contains("land card") || oracle.contains("sacrifice"));
+    let mut tags = Vec::new();
+    if colors >= 2 || oracle.contains("any color") || oracle.contains("any type") || fetch {
+        tags.push("Mana Fixing");
+    }
+    if fetch {
+        tags.push("Fetch Land");
+    }
+    let double = oracle.contains("add {c}{c}")
+        || oracle.contains("add an amount of")
+        || oracle.contains("for each")
+            && oracle.contains("add {")
+        || oracle.contains("add two mana")
+        || oracle.contains("add three mana");
+    if double {
+        tags.push("Ramp");
+    }
+    let utility = oracle.lines().any(|line| {
+        // Reminder text out, then skip mana abilities and tapped clauses.
+        let line = match line.find('(') {
+            Some(i) => &line[..i],
+            None => line,
+        }
+        .trim();
+        !line.is_empty()
+            && !line.contains("add {")
+            && !line.contains("add one mana")
+            && !line.contains("enters tapped")
+            && !line.contains("enters the battlefield tapped")
+            && !line.contains("pay 2 life")
+            && !(fetch && line.contains("search your library"))
+    });
+    if utility {
+        tags.push("Utility Land");
+    }
+    if tags.is_empty() {
+        tags.push("Mana Base");
+    }
+    tags.into_iter().map(str::to_string).collect()
+}
+
+/// Cards that end the game on their own or say they win it.
+fn wins_games(card: &Card) -> bool {
+    let oracle = card.oracle_text.to_ascii_lowercase();
+    oracle.contains("you win the game")
+        || oracle.contains("loses the game")
+        || oracle.contains("each opponent loses") && !oracle.contains("each opponent loses 1 life")
+        || oracle.contains("additional combat phase")
+        || oracle.contains("extra turn")
+}
+
+/// Competitive (cEDH / cPDH) staples by what they do: fast mana (nonland,
+/// noncreature, one mana or less, makes mana), tutors at two mana or less,
+/// and interaction that's free or costs one (Force of Will, Fierce
+/// Guardianship, Swan Song). Cards seen in most cached competitive lists are
+/// added in `auto_tag`.
+fn competitive_card(card: &Card, roles: &CardRoles) -> bool {
+    let oracle = card.oracle_text.to_ascii_lowercase();
+    let ty = card.type_line.to_ascii_lowercase();
+    let land = ty.contains("land");
+    let makes_mana = oracle.contains("add {") || oracle.contains("add one mana") || oracle.contains("add three mana");
+    let fast_mana = !land && !ty.contains("creature") && card.cmc <= 1.0 && makes_mana;
+    let cheap_tutor = roles.tutor && card.cmc <= 2.0;
+    let interaction = roles.counter || roles.removal || roles.protection;
+    let free = oracle.contains("rather than pay this spell's mana cost")
+        || oracle.contains("without paying its mana cost") && oracle.contains("if you control a commander")
+        || card.mana_cost.contains("/P}");
+    let cheap_interaction = interaction && (free || card.cmc <= 1.0 && (roles.counter || ty.contains("instant")));
+    fast_mana || cheap_tutor || cheap_interaction
+}
+
+/// One deck in the Library list.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeckSummary {
     pub name: String,
@@ -177,10 +321,12 @@ impl Engine {
         }))
     }
 
+    /// The data folder this engine opened.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Stop the local AI (called when the app closes).
     pub fn shutdown(&self) {
         if let Some(runtime) = self.ai_runtime.lock().unwrap().as_mut() {
             runtime.shutdown();
@@ -327,6 +473,7 @@ impl Engine {
             "remove_reference" => self.remove_reference(&arg::<String>(a, "name")?, &arg::<String>(a, "url")?),
 
             // --- generation -------------------------------------------------------
+            "archetypes" => Ok(json!({ "archetypes": crate::archetype::catalog() })),
             "generation_themes" => self.generation_themes(&opt::<String>(a, "commander").unwrap_or_default(), &opt::<String>(a, "format").unwrap_or_default()),
             "generate" => Ok(json!({ "job": self.start_generate(
                 opt(a, "commander").unwrap_or_default(),
@@ -418,6 +565,9 @@ impl Engine {
     // App
     // -----------------------------------------------------------------------
 
+    /// App status for the header and first-run checks: version, build,
+    /// platform, card database size, whether format data is present, decks,
+    /// whether AI is running.
     fn status(&self) -> Result<Value> {
         let cards = self.db.lock().unwrap().card_count().unwrap_or(0);
         let decks = load_deck_files(DECKS_DIR).map(|d| d.len()).unwrap_or(0);
@@ -434,6 +584,8 @@ impl Engine {
         }))
     }
 
+    /// Merge a settings patch into `data/ui_settings.json` (theme, currency,
+    /// deck generation engine…) and return all settings.
     fn settings_set(&self, args: &Value) -> Result<Value> {
         let mut settings = read_settings();
         if let (Some(target), Some(patch)) = (settings.as_object_mut(), args.get("settings").and_then(Value::as_object)) {
@@ -449,6 +601,7 @@ impl Engine {
     // Card data
     // -----------------------------------------------------------------------
 
+    /// Wrap a card with its roles, group and default printing for the UI.
     fn card_view(&self, db: &CardDb, card: Card) -> CardView {
         let printing = db.printing(&card.name).ok().flatten();
         CardView {
@@ -461,12 +614,14 @@ impl Engine {
         }
     }
 
+    /// One card by name (the card sheet).
     fn card(&self, name: &str) -> Result<Value> {
         let db = self.db.lock().unwrap();
         let card = db.get_card(name)?.ok_or_else(|| anyhow!("'{name}' is not in the card database."))?;
         to_value(self.card_view(&db, card))
     }
 
+    /// Name search for add-card boxes (at most 60 results).
     fn search_cards(&self, query: &str, limit: usize) -> Result<Value> {
         let db = self.db.lock().unwrap();
         let cards = db.search_cards(query, limit.clamp(1, 60))?;
@@ -545,6 +700,8 @@ impl Engine {
         }))
     }
 
+    /// Commander search for Build and "change commander", with Pauper
+    /// Commander's own commander rule when the format is PDH.
     fn commander_suggestions(&self, query: &str, format: &str) -> Result<Value> {
         let db = self.db.lock().unwrap();
         let cards = if Format::parse(format) == Format::Pdh {
@@ -558,6 +715,9 @@ impl Engine {
         to_value(cards.into_iter().map(|c| self.card_view(&db, c)).collect::<Vec<_>>())
     }
 
+    /// Settings → Update card data: rebuild the card database from Scryfall's
+    /// bulk file in a job, then swap the engine's open database for the new one.
+    /// Only one update runs at a time.
     fn start_update_cards(self: &Arc<Self>) -> u64 {
         if let Some(id) = self.jobs.running("update_cards", "") {
             return id;
@@ -597,6 +757,10 @@ impl Engine {
         check
     }
 
+    /// Change a deck's format. Going to Canadian Highlander moves the commander
+    /// into the deck (no command zone).
+    /// Note: going back from Highlander doesn't move a card back to the command
+    /// zone; the player picks one with "change commander".
     fn set_format(&self, name: &str, format: &str) -> Result<Value> {
         let mut deck = self.load(name)?;
         let format = Format::parse(format);
@@ -664,6 +828,9 @@ impl Engine {
         Ok(json!({ "themes": themes, "results": out }))
     }
 
+    /// The file behind a deck name.
+    /// TODO: lists and parses the whole decks folder on every call, and most
+    /// commands call it; with hundreds of decks a name → path index would help.
     fn deck_path(&self, name: &str) -> Result<PathBuf> {
         load_deck_files(DECKS_DIR)?
             .into_iter()
@@ -672,6 +839,7 @@ impl Engine {
             .ok_or_else(|| anyhow!("Deck '{name}' was not found."))
     }
 
+    /// Read a deck by name (its name comes from the file, not the text).
     fn load(&self, name: &str) -> Result<ParsedDeck> {
         let mut deck = parse_deck_file(&self.deck_path(name)?)?;
         deck.name = name.to_string();
@@ -692,11 +860,13 @@ impl Engine {
         Ok(())
     }
 
+    /// Save an existing deck as a new version (see `commit`).
     fn save(&self, name: &str, deck: &ParsedDeck, message: &str) -> Result<()> {
         let path = self.deck_path(name)?;
         self.commit(name, &path, deck, message)
     }
 
+    /// A file-safe name no other deck uses: "Name", else "Name (2)", "(3)"…
     fn unique_name(&self, wanted: &str) -> Result<String> {
         let base = safe_deck_filename(wanted);
         let existing: Vec<String> = load_deck_files(DECKS_DIR)?.into_iter().map(|d| d.name).collect();
@@ -712,6 +882,13 @@ impl Engine {
         unreachable!()
     }
 
+    /// The Library: every deck with its commanders, colors (commanders' colors,
+    /// or the cards' colors for Highlander), card count, cover image, format,
+    /// price and last change, newest first.
+    /// Note: the cover comment says "priciest nonland card" but the code takes
+    /// the first nonland card it finds.
+    /// TODO: parses every deck and looks up every card each time the Library
+    /// opens; cache summaries by file modification time.
     fn list_decks(&self) -> Result<Value> {
         let db = self.db.lock().unwrap();
         let mut out = Vec::new();
@@ -727,7 +904,8 @@ impl Engine {
             let mut cover: Option<String> = None;
             let mut main_colors = String::new();
             for entry in deck.commanders.iter().chain(deck.main.iter()) {
-                if let Ok(Some(card)) = db.get_card(&entry.name) {
+                if let Ok(Some(mut card)) = db.get_card(&entry.name) {
+                    price_entry(&mut card, entry);
                     price += card.price_usd.unwrap_or(0.0) * entry.quantity as f64;
                     main_colors.push_str(&card.color_identity);
                     // Highlander decks have no commander: show the priciest
@@ -769,6 +947,9 @@ impl Engine {
         to_value(out)
     }
 
+    /// Everything the deck page needs: every entry with its card data (all
+    /// zones), the saved game plan (and its Markdown), the format and the
+    /// format check (size, legality, colors…).
     fn deck(&self, name: &str) -> Result<Value> {
         let deck = self.load(name)?;
         let path = self.deck_path(name)?;
@@ -777,7 +958,10 @@ impl Engine {
         let mut entries = Vec::new();
         for (zone, list) in [("commander", &deck.commanders), ("main", &deck.main), ("sideboard", &deck.sideboard), ("considering", &deck.considering)] {
             for entry in list {
-                let card = db.get_card(&entry.name).ok().flatten().map(|c| self.card_view(&db, c));
+                let card = db.get_card(&entry.name).ok().flatten().map(|mut c| {
+                    price_entry(&mut c, entry);
+                    self.card_view(&db, c)
+                });
                 entries.push(EntryView {
                     quantity: entry.quantity,
                     name: card.as_ref().map(|c| c.card.name.clone()).unwrap_or_else(|| entry.name.clone()),
@@ -808,6 +992,8 @@ impl Engine {
         }))
     }
 
+    /// Create a deck from pasted text, or (with `overwrite`) replace an existing
+    /// deck's list when edited as text. Refuses lists with no recognised cards.
     fn save_deck_text(&self, name: &str, text: &str, overwrite: bool) -> Result<Value> {
         let name = name.trim();
         if name.is_empty() {
@@ -829,6 +1015,8 @@ impl Engine {
         Ok(json!({ "name": final_name }))
     }
 
+    /// Import from a Moxfield or Archidekt link in a job (network), saved
+    /// under the deck's own name unless one is given.
     fn start_import_url(self: &Arc<Self>, url: String, name: Option<String>) -> u64 {
         let engine = self.clone();
         self.jobs.spawn("import_url", &url.clone(), move |job| {
@@ -851,6 +1039,7 @@ impl Engine {
         })
     }
 
+    /// Import a precon from MTGJSON by its file name (precons.rs).
     fn start_import_precon(self: &Arc<Self>, file: String, name: Option<String>) -> u64 {
         let engine = self.clone();
         self.jobs.spawn("import_precon", &file.clone(), move |job| {
@@ -864,6 +1053,8 @@ impl Engine {
         })
     }
 
+    /// Files that belong to a deck besides the list itself (plan and combos);
+    /// sources and history have their own helpers.
     fn sidecars(path: &Path) -> Vec<PathBuf> {
         vec![
             path.with_extension("plan.md"),
@@ -872,6 +1063,8 @@ impl Engine {
         ]
     }
 
+    /// Delete a deck and everything that belongs to it: plan, combos, sources,
+    /// agent history, version history and any open proxy order.
     fn delete_deck(&self, name: &str) -> Result<Value> {
         let path = self.deck_path(name)?;
         fs::remove_file(&path)?;
@@ -885,6 +1078,10 @@ impl Engine {
         Ok(json!({ "deleted": name }))
     }
 
+    /// Copy a deck (plan, combos, sources and version history come along);
+    /// with `keep_original` false this is a rename (the old one is deleted).
+    /// TODO: the agent chat/history sidecar isn't copied, so renaming a deck
+    /// loses its AI Agent chat.
     fn copy_deck(&self, name: &str, new_name: &str, keep_original: bool) -> Result<Value> {
         let from = self.deck_path(name)?;
         let final_name = self.unique_name(new_name)?;
@@ -912,6 +1109,7 @@ impl Engine {
         Ok(json!({ "name": final_name }))
     }
 
+    /// Rename = copy under the new name, then delete the old one.
     fn rename_deck(&self, name: &str, new_name: &str) -> Result<Value> {
         if new_name.trim().is_empty() {
             bail!("Give the deck a name.");
@@ -919,10 +1117,12 @@ impl Engine {
         self.copy_deck(name, new_name, false)
     }
 
+    /// Duplicate = copy and keep the original.
     fn duplicate_deck(&self, name: &str, new_name: &str) -> Result<Value> {
         self.copy_deck(name, new_name, true)
     }
 
+    /// The list for a zone name the front end sends.
     fn zone_mut<'a>(deck: &'a mut ParsedDeck, zone: &str) -> Result<&'a mut Vec<DeckEntry>> {
         Ok(match zone {
             "commander" => &mut deck.commanders,
@@ -933,6 +1133,8 @@ impl Engine {
         })
     }
 
+    /// The card database's spelling of a name (accents, capitals, full
+    /// double-faced names), or the name as typed if unknown.
     fn canonical(&self, name: &str) -> String {
         self.db
             .lock()
@@ -944,6 +1146,8 @@ impl Engine {
             .unwrap_or_else(|| name.trim().to_string())
     }
 
+    /// Remove up to `qty` copies (all if None); returns how many were removed.
+    /// Use `take_entry` when the printing and tags should travel with the card.
     fn take(list: &mut Vec<DeckEntry>, card: &str, qty: Option<u32>) -> u32 {
         let Some(index) = list.iter().position(|e| e.name.eq_ignore_ascii_case(card)) else {
             return 0;
@@ -987,6 +1191,7 @@ impl Engine {
         }
     }
 
+    /// Add copies of a card by name (merging with an existing line).
     fn put(list: &mut Vec<DeckEntry>, card: &str, qty: u32) {
         if qty == 0 {
             return;
@@ -1226,25 +1431,34 @@ impl Engine {
             .cached_combos(name)
             .map(|r| r.variants.iter().filter(|v| !v.almost).flat_map(|v| v.cards.iter().map(|c| c.to_ascii_lowercase())).collect())
             .unwrap_or_default();
-        let themes: Vec<crate::oracle_search::ThemeMatcher> = self
-            .cached_plan(name)
-            .map(|p| p.primary_tags)
-            .unwrap_or_default()
-            .iter()
-            .take(3)
-            .map(|t| crate::oracle_search::ThemeMatcher::new(t))
-            .collect();
+        // The deck's play styles: the saved game plan's, else read from the
+        // cards themselves, so decks without a plan still get theme tags.
+        let mut theme_names = self.cached_plan(name).map(|p| p.primary_tags).unwrap_or_default();
+        if theme_names.is_empty() {
+            theme_names = crate::archetype::detect_deck_tags(&deck, &db)
+                .map(|tags| tags.into_iter().map(|t| t.name).collect())
+                .unwrap_or_default();
+        }
+        let themes: Vec<crate::oracle_search::ThemeMatcher> =
+            theme_names.iter().take(3).map(|t| crate::oracle_search::ThemeMatcher::new(t)).collect();
+        // Cards most competitive lists we've downloaded run (needs at least
+        // three lists, so one odd list can't tag a card).
+        let (lists, competitive_counts) = crate::references::competitive_card_counts();
+        let in_competitive_lists = |card: &Card| {
+            lists >= 3 && {
+                let n = competitive_counts.get(&card.name.to_ascii_lowercase()).copied().unwrap_or(0) as usize;
+                n >= 2 && n * 5 >= lists * 2
+            }
+        };
         let mut tagged = 0;
         for entry in deck.commanders.iter_mut().chain(deck.main.iter_mut()).chain(deck.sideboard.iter_mut()).chain(deck.considering.iter_mut()) {
             let Ok(Some(card)) = db.get_card(&entry.name) else { continue };
-            if card.is_basic {
-                continue;
-            }
-            // Lands only get Combo: role rules read utility lands oddly
-            // (Bojuka Bog "removes" a graveyard).
+            // Lands get land roles (fixing, fetch, utility…) instead of the
+            // spell roles, which read utility lands oddly (Bojuka Bog
+            // "removes" a graveyard).
             let land = card.type_line.to_ascii_lowercase().contains("land");
             let roles = if land { crate::analysis::CardRoles::default() } else { classify_card(&card) };
-            let mut tags: Vec<String> = Vec::new();
+            let mut tags: Vec<String> = if land { land_tags(&card) } else { Vec::new() };
             for (on, tag) in [
                 (roles.ramp, "Ramp"),
                 (roles.draw, "Card Draw"),
@@ -1256,6 +1470,8 @@ impl Engine {
                 (roles.recursion, "Recursion"),
                 (card.game_changer, "Game Changer"),
                 (combo_cards.contains(&card.name.to_ascii_lowercase()), "Combo"),
+                (!land && wins_games(&card), "Win Condition"),
+                (competitive_card(&card, &roles) || (!land && in_competitive_lists(&card)), "Competitive"),
             ] {
                 if on {
                     tags.push(tag.to_string());
@@ -1265,6 +1481,12 @@ impl Engine {
                 if m.matches(&card) {
                     tags.push(m.theme.clone());
                 }
+            }
+            // Nothing matched: still say what the card is for, so no
+            // nonland card is left untagged.
+            if tags.is_empty() && !land && entry.tags.is_empty() {
+                let ty = card.type_line.to_ascii_lowercase();
+                tags.push(if ty.contains("creature") || ty.contains("planeswalker") { "Threat" } else { "Utility" }.to_string());
             }
             let before = entry.tags.len();
             for tag in tags {
@@ -1281,6 +1503,10 @@ impl Engine {
         self.deck(name)
     }
 
+    /// One-click swap from Analysis/Suggestions: the cut card goes to the
+    /// sideboard (not deleted), the added card comes from the sideboard if it's
+    /// there. Saved as one version ("Cut X to the sideboard, added Y").
+    /// Note: uses `take`/`put`, so a cut card's printing and tags are dropped.
     fn apply_suggestion(&self, name: &str, cut: Option<String>, add: Option<String>) -> Result<Value> {
         let mut deck = self.load(name)?;
         let mut parts = Vec::new();
@@ -1308,6 +1534,8 @@ impl Engine {
     // Analysis
     // -----------------------------------------------------------------------
 
+    /// The Analysis tab (analysis.rs): curve, colors, roles, bracket, add/cut
+    /// suggestions.
     fn analyze(&self, name: &str) -> Result<Value> {
         let deck = self.load(name)?;
         let db = self.db.lock().unwrap();
@@ -1317,12 +1545,21 @@ impl Engine {
         to_value(analyze_deck(&deck, &db)?)
     }
 
+    /// Opening-hand simulation (1,000–200,000 shuffles).
     fn simulate(&self, name: &str, runs: u32) -> Result<Value> {
         let deck = self.load(name)?;
         let db = self.db.lock().unwrap();
         to_value(run_draw_simulation(&deck, &db, runs.clamp(1_000, 200_000))?)
     }
 
+    /// The Combos tab, in a job:
+    /// 1. Spellbook's find-my-combos, keeping only combos whose missing pieces
+    ///    are legal in the deck's format and inside its colors (`ComboFit`);
+    /// 2. "Could add": Spellbook searches for combos with the commander, then
+    ///    the most played in these colors and format, minus ones already
+    ///    listed, sorted commander-first then fewest cards to add (top 40);
+    /// 3. saved as `<deck>.combos.json` (suggestions, chat and auto-tag read
+    ///    it), plus the bracket refined by the combos and card images.
     fn start_combos(self: &Arc<Self>, name: String) -> u64 {
         if let Some(id) = self.jobs.running("combos", &name) {
             return id;
@@ -1382,6 +1619,8 @@ impl Engine {
     // Sources
     // -----------------------------------------------------------------------
 
+    /// A deck's sources: the saved sidecar, or a default list built from the
+    /// deck (EDHREC page, Spellbook…) for decks that never had one.
     fn current_sources(&self, name: &str) -> Result<(PathBuf, Vec<DeckSource>)> {
         let path = self.deck_path(name)?;
         if let Some(saved) = load_sources_for_deck(&path)? {
@@ -1398,6 +1637,7 @@ impl Engine {
         Ok((path, sources_for_existing_deck(&deck, &commanders, bracket)))
     }
 
+    /// Sources for the Sources tab, without the heavy reference decklists.
     fn sources(&self, name: &str) -> Result<Value> {
         let (_, sources) = self.current_sources(name)?;
         let slim: Vec<Value> = sources
@@ -1412,6 +1652,8 @@ impl Engine {
         Ok(Value::Array(slim))
     }
 
+    /// Sources tab → Add reference: import the link (user_reference.rs) and put
+    /// it first in the deck's sources (replacing the same URL if present).
     fn start_add_reference(self: &Arc<Self>, name: String, url: String) -> u64 {
         let engine = self.clone();
         self.jobs.spawn("add_reference", &name.clone(), move |job| {
@@ -1425,6 +1667,7 @@ impl Engine {
         })
     }
 
+    /// Remove a reference the player added (automatic sources stay).
     fn remove_reference(&self, name: &str, url: &str) -> Result<Value> {
         let (path, mut sources) = self.current_sources(name)?;
         sources.retain(|s| !(s.user_provided && s.url == url));
@@ -1436,6 +1679,8 @@ impl Engine {
     // Generation
     // -----------------------------------------------------------------------
 
+    /// Play styles to offer on the Build screen: Highlander's fixed list, or
+    /// the commander's suggestions (generator::suggest_generation_themes).
     fn generation_themes(&self, commander: &str, format: &str) -> Result<Value> {
         let db = self.db.lock().unwrap();
         let format = Format::parse(format);
@@ -1474,6 +1719,10 @@ impl Engine {
         }))
     }
 
+    /// Build screen → Build the deck, in a job: Highlander through
+    /// highlander.rs, Commander/PDH through the generator (engine from
+    /// Settings unless the request names one), then save it with a version
+    /// message describing how it was built ("Generated at Bracket 3 (Tokens)").
     fn start_generate(
         self: &Arc<Self>,
         commander: String,
@@ -1550,6 +1799,7 @@ impl Engine {
                 }
             }
 
+            // Colors: everything the current deck and the named cards use.
             let mut colors: Vec<String> = Vec::new();
             for c in cards.iter().chain(keep.iter()) {
                 for ch in c.color_identity.chars() {
@@ -1559,6 +1809,8 @@ impl Engine {
                 }
             }
             let colors = crate::data::canonical_colors(&colors);
+            // Play styles: the two strongest the current deck shows (archetype.rs).
+            // Weak spot: combo/storm decks read as other themes.
             let themes: Vec<String> = crate::archetype::detect_deck_tags(&deck, &db)
                 .unwrap_or_default()
                 .into_iter()
@@ -1602,6 +1854,8 @@ impl Engine {
         })
     }
 
+    /// Save a generated deck under a free name with its plan (`.plan.json`,
+    /// `.plan.md`) and sources; returns the name it was saved under.
     fn save_generated(&self, mut generated: GeneratedDeck, message: &str) -> Result<String> {
         let name = self.unique_name(&generated.deck.name)?;
         generated.deck.name = name.clone();
@@ -1617,6 +1871,8 @@ impl Engine {
     // Moxfield export
     // -----------------------------------------------------------------------
 
+    /// Export for Moxfield's importer: each line with a printing (the deck's
+    /// chosen one, else Scryfall's default) and tags, written to `exports/`.
     fn export_moxfield(&self, name: &str) -> Result<Value> {
         let deck = self.load(name)?;
         let db = self.db.lock().unwrap();
@@ -1672,6 +1928,8 @@ impl Engine {
     // MPC Autofill
     // -----------------------------------------------------------------------
 
+    /// Save Proxies → Order options (and the autofill site/browser), and apply
+    /// stock, foil and cardback to orders already open.
     fn mpc_config_set(&self, args: &Value) -> Result<Value> {
         let mut current = to_value(MpcConfig::load_or_create())?;
         if let (Some(target), Some(patch)) = (current.as_object_mut(), args.get("config").and_then(Value::as_object)) {
@@ -1692,6 +1950,9 @@ impl Engine {
         to_value(config)
     }
 
+    /// Turn a deck into an MPC order (mpc.rs): one line per card (commanders,
+    /// deck, optionally sideboard), with front/back names for double-faced
+    /// cards so each face gets its own art slot.
     fn build_mpc_order(&self, name: &str) -> Result<MpcOrder> {
         let deck = self.load(name)?;
         let config = MpcConfig::load_or_create();
@@ -1729,6 +1990,8 @@ impl Engine {
         Ok(MpcOrder::from_lines(name, &lines, &config))
     }
 
+    /// An order plus the numbers the Proxies tab shows (slots, MPC bracket
+    /// size, how many faces have art).
     fn mpc_order_view(order: &MpcOrder) -> Result<Value> {
         let (resolved, total) = order.resolved_faces();
         let mut value = to_value(order)?;
@@ -1739,6 +2002,8 @@ impl Engine {
         Ok(value)
     }
 
+    /// The deck's open proxy order. With `rebuild` the order is rebuilt from
+    /// the current list but keeps art already chosen for cards still in it.
     fn mpc_order(&self, name: &str, rebuild: bool) -> Result<Value> {
         let mut orders = self.mpc_orders.lock().unwrap();
         if rebuild || !orders.contains_key(name) {
@@ -1764,6 +2029,10 @@ impl Engine {
         Self::mpc_order_view(orders.get(name).unwrap())
     }
 
+    /// Proxies → Find proxy art, in a job: search MPC Autofill's community
+    /// scans for every face (5–60%), then Scryfall's official art (60–98%),
+    /// and attach both to the open order. If MPC Autofill can't be reached the
+    /// order still gets official art, with a warning.
     fn start_mpc_search(self: &Arc<Self>, name: String) -> Result<u64> {
         self.mpc_order(&name, true)?;
         let queries = self.mpc_orders.lock().unwrap().get(&name).map(|o| o.queries()).unwrap_or_default();
@@ -1879,6 +2148,7 @@ impl Engine {
         Self::mpc_order_view(order)
     }
 
+    /// Pick which image a card face uses.
     fn mpc_select(&self, name: &str, index: usize, back: bool, selected: usize) -> Result<Value> {
         let mut orders = self.mpc_orders.lock().unwrap();
         let order = orders.get_mut(name).ok_or_else(|| anyhow!("Open the MPC order first."))?;
@@ -1893,6 +2163,7 @@ impl Engine {
         Self::mpc_order_view(order)
     }
 
+    /// Proxies → Export order, in a job (official scans are downloaded first).
     fn start_mpc_export(self: &Arc<Self>, name: String) -> u64 {
         let engine = self.clone();
         self.jobs.spawn("mpc_export", &name.clone(), move |job| {
@@ -1941,6 +2212,9 @@ impl Engine {
         })
     }
 
+    /// Write the order files to `exports/`: the XML MPC Autofill reads (with
+    /// official scans saved locally and referenced by path) and a plain card
+    /// list for mpcfill.com. Also used by "Fill on MakePlayingCards".
     fn mpc_export(&self, name: &str, progress: impl FnMut(usize, usize)) -> Result<Value> {
         let order = {
             let orders = self.mpc_orders.lock().unwrap();
@@ -1983,6 +2257,9 @@ impl Engine {
     // AI
     // -----------------------------------------------------------------------
 
+    /// Settings → AI model and the Agent tab: provider, model, built-in engine
+    /// availability, downloadable models (and which are installed/loaded),
+    /// disk use, whether a runtime is running.
     fn ai_status(&self) -> Result<Value> {
         let config = AiConfig::load_or_create();
         let presets = |p| {
@@ -2031,6 +2308,9 @@ impl Engine {
         }))
     }
 
+    /// Save AI settings. Choosing a provider also points the app at that
+    /// provider's default address and model; for online APIs the API address
+    /// and model become the active ones.
     fn ai_config_set(&self, args: &Value) -> Result<Value> {
         let mut config = AiConfig::load_or_create();
         if let Some(provider) = opt::<AiProvider>(args, "provider") {
@@ -2061,6 +2341,8 @@ impl Engine {
         self.ai_status()
     }
 
+    /// Settings → AI model → Start, in a job: start (or load) the configured
+    /// local AI; on Android only if the built-in engine exists.
     fn start_ai_runtime(self: &Arc<Self>) -> u64 {
         if let Some(id) = self.jobs.running("ai_start", "") {
             return id;
@@ -2103,6 +2385,7 @@ impl Engine {
         }))
     }
 
+    /// What the Agent tab shows when opened: chat, last brief, last results.
     fn agent_state(&self, name: &str) -> Result<Value> {
         let path = self.deck_path(name)?;
         let history = load_history(&path);
@@ -2113,6 +2396,11 @@ impl Engine {
         }))
     }
 
+    /// Agent tab → a change request, in a job: run the optimizer
+    /// (deep_agent.rs) for the requested bracket and testing depth. The brief
+    /// includes the player's last 4 chat messages, and the goal (fast win or
+    /// stax lock) is read from the request. Results are saved to the deck's
+    /// agent history for the Agent tab.
     fn start_agent(self: &Arc<Self>, args: &Value) -> Result<u64> {
         let name: String = arg(args, "name")?;
         let bracket: u8 = opt(args, "bracket").unwrap_or(3);
@@ -2204,6 +2492,9 @@ impl Engine {
         }))
     }
 
+    /// "Ask about this deck", in a job: gather the deck's facts, answer with
+    /// the AI model (steps and streamed text show in the chat via `partial`),
+    /// or, without one, from Commander Lab's own analysis, then save the turn.
     fn start_chat(self: &Arc<Self>, name: String, message: String) -> Result<u64> {
         if message.trim().is_empty() {
             bail!("Type a message first.");
@@ -2227,9 +2518,11 @@ impl Engine {
                 .collect();
             struct Progress<'a>(&'a crate::jobs::JobHandle);
             impl crate::deck_chat::AnswerProgress for Progress<'_> {
+                /// Each step the answer takes becomes a progress line in the job.
                 fn step(&self, step: &str, detail: String) {
                     self.0.progress(50, step, detail);
                 }
+                /// The answer so far goes into the job's `partial` text.
                 fn text(&self, text: &str) {
                     self.0.partial(text);
                 }
@@ -2270,6 +2563,7 @@ impl Engine {
         }))
     }
 
+    /// Clear the deck's chat history.
     fn chat_clear(&self, name: &str) -> Result<Value> {
         let path = self.deck_path(name)?;
         let history = load_history(&path);
@@ -2284,6 +2578,7 @@ impl Engine {
         Ok(json!({ "chat": [] }))
     }
 
+    /// Agent results → Save as new deck: the best version, or a chosen round.
     fn agent_save(&self, name: &str, iteration: Option<usize>) -> Result<Value> {
         let path = self.deck_path(name)?;
         let agent = load_history(&path)
@@ -2309,6 +2604,7 @@ impl Engine {
     // Printings
     // -----------------------------------------------------------------------
 
+    /// Card sheet → choose a printing or toggle foil for a card in the deck.
     fn set_printing(&self, name: &str, args: &Value) -> Result<Value> {
         let mut deck = self.load(name)?;
         let zone: String = opt(args, "zone").unwrap_or_else(|| "main".into());
@@ -2344,6 +2640,7 @@ impl Engine {
     // Version history
     // -----------------------------------------------------------------------
 
+    /// History tab: every saved version with its message and changes.
     fn versions(&self, name: &str) -> Result<Value> {
         let path = self.deck_path(name)?;
         let mut list = versions::list(name);
@@ -2357,6 +2654,7 @@ impl Engine {
         to_value(list)
     }
 
+    /// Restore an earlier version (saved as a new version, so it can be undone).
     fn restore_version(&self, name: &str, id: u64) -> Result<Value> {
         let mut deck = versions::load(name, id)?;
         deck.name = name.to_string();
@@ -2371,6 +2669,8 @@ impl Engine {
     // Sharing
     // -----------------------------------------------------------------------
 
+    /// Share dialog: text code and QR image. "Extras" adds printings, foils,
+    /// sideboard, Considering and tags; `has_extras` says whether there are any.
     fn share(&self, name: &str, extras: bool) -> Result<Value> {
         let deck = self.load(name)?;
         let codes = share::encode_deck(name, &deck, extras)?;
@@ -2390,6 +2690,7 @@ impl Engine {
         }))
     }
 
+    /// Add a deck from a share code (any version), under a free name.
     fn import_share(&self, code: &str, name: Option<String>) -> Result<Value> {
         let (shared_name, text) = share::decode(code)?;
         let wanted = name.filter(|n| !n.trim().is_empty()).unwrap_or(shared_name);
@@ -2469,6 +2770,7 @@ impl Engine {
         })
     }
 
+    /// The deck's saved game plan, if it was generated (or the agent saved it).
     fn cached_plan(&self, name: &str) -> Option<GamePlan> {
         let path = self.deck_path(name).ok()?;
         fs::read_to_string(path.with_extension("plan.json"))
@@ -2476,6 +2778,7 @@ impl Engine {
             .and_then(|t| serde_json::from_str(&t).ok())
     }
 
+    /// How to play tab (guide.rs), using the saved combos and plan if any.
     fn guide(&self, name: &str) -> Result<Value> {
         let deck = self.load(name)?;
         let combos = self.cached_combos(name);
@@ -2491,6 +2794,11 @@ impl Engine {
         Ok(value)
     }
 
+    /// Suggestions tab, in a job: cards to add from several sources, each
+    /// filtered to the format, colors and cards not already in the deck:
+    /// combo completions (from the last combo check), EDHREC or PDHREC synergy
+    /// and popularity, rules-text matches for the deck's play styles, and role
+    /// gaps from the analysis.
     fn start_recommendations(self: &Arc<Self>, name: String) -> u64 {
         if let Some(id) = self.jobs.running("recommendations", &name) {
             return id;
@@ -2673,6 +2981,7 @@ impl Engine {
         }))
     }
 
+    /// Analysis → win speed: goldfish the deck (deep_learn.rs) in a job.
     fn start_win_speed(self: &Arc<Self>, name: String) -> u64 {
         let engine = self.clone();
         self.jobs.spawn("win_speed", &name.clone(), move |job| {
@@ -2686,7 +2995,6 @@ impl Engine {
     }
 }
 
-/// Finished games from the Game tab, newest first.
 /// Image and deck status for every card named in a combo report, keyed by
 /// the name Commander Spellbook used. Cards in the deck show the printing
 /// chosen for them.
@@ -2740,6 +3048,7 @@ fn formats_json() -> Value {
     ])
 }
 
+/// Finished games from the Game tab, newest first.
 fn read_games() -> Value {
     fs::read_to_string(GAMES_PATH)
         .ok()
@@ -2748,6 +3057,7 @@ fn read_games() -> Value {
         .unwrap_or_else(|| Value::Array(Vec::new()))
 }
 
+/// `data/ui_settings.json`, or empty settings on first run.
 fn read_settings() -> Value {
     fs::read_to_string(SETTINGS_PATH)
         .ok()
@@ -2865,6 +3175,8 @@ struct ComboFit {
 }
 
 impl ComboFit {
+    /// Work out the deck's commanders, colors (commanders', or the cards' for
+    /// Highlander) and which cards it already runs.
     fn new(deck: &ParsedDeck, db: &CardDb) -> Self {
         let commanders: Vec<Card> = deck.commanders.iter().filter_map(|e| db.get_card(&e.name).ok().flatten()).collect();
         let in_deck = deck

@@ -1,3 +1,10 @@
+// TypeScript shapes of what the core's JSON API returns. They mirror the
+// Rust structs by hand, so when a Rust struct gains a field, add it here.
+//
+// Things to work on:
+// - Generate these from the Rust types (e.g. with `ts-rs`) so they can't
+//   drift.
+
 export interface Roles {
   ramp: boolean;
   draw: boolean;

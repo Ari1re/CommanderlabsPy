@@ -11,6 +11,11 @@
 //!   no sideboard, the Vintage banned list plus a few card categories, and no
 //!   more than 10 points from the points list (Fall 2026 list, effective
 //!   1 September 2026). 20 life, played one-on-one.
+//!
+//! Things to work on:
+//! - Ban lists and the Highlander points list are hard-coded with a date;
+//!   they need a manual update when they change (or fetching from the
+//!   sources listed above).
 
 use crate::data::{pdh_commander_type, Card};
 use serde::{Deserialize, Serialize};
@@ -103,6 +108,8 @@ pub fn is_basic_land_name(name: &str) -> bool {
     )
 }
 
+/// Name match for ban/points lists: exact, or the front face of a
+/// double-faced card.
 fn same_card(card_name: &str, listed: &str) -> bool {
     let card = card_name.to_ascii_lowercase();
     let listed = listed.to_ascii_lowercase();
@@ -126,6 +133,9 @@ fn mentions_ante(card: &Card) -> bool {
 }
 
 impl Format {
+    /// Read a format name from settings, decklist comments or requests. Many
+    /// spellings ("PDH", "pauper-edh", "Canadian Highlander", "ch"); anything
+    /// unknown is Commander. Note "pauper" alone means Pauper Commander here.
     pub fn parse(value: &str) -> Format {
         match value.trim().to_ascii_lowercase().replace(['-', '_'], " ").as_str() {
             "pdh" | "pauper commander" | "pauper edh" | "pedh" | "pauper" => Format::Pdh,
@@ -134,6 +144,8 @@ impl Format {
         }
     }
 
+    /// Short id used in files, settings and the API ("commander", "pdh",
+    /// "canlander").
     pub fn id(self) -> &'static str {
         match self {
             Format::Commander => "commander",
@@ -142,6 +154,7 @@ impl Format {
         }
     }
 
+    /// Name shown to players.
     pub fn label(self) -> &'static str {
         match self {
             Format::Commander => "Commander",
@@ -150,10 +163,12 @@ impl Format {
         }
     }
 
+    /// Commander and Pauper Commander have a command zone; Highlander doesn't.
     pub fn has_commander(self) -> bool {
         !matches!(self, Format::Canlander)
     }
 
+    /// Only regular Commander (brackets, Game Changers, EDHREC apply).
     pub fn is_commander(self) -> bool {
         matches!(self, Format::Commander)
     }
@@ -168,6 +183,7 @@ impl Format {
         self.has_commander()
     }
 
+    /// Starting life for the Game tracker.
     pub fn starting_life(self) -> u32 {
         match self {
             Format::Commander => 40,
@@ -176,6 +192,7 @@ impl Format {
         }
     }
 
+    /// Commander damage that kills (none in Highlander).
     pub fn commander_damage(self) -> Option<u32> {
         match self {
             Format::Commander => Some(21),
@@ -184,6 +201,7 @@ impl Format {
         }
     }
 
+    /// Highlander's points budget (10); None elsewhere.
     pub fn max_points(self) -> Option<u32> {
         matches!(self, Format::Canlander).then_some(CANLANDER_MAX_POINTS)
     }
@@ -301,6 +319,7 @@ pub struct FormatCheck {
 }
 
 impl FormatCheck {
+    /// Legal when no problems were found.
     pub fn legal(&self) -> bool {
         self.problems.is_empty()
     }
@@ -374,6 +393,7 @@ pub fn check_deck(
 mod tests {
     use super::*;
 
+    /// Test helper: a minimal card with a name and type line.
     fn card(name: &str, ty: &str) -> Card {
         Card {
             oracle_id: name.into(),

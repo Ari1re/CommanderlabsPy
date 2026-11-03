@@ -1,7 +1,17 @@
+<!--
+The app shell: sidebar navigation, the page router (Library, Build, Game,
+Settings, a deck) and app-wide pieces (toasts, the card sheet, the update
+dialog, the card-data download prompt on first run).
+Routing is the URL hash (#/deck/<name>/<tab>); see `lib/store.svelte.ts`.
+
+Things to work on:
+- First-run card-data download blocks most features; show what works
+  without it (Game tracker, importing a list).
+-->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app, go } from './lib/store.svelte';
-  import { openExternal, runJob, runtime } from './lib/api';
+  import { invokeNative, openExternal, runJob, runtime } from './lib/api';
   import UpdateDialog from './components/UpdateDialog.svelte';
   import Icon from './components/Icon.svelte';
   import CardSheet from './components/CardSheet.svelte';
@@ -44,6 +54,23 @@
     });
     // In the desktop/Android app, open outside links in the system browser.
     if (runtime.isTauri) {
+      // Share QR scanned with the phone camera: the app opens with
+      // commanderlab://deck/CLD2.… — show Add deck with that code.
+      const openLinks = async () => {
+        try {
+          const links = await invokeNative<string[]>('take_deep_links');
+          const link = links.reverse().find((l) => /CLD[12][.:]/.test(decodeURIComponent(l)));
+          if (link) {
+            app.pendingShare = decodeURIComponent(link);
+            go({ page: 'library' });
+          }
+        } catch {
+          /* older app build without deep links */
+        }
+      };
+      openLinks();
+      const { listen } = await import('@tauri-apps/api/event');
+      listen('deep-link', openLinks);
       document.addEventListener('click', (e) => {
         const a = (e.target as HTMLElement)?.closest?.('a[target="_blank"]') as HTMLAnchorElement | null;
         if (a?.href && /^https?:/.test(a.href)) {

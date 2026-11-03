@@ -1,3 +1,7 @@
+<!--
+History tab: every saved version of the deck with what changed, and
+restoring an earlier one.
+-->
 <script lang="ts">
   import { api } from '../../lib/api';
   import { app } from '../../lib/store.svelte';

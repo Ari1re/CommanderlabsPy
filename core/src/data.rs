@@ -1,3 +1,31 @@
+//! The local card database: Scryfall's Oracle cards in SQLite.
+//!
+//! How it fits: everything that needs card text, colors, prices or legality
+//! asks [`CardDb`]. It's built from Scryfall's "Oracle Cards" bulk file
+//! (Settings → Update card data) and lives at `data/cards.sqlite`.
+//!
+//! Main entry points:
+//! - [`CardDb::get_card`]: name → card. Exact name first, then face names,
+//!   then a "folded" name ([`fold_name`]: no accents, apostrophes or
+//!   punctuation), so "Lorien Revealed", "Urza’s Saga" and "Fire/Ice" all
+//!   resolve. Most "card not found" bugs start here.
+//! - [`CardDb::search_cards`] / `search_commanders` / `search_pdh_commanders`:
+//!   the search boxes (substring, folded, most-played first).
+//! - [`CardDb::update_from_scryfall`] / `import_file`: rebuild from the bulk
+//!   file. `scan_cards` walks every card (deep search uses it).
+//! - `open` also migrates older databases (adds columns, backfills folded
+//!   names once).
+//!
+//! Things to work on:
+//! - Migrations are a list of `ALTER TABLE` calls whose errors are ignored. A
+//!   `PRAGMA user_version` with numbered migrations would be safer.
+//! - Tokens, emblems and art cards are filtered at import; Alchemy and
+//!   digital-only cards aren't marked, so some can show up in searches.
+//! - `search_cards` does `LIKE '%…%'` on two columns, a full scan each
+//!   keystroke. SQLite FTS5 would make search instant on phones.
+//! - Prices come only from the bulk file (once a day at best). A per-card
+//!   price refresh for the open deck would keep totals current.
+
 use crate::deck::normalize_multiface_separator;
 use anyhow::{anyhow, Context, Result};
 use flate2::read::GzDecoder;
@@ -98,6 +126,8 @@ struct ImageUris {
 }
 
 impl ImageUris {
+    /// The image to show for a card: "normal" size, falling back to larger or
+    /// smaller ones.
     fn best(&self) -> Option<String> {
         // `normal` is ideal for a terminal preview: good quality without
         // downloading the much larger PNG for every selected card.
@@ -199,6 +229,9 @@ struct ScryfallFace {
 }
 
 impl CardDb {
+    /// Open (or create) the card database, migrating older ones in place:
+    /// create tables, add any missing columns, drop tokens/art cards older
+    /// imports kept, repair commander eligibility, and backfill folded names.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
@@ -347,6 +380,7 @@ impl CardDb {
         Ok(Self { conn })
     }
 
+    /// How many cards are in the database.
     pub fn card_count(&self) -> Result<u64> {
         // rusqlite reads SQLite INTEGER values as i64.
         let count: i64 = self
@@ -357,10 +391,16 @@ impl CardDb {
             .map_err(|_| anyhow!("SQLite returned an invalid negative card count"))
     }
 
+    /// True once real card data is loaded (over 1,000 cards).
     pub fn has_cards(&self) -> bool {
         self.card_count().unwrap_or(0) > 1000
     }
 
+    /// Find a card by name however it's written. Tries, in order: the exact
+    /// name, a face name, the folded name (no accents/punctuation: "Lorien
+    /// Revealed", "Fire/Ice"), then each face of "A // B" on its own.
+    /// Almost everything that turns a typed or imported name into a card goes
+    /// through here, so "card not found" problems usually start here.
     pub fn get_card(&self, name: &str) -> Result<Option<Card>> {
         let normalized = normalize_multiface_separator(name);
         let key = normalized.trim().to_ascii_lowercase();
@@ -432,6 +472,8 @@ impl CardDb {
         self.conn.query_row(&sql, [fold], row_to_card).optional().map_err(Into::into)
     }
 
+    /// Exact lowercase name lookup; real cards win over tokens, then
+    /// Commander-legal and tournament-legal versions.
     fn query_card_name(&self, key: &str) -> Result<Option<Card>> {
         self.conn
             .query_row(
@@ -455,6 +497,7 @@ impl CardDb {
             .map_err(Into::into)
     }
 
+    /// Lookup by any face name ("Delver of Secrets" for the double-faced card).
     fn query_alias(&self, key: &str) -> Result<Option<Card>> {
         self.conn
             .query_row(
@@ -504,6 +547,7 @@ impl CardDb {
             .map_err(Into::into)
     }
 
+    /// The most played Commander-legal cards (EDHREC rank), most played first.
     pub fn top_ranked_cards(&self, limit: usize) -> Result<Vec<Card>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -532,10 +576,11 @@ impl CardDb {
         Ok(cards)
     }
 
-    /// Download the current Scryfall Oracle Cards JSONL.GZ file and rebuild
-    /// the local SQLite card database by streaming one JSON object at a time.
-    ///
-    /// Nothing close to the full decompressed dataset is held in memory.
+    /// Commander search by name (substring, accent-insensitive): legal
+    /// commanders only, exact match first, then most played. Eligibility is
+    /// re-checked live because older databases stored it too narrowly.
+    /// (This comment used to describe the Scryfall update; that's
+    /// `update_from_scryfall` below.)
     pub fn search_commanders(&self, query: &str, limit: usize) -> Result<Vec<Card>> {
         let pattern = format!("%{}%", query.trim().to_ascii_lowercase());
 
@@ -633,6 +678,9 @@ impl CardDb {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
+    /// Download Scryfall's Oracle Cards bulk file and rebuild the database,
+    /// then ask Scryfall which cards can lead Pauper Commander (needs every
+    /// printing, not just the default one); returns how many cards loaded.
     pub fn update_from_scryfall(&mut self) -> Result<usize> {
         std::fs::create_dir_all(DATA_DIR)?;
         std::fs::create_dir_all(DEBUG_DIR)?;
@@ -822,6 +870,9 @@ impl CardDb {
     }
 
 
+    /// Replace all cards from a `.jsonl.gz` bulk file in one transaction, so a
+    /// failed import leaves the old data intact. Refuses suspiciously small
+    /// files (under 1,000 cards).
     fn rebuild_from_jsonl_gzip(&mut self, path: &Path) -> Result<usize> {
         let file = File::open(path)
             .with_context(|| format!("Could not open {}", path.display()))?;
@@ -878,6 +929,8 @@ fn scryfall_get(client: &Client, url: &str) -> Result<Value> {
     Err(anyhow!("Scryfall kept asking to slow down (429) for {url}"))
 }
 
+/// Scryfall's bulk-data description (which has the download link). The
+/// latest response is saved under `data/debug` to diagnose changes.
 fn download_metadata(client: &Client) -> Result<Vec<u8>> {
     let response = client
         .get(ORACLE_BULK_METADATA_URL)
@@ -961,6 +1014,8 @@ fn extract_jsonl_download_uri(body: &[u8]) -> Result<String> {
     ))
 }
 
+/// Find any download URL anywhere in the metadata JSON (fallback if the
+/// field name changes).
 fn recursive_download_url(value: &Value) -> Option<String> {
     match value {
         Value::Object(map) => {
@@ -996,10 +1051,13 @@ fn recursive_download_url(value: &Value) -> Option<String> {
     None
 }
 
+/// http:// or https://.
 fn is_http_url(value: &str) -> bool {
     value.starts_with("https://") || value.starts_with("http://")
 }
 
+/// Download the bulk file to disk and check it really is gzip and not
+/// suspiciously small (an error page saved as the file breaks the import).
 fn download_gzip(client: &Client, url: &str, path: &Path) -> Result<()> {
     let mut response = client
         .get(url)
@@ -1075,6 +1133,11 @@ fn download_gzip(client: &Client, url: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Stream the bulk file one card per line into the database: skip tokens,
+/// emblems, art cards and memorabilia; merge double-faced cards' text,
+/// costs and produced mana; record colors, legalities (Commander, Pauper
+/// Commander, Vintage), prices, links, default printing and every face name
+/// as an alias. Nothing close to the whole file is held in memory.
 fn import_jsonl<R: BufRead>(reader: R, tx: &Transaction<'_>) -> Result<usize> {
     let mut card_stmt = tx.prepare(
         r#"
@@ -1373,6 +1436,8 @@ fn backfill_folds(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Can this lead a Commander deck by its own text? Legendary creature,
+/// "can be your commander", or a Background.
 pub fn commander_eligible_from_text(
     lower_type: &str,
     lower_oracle: &str,
@@ -1396,6 +1461,7 @@ pub fn commander_eligible_from_text(
     legendary_creature || explicit_commander || background
 }
 
+/// Cards older data got wrong (Shorikai, Grist), allowed by name.
 pub fn known_commander_exception(name: &str) -> bool {
     // Compatibility safety net for cards whose local Oracle text may be empty,
     // stale, or imported from a dataset that omitted the commander-permission
@@ -1409,6 +1475,8 @@ pub fn known_commander_exception(name: &str) -> bool {
     )
 }
 
+/// Eligibility checked live, not just the stored flag (older databases
+/// stored it too narrowly).
 pub fn effective_commander_eligible(card: &Card) -> bool {
     if card.commander_eligible {
         return true;
@@ -1424,6 +1492,7 @@ pub fn effective_commander_eligible(card: &Card) -> bool {
     known_commander_exception(&card.name)
 }
 
+/// Why a card may lead a deck, in words (for the commander picker).
 pub fn commander_eligibility_reason(card: &Card) -> &'static str {
     let lower_type = card.type_line.to_ascii_lowercase();
     let lower_oracle = card.oracle_text.to_ascii_lowercase();
@@ -1459,6 +1528,7 @@ pub fn commander_eligibility_reason(card: &Card) -> &'static str {
     "no supported commander eligibility rule matched"
 }
 
+/// One database row → Card, in the column order of CARD_COLUMNS.
 fn row_to_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
     let type_line: String = row.get(4)?;
     let oracle_text: String = row.get(5)?;
@@ -1522,10 +1592,12 @@ pub fn pdh_commander_type(lower_type: &str) -> bool {
             || lower_type.contains("background"))
 }
 
+/// Scryfall prices are strings ("1.99"); missing or unreadable = None.
 fn parse_price(value: Option<&str>) -> Option<f64> {
     value.and_then(|text| text.parse::<f64>().ok())
 }
 
+/// Colors in WUBRG order as one string ("BG").
 pub fn canonical_colors(colors: &[String]) -> String {
     const ORDER: [char; 5] = ['W', 'U', 'B', 'R', 'G'];
 

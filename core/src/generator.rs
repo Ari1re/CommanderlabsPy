@@ -1,3 +1,46 @@
+//! Commander and Pauper Commander deck generation (both engines).
+//!
+//! How it fits: `start_generate` in `api.rs` calls
+//! [`generate_deck_with_options`]. Canadian Highlander uses `highlander.rs`
+//! instead. Settings → Deck generation picks the engine
+//! ([`GenerationOptions::engine`]):
+//! - Peer-based: the original generator, mostly what EDHREC and other
+//!   players' lists run.
+//! - Deep learning (default): the same pipeline with the steps in
+//!   `deep_generation.rs` switched on (commander mechanics, evidence tiers,
+//!   power-staple floor, Spellbook combos, the build report).
+//!
+//! The pipeline, in order (progress percentages match the log):
+//! 1. Resolve the commander(s) and colors; build the legal/budget filter.
+//! 2. Themes: the player's, else AI suggestions, else (deep) the commander's
+//!    own mechanics and EDHREC's top themes.
+//! 3. Research (`intelligence.rs`): EDHREC/PDHREC card signals, reference
+//!    decklists (`references.rs`), learned role targets.
+//! 4. Candidate pool: top 15k cards + EDHREC + reference cards (+ every legal
+//!    common for PDH), rules-text search finds, AI key cards.
+//! 5. Win packages: recurring reference combos, Spellbook combos (deep),
+//!    built-in combo templates.
+//! 6. Spells: (deep) power-staple floor, then a greedy loop picking the best
+//!    score each step (role needs, theme, engine, EDHREC, evidence tiers).
+//! 7. Mana base, then combo audit, bracket lock (power up/down), integrity
+//!    gate, budget fit, game plan text and sources.
+//!
+//! Things to work on:
+//! - ~3,900 lines with one ~1,500-line function. Each numbered step above
+//!   should become its own function taking a shared `BuildState`.
+//! - Scores are hand-tuned constants added together (theme_need 90,
+//!   engine_need 180, EDHREC 150…). They double-count the same evidence and
+//!   are hard to reason about. A single scoring function with named weights
+//!   (and a debug dump of each card's score breakdown) would make tuning
+//!   sane.
+//! - Deep generation still under-uses Game Changers (Drana at Bracket 3 got
+//!   1 of 3 allowed) and drops big single threats (Gray Merchant, Sheoldred)
+//!   that peer-based keeps.
+//! - The bracket lock can quietly undo choices made earlier; log what it
+//!   swapped and why in the report.
+//! - The first deep run for a commander takes ~90 s while references load.
+//!   Show the reference crawl as its own progress step.
+
 use crate::{
     analysis::{
         classify_card, has_copy_rule_override, identity_subset, CardRoles,
@@ -22,6 +65,8 @@ use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
+/// A combo the generator put in the deck on purpose, with where it came
+/// from ("Observed in 4/32 reference decks", "Commander Spellbook…").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedCombo {
     pub cards: Vec<String>,
@@ -29,6 +74,10 @@ pub struct GeneratedCombo {
     pub source: String,
 }
 
+/// Everything saved next to a generated deck as `<deck>.plan.json` (and
+/// rendered to `<deck>.plan.md`): commanders, colors, the deck's main
+/// themes, a plan summary, its combos, build notes and sources. Suggestions,
+/// the guide and the chat read `primary_tags` from here later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GamePlan {
     pub commanders: Vec<String>,
@@ -43,6 +92,7 @@ pub struct GamePlan {
     pub report: Option<crate::deep_generation::GenerationReport>,
 }
 
+/// What the generators return: the decklist plus its game plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedDeck {
     pub deck: ParsedDeck,
@@ -50,6 +100,8 @@ pub struct GeneratedDeck {
 }
 
 
+/// One play-style option on the Build screen, with a score for ordering
+/// and a short "why" ("EDHREC tag #2 • 4,120 decks").
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GenerationTheme {
     pub name: String,
@@ -57,6 +109,8 @@ pub struct GenerationTheme {
     pub reason: String,
 }
 
+/// One progress update during generation (percent, step, detail); the job
+/// turns these into the log lines the Build screen shows.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GenerationProgress {
     pub percent: u16,
@@ -65,10 +119,13 @@ pub struct GenerationProgress {
 }
 
 impl GenerationProgress {
+    /// Public constructor for other modules (highlander.rs) that report
+    /// progress the same way.
     pub fn new_pub(percent: u16, step: &str, detail: impl Into<String>) -> Self {
         Self::new(percent, step, detail)
     }
 
+    /// Clamps the percent so a stray step can't push the bar past 100.
     fn new(percent: u16, step: &str, detail: impl Into<String>) -> Self {
         Self {
             percent: percent.min(100),
@@ -78,6 +135,10 @@ impl GenerationProgress {
     }
 }
 
+/// The play styles offered on the Build screen for a commander.
+/// Ranked: EDHREC's own theme tags first, then themes the commander's text
+/// suggests, then a small bump for themes with lots of playable cards in
+/// these colors. Falls back to a few generic themes if nothing is found.
 pub fn suggest_generation_themes(
     commanders: &[Card],
     db: &CardDb,
@@ -90,6 +151,7 @@ pub fn suggest_generation_themes(
 
     // EDHREC gets first priority. Its commander pages explicitly expose the
     // ways people are actually building that commander.
+    // 1. EDHREC tags, ranked by EDHREC's own order and deck counts.
     let edhrec = commander_themes(commanders, 10);
 
     let edhrec_count = edhrec.len();
@@ -115,6 +177,7 @@ pub fn suggest_generation_themes(
     // Local commander-text inference supplements EDHREC, rather than
     // replacing it. It is especially useful if EDHREC is unavailable or for
     // a brand-new commander with little submitted data.
+    // 2. Themes read from the commander's own text (`archetype.rs` rules).
     for commander in commanders {
         for tag in tag_names_for_card(commander) {
             let slot = scores
@@ -141,6 +204,7 @@ pub fn suggest_generation_themes(
     // Reinforce themes that have real legal card depth in this commander's
     // colors. This keeps obscure/incidental tags from outranking archetypes
     // with substantial playable support.
+    // 3. Card depth: themes with many popular legal cards get small bumps.
     for card in db.top_ranked_cards(5_000)? {
         if !card.commander_legal
             || !identity_subset(&card.color_identity, &identity)
@@ -200,18 +264,22 @@ pub fn suggest_generation_themes(
     Ok(themes)
 }
 
+/// The bracket (1–5) a build aims for, with the rules that follow from it:
+/// how many Game Changers, combos, tutors and fast mana it should have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GenerationBracket {
     pub bracket: u8,
 }
 
 impl GenerationBracket {
+    /// Out-of-range brackets snap to 1 or 5.
     pub fn new(bracket: u8) -> Self {
         Self {
             bracket: bracket.clamp(1, 5),
         }
     }
 
+    /// The bracket's official name, for logs and notes.
     pub fn label(self) -> &'static str {
         match self.bracket {
             1 => "Exhibition",
@@ -222,6 +290,7 @@ impl GenerationBracket {
         }
     }
 
+    /// Most Game Changers allowed: none at 1–2, three at 3, eight at 4, any at 5.
     fn max_game_changers(self) -> usize {
         match self.bracket {
             1 | 2 => 0,
@@ -232,6 +301,7 @@ impl GenerationBracket {
     }
 
 
+    /// How many combo lines to seed on purpose: none at 1, one at 2–3, two at 4–5.
     fn combo_target(self) -> usize {
         match self.bracket {
             1 => 0,
@@ -241,6 +311,8 @@ impl GenerationBracket {
         }
     }
 
+    /// Whether a built-in combo template fits this bracket: none at 1, slow
+    /// multi-card ones at 2, anything but cEDH lines at 3, everything at 4–5.
     fn allow_compact_combo(self, template: &ComboTemplate) -> bool {
         match self.bracket {
             1 => false,
@@ -251,6 +323,8 @@ impl GenerationBracket {
         }
     }
 
+/// Fewest Game Changers a bracket "should" have; power_up_to_target adds
+/// them when a build comes in under this.
 fn minimum_game_changers(self) -> u32 {
         match self.bracket {
             1 | 2 => 0,
@@ -261,6 +335,7 @@ fn minimum_game_changers(self) -> u32 {
         }
     }
 
+/// Fewest tutors per bracket (power_up_to_target tops up).
 fn minimum_tutors(self) -> u32 {
         match self.bracket {
             1 => 0,
@@ -272,6 +347,7 @@ fn minimum_tutors(self) -> u32 {
         }
     }
 
+/// Fewest fast mana pieces per bracket (power_up_to_target tops up).
 fn minimum_fast_mana(self) -> u32 {
         match self.bracket {
             1 => 0,
@@ -283,6 +359,8 @@ fn minimum_fast_mana(self) -> u32 {
         }
     }
 
+    /// Score nudge for 0–1 mana rocks/rituals: strongly avoided at low brackets,
+    /// wanted at 4–5. Lands never count as fast mana here.
     fn fast_mana_score(self, card: &Card, roles: CardRoles) -> i32 {
         let oracle = card.oracle_text.to_ascii_lowercase();
         let ty = card.type_line.to_ascii_lowercase();
@@ -309,6 +387,16 @@ fn minimum_fast_mana(self) -> u32 {
     }
 }
 
+/// The agent's "upgrade this deck" step: build a fresh deck for the same
+/// commander at the target bracket, then pull the best of the player's
+/// current cards back in, so the result is an upgrade of *their* deck rather
+/// than a stranger's.
+/// Steps: generate a new list → protect combo pieces, theme cards and
+/// "any number of copies" cards → swap in up to 12 strong current cards over
+/// weak flexible slots → swap in up to 8 of the AI model's priority cards →
+/// displaced cards go to the sideboard → integrity and bracket check again.
+/// Note: research runs twice (here and inside the generation call), and the
+/// generation uses default options, which means the deep learning engine.
 pub fn generate_ai_upgrade<F>(
     current: &ParsedDeck,
     target_bracket: GenerationBracket,
@@ -336,6 +424,7 @@ where
     let commanders =
         resolve_generation_commanders(&commander_specification, db)?;
 
+    // Theme: the one asked for, else the commander's top EDHREC theme.
     let selected_theme = preferred_theme
         .filter(|theme| !theme.trim().is_empty())
         .map(|theme| theme.trim().to_string())
@@ -371,6 +460,7 @@ where
         },
     )?;
 
+    // Build a fresh deck; its progress is squeezed into 15–85% of this job.
     let mut generated = generate_optimized_deck(
         &commander_specification,
         &selected_theme,
@@ -389,6 +479,8 @@ where
         "Retaining strong current cards when learned support beats a generated flexible slot",
     ));
 
+    // Cards the deck runs several copies of because their text allows it
+    // (Relentless Rats, Persistent Petitioners…). These must survive the swap.
     let copy_rule_engine = current
         .main
         .iter()
@@ -410,6 +502,7 @@ where
         })
         .collect::<Vec<_>>();
 
+    // Never swapped out: combo pieces, copy-rule cards and on-theme cards.
     let mut protected = generated
         .plan
         .combos
@@ -436,6 +529,8 @@ where
         }
     }
 
+    // Put the copy-rule cards back at their original counts, removing
+    // unprotected nonland cards to make room.
     for (_, engine_entry) in &copy_rule_engine {
         let already_present = generated
             .deck
@@ -485,6 +580,9 @@ where
     let mut retained = 0usize;
     let mut displaced = Vec::<DeckEntry>::new();
 
+    // Keep the player's own good cards: anything from the current list with
+    // strong evidence (support ≥125, confidence ≥25) replaces the weakest
+    // unprotected, non-structural card it beats by more than 35. At most 12.
     let mut candidates = current
         .main
         .iter()
@@ -574,6 +672,8 @@ where
     }
 
     // AI priorities still pass legality, identity, duplicate, engine, and bracket checks.
+    // AI priority cards: up to 8 swaps, each still checked for legality and
+    // colors, and only over a slot whose support is not far above its own.
     let identity = combined_identity(&commanders);
     let mut ai_promoted = 0usize;
 
@@ -701,6 +801,7 @@ where
         ));
     }
 
+    // Everything swapped out goes to the sideboard so nothing is lost.
     for entry in displaced.into_iter().take(15) {
         if !generated
             .deck
@@ -720,6 +821,8 @@ where
 
     // Retaining cards from the current list can change the power profile, so
     // validate the upgraded copy again after all substitutions.
+    // Swaps can change the deck's power, so run the integrity gate (size,
+    // legality, bracket) once more with a broad pool to repair from.
     let mut upgrade_pool = db.top_ranked_cards(15_000)?;
 
     for (name, _) in intelligence.references.top_cards(500) {
@@ -808,6 +911,8 @@ pub struct GenerationOptions {
     pub engine: crate::deep_generation::GenerationEngine,
 }
 
+/// Shortcut: Commander format, no budget, default engine (deep learning).
+/// Used by the agent's upgrade path.
 pub fn generate_optimized_deck<F>(
     commander_specification: &str,
     selected_theme: &str,
@@ -864,6 +969,10 @@ pub fn resolve_pdh_commanders(spec: &str, db: &CardDb) -> Result<Vec<Card>> {
     Ok(out)
 }
 
+/// THE generator. Builds a 100-card Commander or Pauper Commander deck for
+/// `commander_specification` ("A" or "A + B"). The steps below are marked
+/// "Step N" in comments; the percentages match the job log. The deep learning
+/// engine adds to steps 2, 3, 4, 5, 6 and 8 (search "deep").
 pub fn generate_deck_with_options<F>(
     commander_specification: &str,
     selected_theme: &str,
@@ -875,6 +984,8 @@ pub fn generate_deck_with_options<F>(
 where
     F: FnMut(GenerationProgress),
 {
+    // Step 0: refuse what this builder can't do (Highlander has its own
+    // builder; PDH needs the newer card data with format legalities).
     let format = options.format;
     if format == Format::Canlander {
         return Err(anyhow!("Canadian Highlander decks are built without a commander."));
@@ -893,6 +1004,7 @@ where
         commander_specification,
     ));
 
+    // Step 1: commanders. PDH has its own commander rule (uncommon creature).
     let commanders = if format == Format::Pdh {
         resolve_pdh_commanders(commander_specification, db)?
     } else {
@@ -915,6 +1027,9 @@ where
         ));
     }
 
+    // `allowed` is the one legality filter used everywhere below: legal in
+    // the format and under the per-card price ceiling left after the
+    // commander's own price.
     let identity = combined_identity(&commanders);
     // Legal in the format and inside the per-card price ceiling (worked out
     // from what's left of the budget after the commander).
@@ -952,6 +1067,9 @@ where
         },
     ));
 
+    // Step 2: themes. Start from what the commander alone suggests, then add
+    // EDHREC's top themes for it (they define the "normal" shell), then the
+    // player's chosen themes on top.
     let mut tags = detect_deck_tags(&shell, db)?;
 
     // A user's selected play style modifies the commander's normal shell; it
@@ -982,6 +1100,8 @@ where
     // AI assist: the model's themes (used when the player chose none), key
     // cards and cards to avoid. Its card names are checked against the card
     // database, format and colors before they count.
+    // Step 2a (optional): "Let the AI model help" from the Build screen.
+    // Failure is logged and the build carries on without it.
     let mut ai_hints: Option<crate::ai::GenerationHints> = None;
     if options.ai_assist {
         progress(GenerationProgress::new(18, "Asking the AI model", "Themes, key cards and cards to avoid"));
@@ -1008,6 +1128,9 @@ where
     // Play styles, and where each came from. The player's own choice wins.
     // Otherwise: the AI model's, then (deep learning) the commander's own
     // mechanics, then its most popular EDHREC themes.
+    // Step 2b: settle the play styles. `theme_lines` remembers where each came
+    // from for the report. `selected_theme` is shadowed with the chosen spec so
+    // everything below sees it as if the player had picked it.
     let deep = options.engine == crate::deep_generation::GenerationEngine::DeepLearning;
     let mechanics = if deep { crate::deep_generation::commander_mechanics(&commanders) } else { Vec::new() };
     let mut theme_lines: Vec<crate::deep_generation::ThemeLine> = Vec::new();
@@ -1039,6 +1162,9 @@ where
         selected_theme
     };
 
+    // Chosen themes jump to the front of `tags`, then the commander's EDHREC
+    // core tags are sorted first; the top 4 become `primary_tags` (saved in the
+    // plan and used for scoring with `plan_bonus`).
     let selected_themes = theme_list(selected_theme);
     for theme in selected_themes.iter().rev() {
         if let Some(existing) = tags
@@ -1096,6 +1222,8 @@ where
 
     // Research the commander in the format's own sources (PDHREC and
     // Archidekt's Pauper EDH decks for PDH).
+    // Step 3: research (intelligence.rs). Deep learning reads more reference
+    // decklists; `with_format` makes the sources PDH-specific for Pauper.
     let depth = if deep { crate::references::ReferenceDepth::DEEP } else { crate::references::ReferenceDepth::PEER };
     let intelligence = crate::references::with_depth(depth, || crate::format_sources::with_format(format, || {
         learn_commander_intelligence(
@@ -1131,6 +1259,11 @@ where
         ),
     ));
 
+    // Step 4: the candidate pool. Start with the 15,000 most played cards,
+    // then add EDHREC cards and the 500 most common reference-deck cards that
+    // fall outside that cutoff.
+    // TODO: the `pool.iter().any(...)` checks are linear scans inside loops;
+    // a HashSet of names would make this step much cheaper.
     let mut pool = db.top_ranked_cards(15_000)?;
 
     // EDHREC high-synergy cards are allowed into the candidate pool even when
@@ -1179,6 +1312,9 @@ where
     }
     // AI key cards join the pool even when they're outside the usual
     // popularity cutoff.
+    // AI key cards: checked against the card database, the format and the
+    // colors; the rest are logged as "ignored" so you can see what the model
+    // made up. `ai_key` / `ai_avoid` feed the score bonus in step 6.
     let mut ai_key = HashSet::<String>::new();
     let mut ai_avoid = HashSet::<String>::new();
     if let Some(hints) = &ai_hints {
@@ -1211,9 +1347,13 @@ where
         ));
     }
 
+    // Drop anything illegal or over the per-card budget in one place.
     pool.retain(|card| allowed(card));
 
     // Deep card search: Oracle-text matches for the chosen play styles.
+    // Step 4b: rules-text search (oracle_search.rs). Always on for deep
+    // learning; a Build-screen checkbox for peer-based. Finds join the pool and
+    // `deep_finds` remembers their match score for the tiers.
     let mut deep_finds: HashMap<String, DeepFind> = HashMap::new();
     if options.deep_search || deep {
         let mut themes = theme_list(selected_theme);
@@ -1254,6 +1394,8 @@ where
         ),
     ));
 
+    // Step 5 setup: how many lands vs spells (PDH and 4–5 color decks get more
+    // lands), and the running counters the picker updates as it adds cards.
     let library_target = 100usize.saturating_sub(commanders.len());
     // PDH has little mana-rock ramp (no Sol Ring, few signets at common), so
     // it runs a couple more lands.
@@ -1280,6 +1422,11 @@ where
     // The commander's own mechanics, matched by the same rules as deep
     // search. Peer-based generation relies on engine words alone, which
     // finds nothing for commanders like Drana whose text names no type.
+    // "Engine" targets: how many cards should feed the commander's engine
+    // (engine words or, for deep learning, its mechanics), how many EDHREC core
+    // cards to favour, and how many direct theme cards (more for Stax).
+    // These are soft targets: below them the matching bonus is big, above
+    // them it shrinks.
     let mechanic_matchers: Vec<crate::oracle_search::ThemeMatcher> =
         mechanics.iter().map(|m| crate::oracle_search::ThemeMatcher::new(m)).collect();
 
@@ -1325,6 +1472,8 @@ where
             }
         };
 
+    // Step 5: win packages, best evidence first. Combos go in before any other
+    // spell so the picker builds around them.
     let templates = combo_templates();
 
     progress(GenerationProgress::new(
@@ -1338,6 +1487,9 @@ where
 
     // Prefer win packages that are repeatedly present in actual reference
     // lists for this commander. Static templates are only a fallback.
+    // 5a: combos that recur in this commander's reference decks. Skipped if
+    // seen in too few decks, too slow for bracket 5, or not relevant enough to
+    // this commander (`combo_relevance`), or if a piece isn't legal here.
     for (combo_cards, result, spellbook_bracket, frequency) in
         reference_snapshot.top_combos(16)
     {
@@ -1433,6 +1585,8 @@ where
 
     // Deep learning: Commander Spellbook's combos for this commander, most
     // played first, when the reference decks didn't supply enough.
+    // 5b (deep learning only): Commander Spellbook's combos that include the
+    // commander, when the reference decks didn't give enough.
     let mut spellbook_found = 0usize;
     let mut spellbook_status = if deep { "not needed" } else { "off" };
     if deep && seeded_combos.len() < target_bracket.combo_target() {
@@ -1518,6 +1672,8 @@ where
         ),
     ));
 
+// 5c: the built-in combo templates (combo_templates), last resort, only
+// those the bracket allows and that relate to this commander.
 let relevant_templates = templates
     .iter()
     .filter(|template| target_bracket.allow_compact_combo(template))
@@ -1610,6 +1766,10 @@ for template in relevant_templates
         ),
     ));
 
+    // Step 6: pick the spells.
+    // `thin_evidence` is true when there's no EDHREC/PDHREC data and no
+    // reference decks (new or obscure commanders, offline): engine and theme
+    // bonuses are toned down then, because they'd otherwise match far too much.
     // Without EDHREC or decklist evidence (Pauper Commander, or offline), the
     // commander's own keywords ("counter", "token"…) match far too broadly to
     // carry the large bonuses they get when real build data backs them up.
@@ -1617,6 +1777,10 @@ for template in relevant_templates
     // Each candidate's evidence tier and reasons, for the report.
     let mut evidence: HashMap<String, (Option<crate::deep_generation::Tier>, Vec<String>)> = HashMap::new();
 
+    // 6a: score every legal nonland candidate once. Each entry is
+    // (card, roles, base score, matches a theme, matches the engine, reference
+    // frequency, has EDHREC data). The base score never changes; the loop below
+    // adds the "what does the deck still need" bonuses each step.
     let spell_pool = pool
         .iter()
         .filter(|card| {
@@ -1684,6 +1848,13 @@ for template in relevant_templates
             let key = card.name.to_ascii_lowercase();
             let ai_bonus = if ai_key.contains(&key) { 120 } else if ai_avoid.contains(&key) { -120 } else { 0 };
 
+            // The fixed part of a card's score, summed from independent pieces:
+            // AI key/avoid (±120) + evidence tiers (deep learning only) + popularity
+            // and fit to the deck's tags + fast mana for the bracket + bracket fit +
+            // learned support from research + rules-text find + PDH staple stand-in.
+            // TODO: these were tuned one at a time and overlap (EDHREC shows up in
+            // `support`, the tiers and again as `edhrec_need` below). A per-card
+            // breakdown in the report would make re-tuning much easier.
             let score = ai_bonus
                 + if deep { tier_bonus } else { 0 }
                 + base_card_score(card, &tags)
@@ -1707,6 +1878,8 @@ for template in relevant_templates
 
     // Rarely played deep-search finds earn a place on fit, but a deck built
     // mostly from them loses the proven core, so cap how many get in.
+    // At most 12 cards that only the rules-text search found (rank > 15,000),
+    // so a deck keeps its proven core.
     const DEEP_OBSCURE_CAP: usize = 12;
     let is_deep_obscure = |card: &Card| {
         deep_finds.contains_key(&card.name.to_ascii_lowercase())
@@ -1765,6 +1938,13 @@ for template in relevant_templates
         ));
     }
 
+    // 6b: the greedy picker. Each pass rescans every unused candidate, adds
+    // "what the deck still needs" bonuses to its fixed score (theme cards until
+    // the theme target, engine cards until the engine target, EDHREC core until
+    // its target, role needs from `need_bonus`, the plan's tags), and takes the
+    // single best card. Repeats until the spell slots are full.
+    // Game Changers over the bracket's limit are skipped (marked used).
+    // Cost: candidates × slots (~15k × 65), fine on desktop, slowish on phones.
     while main.len() < spell_target {
         let mut best_index = None;
         let mut best_score = i32::MIN;
@@ -1899,6 +2079,11 @@ for template in relevant_templates
         format!("Color identity {identity}"),
     ));
 
+    // Step 7: mana base. Nonbasic lands ranked by `land_build_score` (EDHREC,
+    // reference decks, engine words); take 9 for mono-color, 16 for two colors,
+    // 22 for three or more, then fill the rest with basics.
+    // TODO: no check that the lands actually make the deck's colors in the
+    // right proportions (basics are split by `add_basics`, not by pip count).
     let mut land_pool = pool
         .iter()
         .filter(|card| {
@@ -1970,6 +2155,8 @@ for template in relevant_templates
         land_target.saturating_sub(current_lands),
     );
 
+    // 7b: safety net. If the deck is still short (tiny pools: PDH, tight
+    // budgets), fill with the best remaining legal spells by a simpler score.
     let mut library_count =
         main.iter().map(|entry| entry.quantity as usize).sum::<usize>();
 
@@ -2046,6 +2233,8 @@ for template in relevant_templates
         }
     }
 
+    // Still short after the fallback: give up with a clear error rather than
+    // hand over a deck that isn't 100 cards.
     if library_count != library_target {
         return Err(anyhow!(
             "The generator could only build a {library_count}-card library. \
@@ -2054,6 +2243,7 @@ for template in relevant_templates
         ));
     }
 
+    // The deck as built so far; steps 8–9 check and repair it in place.
     let mut deck = ParsedDeck {
         name: if format == Format::Pdh {
             format!("{generated_name} - PDH")
@@ -2079,6 +2269,11 @@ progress(GenerationProgress::new(
     },
 ));
 
+// Step 8: combo check with Commander Spellbook (brackets 3+). Up to 6
+// rounds: ask Spellbook what the deck has; if it has no complete combo (or,
+// at bracket 5, fewer than two fast "ruthless" ones), take the most
+// reference-backed combo that's one card away, and swap that card in over
+// the weakest plan card. Each round is a network call.
 if target_bracket.bracket >= 3 {
     let desired_ruthless =
         if target_bracket.bracket >= 5 { 2 } else { 0 };
@@ -2194,6 +2389,8 @@ if target_bracket.bracket >= 3 {
         "Checking combo density and reference-supported cards",
     ));
 
+    // The combos the plan lists: the seeded ones plus up to 4 more complete
+    // lines Spellbook finds that relate to this commander.
     let mut final_combos = seeded_combos.clone();
 
     if let Ok(report) = find_my_combos(&deck) {
@@ -2258,6 +2455,9 @@ progress(GenerationProgress::new(
     "Checking 100-card size, singleton, colour identity, legality, structure and goldfish hands".to_string(),
 ));
 
+// Step 9: integrity gate (integrity.rs): fixes size, singleton, colors and
+// legality, then locks the bracket (power up or down). This can swap cards
+// picked earlier; the swaps are only in the notes, not the report.
 let (integrity_report, validated_bracket) = integrity_gate(
     &mut deck,
     target_bracket,
@@ -2269,6 +2469,11 @@ let (integrity_report, validated_bracket) = integrity_gate(
 )?;
 
 // Budget: swap the priciest cards for cheaper ones until the deck fits.
+// Step 9b: budget. Swap the priciest unprotected cards (commanders and
+// combo pieces are protected) for cheaper ones that score well for this
+// deck (EDHREC synergy, theme, engine, popularity).
+// TODO: runs after the bracket lock, so budget swaps can change the
+// bracket again without being re-validated.
 if budget.is_set() {
     let protected: HashSet<String> = deck
         .commanders
@@ -2335,6 +2540,8 @@ progress(GenerationProgress::new(
     ),
 ));
 
+// Step 10: the build notes shown with the game plan (bracket or power
+// level first, then source summaries, references, combos, swaps).
 notes.insert(
     0,
     if format.is_commander() {
@@ -2406,6 +2613,9 @@ notes.insert(
         );
     }
 
+    // Note about the rules-text search. TODO: deep learning runs the search
+    // even when this checkbox is off, but this note only appears with the
+    // checkbox; check `|| deep` here too.
     if options.deep_search {
         let included: Vec<String> = deck
             .main
@@ -2519,6 +2729,8 @@ notes.insert(
         }
     }
 
+    // Step 11: the plan summary paragraph, honest sources, and (deep learning)
+    // the build report, then hand back the deck and plan.
     let summary =
         build_game_plan_summary(&commanders, selected_theme, &primary_tags, &final_combos);
 
@@ -2532,6 +2744,9 @@ notes.insert(
         .cloned()
         .collect();
 
+    // The deep learning build report (deep_generation::GenerationReport):
+    // what each source gave, tier counts for the pool and the deck, why each
+    // card is in, the 8 best cards that missed, and weak spots worth knowing.
     let report = deep.then(|| {
         use crate::deep_generation::{GenerationReport, Pick, SourceLine, TierCounts};
         let status = |n: usize| if n > 0 { "used" } else { "empty" }.to_string();
@@ -2692,6 +2907,11 @@ notes.insert(
     })
 }
 
+/// Step 9's checker: repair the list (integrity.rs), lock the bracket, then
+/// require a clean integrity pass. If the bracket lock swapped cards and that
+/// broke something, lock and check once more. Commanders and combo pieces
+/// are protected throughout. Returns the merged repair list (shown in the
+/// notes) and the final bracket.
 /// Final integrity gate: audit + repair the finished list, re-lock the
 /// bracket if repairs changed the card pool, then require a clean pass.
 fn integrity_gate(
@@ -2740,6 +2960,11 @@ fn integrity_gate(
     Ok((merged, estimate))
 }
 
+/// Make the finished deck land on the requested bracket: estimate it (with
+/// Spellbook combos), power up if it's under, power down if it's over. Each
+/// pass logs to the BRACKET scope. If it still misses, Commander decks fail
+/// loudly ("Commander Lab will not save a deck under the wrong bracket");
+/// Pauper Commander just reports, since brackets are only a power dial there.
 fn enforce_generation_bracket(
     deck: &mut ParsedDeck,
     target: GenerationBracket,
@@ -2896,6 +3121,11 @@ fn enforce_generation_bracket(
     Ok(estimate)
 }
 
+/// Raise a deck to the bracket's minimums (Game Changers, tutors, fast mana)
+/// one swap at a time, up to 40 swaps. Each swap brings in the best candidate
+/// that fills a missing requirement (cards filling two or three at once
+/// score much higher) and removes the least-supported unprotected nonland
+/// card that isn't itself a Game Changer, tutor or fast mana.
 fn power_up_to_target(
     deck: &mut ParsedDeck,
     target: GenerationBracket,
@@ -2987,6 +3217,8 @@ fn power_up_to_target(
             break;
         };
 
+        // Pick what to cut: lowest learned support, with structural roles
+        // (ramp, draw, removal…) worth an extra 75 so they're kept.
         let victim = deck
             .main
             .iter()
@@ -3051,6 +3283,12 @@ fn power_up_to_target(
     Ok(())
 }
 
+/// Lower a deck that validates above the target bracket: up to 30 rounds of
+/// cutting the card most responsible for the overshoot (Game Changers at
+/// 1–2, excess tutors or fast mana at 2–4) and replacing it with a
+/// same-role card that doesn't push the bracket.
+/// TODO: each round asks Commander Spellbook for combos again (a network
+/// call), so a stubborn deck can make 30 requests.
 fn power_down_to_target(
     deck: &mut ParsedDeck,
     target: GenerationBracket,
@@ -3200,6 +3438,7 @@ fn power_down_to_target(
     Ok(())
 }
 
+/// Counts used by the bracket lock: Game Changers, tutors, fast mana.
 #[derive(Debug, Clone, Copy, Default)]
 struct GeneratedPowerProfile {
     game_changers: u32,
@@ -3207,6 +3446,8 @@ struct GeneratedPowerProfile {
     fast_mana: u32,
 }
 
+/// Count Game Changers, tutors and fast mana in the whole deck (commanders
+/// included), the three things the bracket rules weigh most.
 fn generated_power_profile(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -3234,6 +3475,8 @@ fn generated_power_profile(
     Ok(profile)
 }
 
+/// "Fast mana": a nonland that makes mana for 0–1 (Sol Ring, Dark Ritual,
+/// Mana Vault…). Same rule as `fast_mana_score`; keep the two in sync.
 fn is_fast_mana_card(card: &Card, roles: CardRoles) -> bool {
     let oracle = card.oracle_text.to_ascii_lowercase();
     let type_line = card.type_line.to_ascii_lowercase();
@@ -3249,6 +3492,8 @@ fn is_fast_mana_card(card: &Card, roles: CardRoles) -> bool {
         && makes_mana
 }
 
+/// Render a plan as the `.plan.md` text: commanders, colors, tags, plan,
+/// combos, notes, the build report (deep learning) and sources.
 pub fn game_plan_markdown(plan: &GamePlan) -> String {
     let mut out = String::new();
 
@@ -3305,6 +3550,9 @@ pub fn game_plan_markdown(plan: &GamePlan) -> String {
     out
 }
 
+/// A hand-written two/three-card combo the generator may add as a last
+/// resort. `fast`/`cedh` gate which brackets may use it.
+/// `preferred_tags` is not used anywhere yet (the compiler warns about it).
 #[derive(Debug, Clone)]
 struct ComboTemplate {
     cards: &'static [&'static str],
@@ -3314,6 +3562,8 @@ struct ComboTemplate {
     cedh: bool,
 }
 
+/// The built-in combo list. Only used when neither reference decks nor
+/// Commander Spellbook supplied a combo for the commander.
 fn combo_templates() -> Vec<ComboTemplate> {
     vec![
         ComboTemplate {
@@ -3389,6 +3639,8 @@ fn combo_templates() -> Vec<ComboTemplate> {
     ]
 }
 
+/// Turn a template's names into cards, or None if any piece is missing,
+/// illegal in the format or outside the colors.
 fn resolve_combo_template(
     template: &ComboTemplate,
     identity: &str,
@@ -3415,6 +3667,7 @@ fn resolve_combo_template(
 }
 
 
+/// Which pieces of a combo the deck doesn't run yet.
 fn missing_combo_cards(cards: &[String], deck: &ParsedDeck) -> Vec<String> {
     let existing = deck
         .commanders
@@ -3430,6 +3683,9 @@ fn missing_combo_cards(cards: &[String], deck: &ParsedDeck) -> Vec<String> {
         .collect()
 }
 
+/// Make room for a combo piece: replace the nonland card with the lowest
+/// base score that isn't a combo piece or a ramp/draw/removal/wipe card.
+/// Returns false if nothing could be replaced.
 fn replace_low_plan_card(
     deck: &mut ParsedDeck,
     new_card: &Card,
@@ -3491,6 +3747,7 @@ fn replace_low_plan_card(
     Ok(true)
 }
 
+/// Same combo regardless of order or capitalization.
 fn same_card_set(a: &[String], b: &[String]) -> bool {
     let left = a
         .iter()
@@ -3504,6 +3761,10 @@ fn same_card_set(a: &[String], b: &[String]) -> bool {
     left == right
 }
 
+/// The plan paragraph: establish the commander, build the theme engine
+/// (plus up to two supporting tags), close with the first two combos or
+/// "a protected win" when there are none. It's a template, not analysis;
+/// the build notes and report carry the specifics.
 fn build_game_plan_summary(
     commanders: &[Card],
     selected_theme: &str,
@@ -3551,6 +3812,8 @@ fn build_game_plan_summary(
     )
 }
 
+/// Small bonus (10–12 per tag) for cards that literally mention one of the
+/// deck's primary tags ("graveyard", "token", artifact type…).
 fn plan_bonus(card: &Card, primary_tags: &[String]) -> i32 {
     let oracle = card.oracle_text.to_ascii_lowercase();
     let type_line = card.type_line.to_ascii_lowercase();
@@ -3578,6 +3841,8 @@ fn plan_bonus(card: &Card, primary_tags: &[String]) -> i32 {
 }
 
 
+/// True when the card's name, type or text contains one of the commander's
+/// engine words (intelligence.rs). Empty word list means no engine bonus.
 fn card_matches_engine(card: &Card, terms: &[String]) -> bool {
     if terms.is_empty() {
         return false;
@@ -3596,6 +3861,9 @@ fn card_matches_engine(card: &Card, terms: &[String]) -> bool {
 
 
 
+/// How much a nonbasic land belongs in this deck: EDHREC inclusion and
+/// synergy, how many reference decks run it, engine words. Lands with no
+/// evidence score 0 and only fill in after those that have some.
 fn land_build_score(
     card: &Card,
     edhrec_signals: &HashMap<String, EdhrecCardSignal>,
@@ -3637,6 +3905,7 @@ fn theme_matcher(theme: &str) -> std::rc::Rc<ThemeMatcher> {
     })
 }
 
+/// Does the card fit any of the chosen themes ("Tokens + Treasure")?
 /// True when the card fits any of the selected play styles.
 fn card_matches_theme(card: &Card, selected_theme: &str) -> bool {
     theme_list(selected_theme)
@@ -3644,6 +3913,11 @@ fn card_matches_theme(card: &Card, selected_theme: &str) -> bool {
         .any(|theme| card_matches_single_theme(card, theme))
 }
 
+/// One theme. In order: the card's archetype tags, the oracle_search rules
+/// for the theme, a few special cases below, and finally the theme's own
+/// words appearing in the card text (themes of 4+ letters).
+/// TODO: the fallbacks are broad ("tokens" matches any "token" mention;
+/// "big mana" matches every 7+ mana card).
 fn card_matches_single_theme(card: &Card, selected_theme: &str) -> bool {
     if tag_names_for_card(card)
         .iter()
@@ -3715,6 +3989,8 @@ fn card_matches_single_theme(card: &Card, selected_theme: &str) -> bool {
     }
 }
 
+/// Ramp, draw, removal, counterspell, tutor, wipe, protection or recursion:
+/// the jobs every deck needs regardless of theme.
 fn has_structural_role(roles: CardRoles) -> bool {
     roles.ramp
         || roles.draw
@@ -3726,6 +4002,8 @@ fn has_structural_role(roles: CardRoles) -> bool {
         || roles.recursion
 }
 
+/// Score from how many reference decks run the card; matters more at
+/// higher brackets (proven lists count for more as power goes up).
 fn reference_card_score(
     frequency: u32,
     reference_decks: usize,
@@ -3748,6 +4026,9 @@ fn reference_card_score(
     (share * multiplier).round() as i32
 }
 
+/// Push Game Changers and tutors away at low brackets and toward high ones;
+/// at bracket 4+ cheap cards get a small bump, at bracket 1 a small dip so
+/// casual decks aren't just efficient staples.
 fn bracket_card_score(
     card: &Card,
     roles: CardRoles,
@@ -3787,6 +4068,8 @@ fn bracket_card_score(
     score
 }
 
+/// The plainest score: fit to the deck's tags (×2), overall popularity
+/// (EDHREC rank buckets) and cheapness (mana value buckets).
 fn base_card_score(card: &Card, tags: &[ArchetypeTag]) -> i32 {
     let rank = match card.edhrec_rank {
         Some(rank) if rank <= 250 => 32,
@@ -3812,6 +4095,10 @@ fn base_card_score(card: &Card, tags: &[ArchetypeTag]) -> i32 {
     tag_fit_score(card, tags) * 2 + rank + efficiency
 }
 
+/// "The deck still needs this": bonus for each role the deck is short on
+/// compared with what this commander's decks usually run (learned targets
+/// from intelligence.rs). Extra tutors beyond the target are penalised at
+/// low brackets.
 fn need_bonus(
     roles: CardRoles,
     counts: &RoleCounts,
@@ -3852,6 +4139,8 @@ fn need_bonus(
     score
 }
 
+/// Running count of each role among cards picked so far; `need_bonus`
+/// compares it with the learned targets.
 #[derive(Default)]
 struct RoleCounts {
     ramp: u32,
@@ -3865,6 +4154,7 @@ struct RoleCounts {
 }
 
 impl RoleCounts {
+    /// Count a picked card, Game Changers included.
     fn add_card(&mut self, card: &Card, roles: CardRoles) {
         if card.game_changer {
             self.game_changers += 1;
@@ -3872,6 +4162,8 @@ impl RoleCounts {
         self.add(roles);
     }
 
+    /// Count a card's roles (removal and counterspells both count as
+    /// interaction).
     fn add(&mut self, roles: CardRoles) {
         if roles.ramp {
             self.ramp += 1;
@@ -3897,6 +4189,9 @@ impl RoleCounts {
     }
 }
 
+/// Fill the remaining land slots with basics split evenly across the
+/// colors (Wastes for colorless). Doesn't weigh by how many of each color's
+/// mana symbols the deck has.
 fn add_basics(main: &mut Vec<DeckEntry>, identity: &str, total: usize) {
     if total == 0 {
         return;

@@ -2,6 +2,15 @@
 //!
 //! Everything the app does lives here; the desktop/Android shell (Tauri) and
 //! the web server are thin wrappers around [`api::Engine`].
+//!
+//! Where to start reading: `api.rs` (every command the UI sends), then the
+//! module for the feature you're changing. Data lives in the folder the
+//! engine opens: `decks/` (text decklists and sidecars), `data/` (card
+//! database, caches, settings, models, tools) and `exports/`.
+//!
+//! Things to work on:
+//! - Several modules are 1,500–3,900 lines (`api.rs`, `generator.rs`,
+//!   `ai.rs`, `references.rs`, `data.rs`); each has notes on how to split it.
 
 pub mod ai;
 pub mod ai_runtime;

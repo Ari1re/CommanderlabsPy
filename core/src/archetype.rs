@@ -1,3 +1,17 @@
+//! Play-style tags: what a deck or card is about ("Tokens", "Aristocrats").
+//!
+//! How it fits: [`detect_deck_tags`] scores a deck against built-in tag
+//! rules; [`tag_names_for_card`] / [`tag_fit_score`] do the same per card.
+//! [`theme_list`] splits a theme spec ("Tokens + Treasure") on
+//! [`THEME_SEPARATOR`]. Used by suggestions, the agent and the Highlander
+//! rebuild.
+//!
+//! Things to work on:
+//! - Overlaps with `oracle_search::ThemeMatcher`, which has better rules.
+//!   The two should share one rule set.
+//! - Read Golos Highlander as "Sacrifice, Artifacts" instead of Storm/Combo:
+//!   combo and storm decks aren't detected from their pieces.
+
 use crate::{
     data::{Card, CardDb},
     deck::ParsedDeck,
@@ -40,6 +54,30 @@ const TAGS: &[&str] = &[
     "Wheels",
 ];
 
+/// Every archetype a deck can be built around: EDHREC's full theme and
+/// typal list (see `edhrec::all_tags`, about 400 tags), or the built-in
+/// [`TAGS`] when EDHREC has never been reached. Offline entries have no deck
+/// count. Only the built-in tags have detection rules (`tags_for_card`);
+/// the rest are matched by rules text through `oracle_search::ThemeMatcher`.
+pub fn catalog() -> Vec<crate::edhrec::EdhrecTag> {
+    let tags = crate::edhrec::all_tags();
+    if !tags.is_empty() {
+        return tags;
+    }
+    TAGS.iter()
+        .map(|name| crate::edhrec::EdhrecTag {
+            name: name.to_string(),
+            slug: String::new(),
+            deck_count: 0,
+            typal: *name == "Typal",
+        })
+        .collect()
+}
+
+/// A deck's play styles: every card votes for its tags (`tags_for_card`),
+/// the commander's votes count 8×, and tags are ranked by score then by how
+/// many cards match. Combo decks rarely show as "Combo" because few pieces
+/// carry combo-ish text; storm is only seen through the word "storm".
 pub fn detect_deck_tags(deck: &ParsedDeck, db: &CardDb) -> Result<Vec<ArchetypeTag>> {
     let mut scores: HashMap<String, (i32, u32)> = HashMap::new();
 
@@ -95,6 +133,8 @@ pub fn detect_deck_tags(deck: &ParsedDeck, db: &CardDb) -> Result<Vec<ArchetypeT
     Ok(tags)
 }
 
+/// How well a card fits the deck's top 5 tags: 3–7 points per shared tag,
+/// more for the deck's stronger tags.
 pub fn tag_fit_score(card: &Card, deck_tags: &[ArchetypeTag]) -> i32 {
     let card_tags = tags_for_card(card);
 
@@ -114,10 +154,14 @@ pub fn tag_fit_score(card: &Card, deck_tags: &[ArchetypeTag]) -> i32 {
         .sum()
 }
 
+/// Public name for `tags_for_card`.
 pub fn tag_names_for_card(card: &Card) -> Vec<String> {
     tags_for_card(card)
 }
 
+/// The play-style tags one card supports, from phrases in its text and
+/// type ("create … token" → Tokens, "sacrifice" → Sacrifice/Aristocrats…).
+/// Overlaps with oracle_search::ThemeMatcher, which has better rules.
 fn tags_for_card(card: &Card) -> Vec<String> {
     let oracle = card.oracle_text.to_ascii_lowercase();
     let type_line = card.type_line.to_ascii_lowercase();

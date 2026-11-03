@@ -1,3 +1,28 @@
+//! The AI layer: configuration, talking to models, and the AI features
+//! that use them.
+//!
+//! How it fits: [`AiConfig`] (data/ai_config.json) says which provider is
+//! used: the built-in engine (`local_llm.rs`, llama.cpp compiled in), a
+//! llama.cpp server, Ollama, or an online OpenAI-compatible API.
+//! [`LocalAi::connect`] picks the model and `chat` / `chat_streaming` /
+//! `chat_json` send requests. On top of that:
+//! - `build_ai_commander_profile`: the agent's research summary.
+//! - [`generation_hints`]: themes, key cards and cards to avoid for "Let the
+//!   AI model help" on the Build screen.
+//! - [`test_connection`] / [`list_api_models`]: Settings → AI model.
+//!
+//! Things to work on:
+//! - ~1,600 lines mixing config, transport for four providers and features.
+//!   Split into `ai/config.rs`, `ai/client.rs` (one trait, four impls) and
+//!   the features.
+//! - Only the built-in engine streams answers; Ollama and OpenAI-style APIs
+//!   can stream too (`stream: true`).
+//! - Small on-device models invent card names. Every feature that takes card
+//!   names from a model must check them against the card database (generation
+//!   hints do; the agent's profile should be audited).
+//! - Online model presets in Settings hard-code model names that will go out
+//!   of date; "List models" is the fallback.
+
 use crate::{
     data::{CardDb},
     deck::ParsedDeck,
@@ -24,6 +49,8 @@ const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const LLAMA_MODEL: &str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M";
 const OLLAMA_MODEL: &str = "qwen2.5:7b-instruct";
 
+/// Where AI requests go: llama.cpp (the built-in engine at the default
+/// address, or a llama.cpp server), Ollama, or an online OpenAI-style API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProvider {
@@ -33,12 +60,14 @@ pub enum AiProvider {
 }
 
 impl Default for AiProvider {
+    /// The built-in llama.cpp engine is the default provider.
     fn default() -> Self {
         Self::LlamaCpp
     }
 }
 
 impl AiProvider {
+    /// Provider name for logs and status lines.
     pub fn label(self) -> &'static str {
         match self {
             Self::LlamaCpp => "LLAMA.CPP",
@@ -47,6 +76,7 @@ impl AiProvider {
         }
     }
 
+    /// Cycle providers (left over from the old terminal UI's provider key).
     pub fn next(self) -> Self {
         match self {
             Self::LlamaCpp => Self::Ollama,
@@ -56,6 +86,7 @@ impl AiProvider {
     }
 }
 
+/// A model choice offered in Settings: name, model id, short description.
 #[derive(Debug, Clone, Copy)]
 pub struct AiModelPreset {
     pub name: &'static str,
@@ -105,6 +136,8 @@ const OLLAMA_MODELS: [AiModelPreset; 4] = [
     },
 ];
 
+/// The model choices for a provider (none for online APIs: the player
+/// types or lists the model).
 pub fn model_presets(provider: AiProvider) -> &'static [AiModelPreset] {
     match provider {
         AiProvider::LlamaCpp => &LLAMA_MODELS,
@@ -113,6 +146,9 @@ pub fn model_presets(provider: AiProvider) -> &'static [AiModelPreset] {
     }
 }
 
+/// `data/ai_config.json`: provider, address and model in use, temperature,
+/// timeout, web research on/off, and the online API's key, address and
+/// model (kept separately so switching providers doesn't lose them).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfig {
     #[serde(default = "default_enabled")]
@@ -137,6 +173,7 @@ pub struct AiConfig {
     pub api_model: String,
 }
 
+/// Serde defaults, so older config files missing a field still load.
 fn default_enabled() -> bool { true }
 fn default_base_url() -> String { LLAMA_BASE_URL.to_string() }
 fn default_model() -> String { LLAMA_MODEL.to_string() }
@@ -151,6 +188,7 @@ fn default_api_model() -> String {
 }
 
 impl Default for AiConfig {
+    /// Fresh config: built-in engine with the Phone model, web research on.
     fn default() -> Self {
         Self {
             enabled: true,
@@ -168,6 +206,8 @@ impl Default for AiConfig {
 }
 
 impl AiConfig {
+    /// Read the config, migrating pre-provider configs (Ollama only) to the
+    /// llama.cpp default; create it on first run.
     pub fn load_or_create() -> Self {
         if let Ok(text) = fs::read_to_string(CONFIG_PATH) {
             if let Ok(value) = serde_json::from_str::<Value>(&text) {
@@ -194,6 +234,7 @@ impl AiConfig {
         config
     }
 
+    /// Write the config file.
     pub fn save(&self) -> Result<()> {
         if let Some(parent) = Path::new(CONFIG_PATH).parent() {
             fs::create_dir_all(parent)
@@ -209,6 +250,8 @@ impl AiConfig {
         Ok(())
     }
 
+    /// Switch provider and point at its default address and model (for online
+    /// APIs: the saved API address and model).
     pub fn set_provider(&mut self, provider: AiProvider) {
         self.provider = provider;
 
@@ -237,10 +280,12 @@ impl AiConfig {
             && crate::local_llm::available()
     }
 
+    /// Switch to the next provider (old terminal UI).
     pub fn cycle_provider(&mut self) {
         self.set_provider(self.provider.next());
     }
 
+    /// Pick a preset model by position; false if there's no such preset.
     pub fn set_model_preset(&mut self, index: usize) -> bool {
         let Some(preset) = model_presets(self.provider).get(index) else {
             return false;
@@ -265,6 +310,11 @@ pub struct AiWinPackage {
     pub notes: String,
 }
 
+/// The agent's AI research summary for a commander: archetypes, game plan,
+/// win packages, priority/avoid cards, mulligan and interaction advice,
+/// community findings, notes, sources. `enabled` is false (with
+/// `fallback_reason`) when no model answered, and the agent carries on
+/// with its own analysis.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AiCommanderProfile {
     #[serde(default)]
@@ -310,6 +360,7 @@ pub struct AiCommanderProfile {
 }
 
 impl AiCommanderProfile {
+    /// An empty profile saying why the AI wasn't used.
     pub fn fallback(reason: impl Into<String>) -> Self {
         Self {
             enabled: false,
@@ -319,12 +370,15 @@ impl AiCommanderProfile {
     }
 }
 
+/// A connected AI: the config, an HTTP client and the model actually used.
 pub struct LocalAi {
     config: AiConfig,
     client: Client,
     model: String,
 }
 
+/// The chat completions URL for an OpenAI-compatible service, whether its
+/// base address ends in /v1, /openai or nothing.
 fn openai_chat_url(base_url: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
 
@@ -353,6 +407,8 @@ mod url_tests {
     }
 }
 
+/// Get JSON out of a model's answer even when it isn't clean: plain JSON,
+/// JSON in a ```json fence, or the first {...}/[...] inside other text.
 fn parse_local_ai_json(content: &str) -> Result<Value> {
     let trimmed = content.trim();
 
@@ -378,6 +434,7 @@ fn parse_local_ai_json(content: &str) -> Result<Value> {
     ))
 }
 
+/// Remove a ``` code fence around an answer.
 fn strip_markdown_json_fence(content: &str) -> &str {
     let trimmed = content.trim();
 
@@ -398,6 +455,7 @@ fn strip_markdown_json_fence(content: &str) -> &str {
     body.trim()
 }
 
+/// The first balanced {...} or [...] in a text (string-aware).
 fn extract_first_json_value(content: &str) -> Option<&str> {
     let bytes = content.as_bytes();
 
@@ -454,6 +512,10 @@ fn extract_first_json_value(content: &str) -> Option<&str> {
 }
 
 impl LocalAi {
+    /// Get ready to send requests with the configured provider: for the
+    /// built-in engine, find a downloaded model; for servers, ask which models
+    /// they have (picking the configured one, else the first); for online APIs,
+    /// just use the configured model. Fails with a message the UI can show.
     pub fn connect() -> Result<Self> {
         let config = AiConfig::load_or_create();
 
@@ -567,10 +629,12 @@ impl LocalAi {
         })
     }
 
+    /// The model in use.
     pub fn model(&self) -> &str {
         &self.model
     }
 
+    /// The provider in use.
     pub fn provider(&self) -> AiProvider {
         self.config.provider
     }
@@ -589,6 +653,7 @@ impl LocalAi {
         Ok(answer)
     }
 
+    /// `chat_messages_with` without streaming.
     fn chat_messages(
         &self,
         system: &str,
@@ -598,6 +663,11 @@ impl LocalAi {
         self.chat_messages_with(system, turns, json_mode, None)
     }
 
+    /// Send one chat to the configured provider and return the answer text.
+    /// Built-in engine: in-process (streams through `on_text`, JSON mode uses
+    /// a grammar). llama.cpp server: OpenAI-style request (JSON mode via
+    /// `response_format`). Online API: OpenAI-style with the key (no JSON mode,
+    /// some services reject it). Ollama: its own /api/chat format.
     fn chat_messages_with(
         &self,
         system: &str,
@@ -772,6 +842,7 @@ impl LocalAi {
         }
     }
 
+    /// One question with a system prompt.
     fn chat_content(
         &self,
         system: &str,
@@ -785,6 +856,7 @@ impl LocalAi {
         )
     }
 
+    /// One question whose answer should be JSON, parsed leniently.
     fn chat_json(
         &self,
         system: &str,
@@ -797,6 +869,11 @@ impl LocalAi {
 }
 
 
+/// The agent's AI research step: connect to the model, gather web research
+/// (if on), build a grounded context (deck, research, references, rules
+/// notes), ask for a JSON profile, then clean it (`sanitize_profile`).
+/// Any failure returns a fallback profile instead of an error, so the agent
+/// always keeps going.
 pub fn build_ai_commander_profile<F>(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -968,6 +1045,8 @@ pub struct AgentChatMessage {
     pub content: String,
 }
 
+/// An older deck chat for the agent (before deck_chat.rs). Nothing calls it
+/// any more; candidate for removal.
 pub fn chat_with_deck_agent(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -1217,6 +1296,10 @@ USER-SUPPLIED REFERENCES
     Ok(content)
 }
 
+/// Keep only what the model said that's real: priority and win-package
+/// cards must exist, be Commander legal and fit the colors (commanders
+/// always allowed); avoid-list cards must at least exist. Lists are capped
+/// (40 priority cards, 12 win packages…).
 fn sanitize_profile(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -1298,6 +1381,9 @@ fn sanitize_profile(
     profile.feedback_preferences.truncate(12);
 }
 
+/// The text the model reads for the profile: commander(s), the deck, the
+/// player's brief and references, research findings, web excerpts and
+/// rules notes, so its answer is grounded in real data rather than memory.
 fn build_grounded_context(
     deck: &ParsedDeck,
     db: &CardDb,

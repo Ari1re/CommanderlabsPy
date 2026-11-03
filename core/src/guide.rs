@@ -1,5 +1,9 @@
 //! "How to play this deck": a deck-specific guide built from the actual
 //! cards, the analysis, known combos and a quick draw simulation.
+//!
+//! Things to work on:
+//! - The guide is rebuilt each time it's opened; cache it with the deck's
+//!   version so it only changes when the deck does.
 
 use crate::{
     analysis::{classify_card, DeckAnalysis},
@@ -29,10 +33,12 @@ pub struct PlayGuide {
     pub sections: Vec<GuideSection>,
 }
 
+/// Up to `limit` card names.
 fn names(cards: &[&Card], limit: usize) -> Vec<String> {
     cards.iter().take(limit).map(|c| c.name.clone()).collect()
 }
 
+/// "A", "A and B", "A, B, and C".
 fn list(cards: &[String]) -> String {
     match cards.len() {
         0 => String::new(),
@@ -42,10 +48,16 @@ fn list(cards: &[String]) -> String {
     }
 }
 
+/// Any land.
 fn is_land(c: &Card) -> bool {
     c.type_line.split("//").next().unwrap_or("").to_ascii_lowercase().contains("land")
 }
 
+/// How to play this deck, from its own cards and analysis: the opening hand
+/// (lands and early plays to look for), early turns, keeping the hand full,
+/// how the deck wins (combos from the last check, the plan's finishers),
+/// and interaction (what to hold up). Each section names the real cards
+/// behind its advice; cards are sorted cheapest first within a role.
 pub fn build_guide(
     deck: &ParsedDeck,
     db: &CardDb,

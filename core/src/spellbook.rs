@@ -1,3 +1,17 @@
+//! Commander Spellbook: combos.
+//!
+//! How it fits: [`find_my_combos`] / [`find_my_combos_where`] send the deck
+//! to Spellbook's find-my-combos and return what's complete and what's one
+//! card away ([`ComboReport`]); the Combos tab filters pieces to the deck's
+//! format and colors before the 25-combo cut. [`search_combos`] runs a
+//! Spellbook search (`ci<=bg legal:commander`…) for the "Could add" sub-tab
+//! and deep generation.
+//!
+//! Things to work on:
+//! - The Combos tab's "Could add" list runs two searches each time it's
+//!   opened; cache them per commander and colors for a day.
+//! - Bracket tags on combos aren't used to filter by the deck's bracket yet.
+
 use crate::deck::ParsedDeck;
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
@@ -9,6 +23,9 @@ fn base_url() -> String {
     std::env::var("COMMANDERLAB_SPELLBOOK_URL").unwrap_or_else(|_| "https://backend.commanderspellbook.com".into())
 }
 
+/// One combo from Commander Spellbook: its cards, what it does, setup and
+/// steps, link, bracket (if known), whether the deck is one card short
+/// (`almost`), and for "Could add" the pieces the deck lacks (`missing`).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ComboLine {
     pub id: String,
@@ -25,6 +42,9 @@ pub struct ComboLine {
     pub missing: Vec<String>,
 }
 
+/// Find-my-combos results for a deck: counts, up to 25 complete and 25
+/// one-card-away lines, short summary lines, and "Could add" combos
+/// (filled by the Combos job).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ComboReport {
     pub included: usize,
@@ -37,6 +57,8 @@ pub struct ComboReport {
     pub possible: Vec<ComboLine>,
 }
 
+/// Ask Commander Spellbook which combos a deck has complete and which are
+/// one card away (every combo, any format; see `find_my_combos_where`).
 pub fn find_my_combos(deck: &ParsedDeck) -> Result<ComboReport> {
     find_my_combos_where(deck, |_| true)
 }
@@ -164,6 +186,8 @@ pub fn search_combos(query: &str, limit: usize) -> Result<Vec<ComboLine>> {
         .collect())
 }
 
+/// One Spellbook combo ("variant") from either API response shape; None
+/// if it has no cards.
 fn parse_variant(item: &Value, almost: bool) -> Option<ComboLine> {
     let cards = extract_cards(item);
 
@@ -198,6 +222,7 @@ fn parse_variant(item: &Value, almost: bool) -> Option<ComboLine> {
     })
 }
 
+/// The combo's id (for its Spellbook link and de-duplication).
 fn extract_id(item: &Value) -> String {
     for key in ["id", "variantId", "variant_id"] {
         if let Some(value) = item.get(key) {
@@ -214,6 +239,7 @@ fn extract_id(item: &Value) -> String {
     String::new()
 }
 
+/// Where each piece must start (battlefield, hand…), as display lines.
 fn extract_initial_state(item: &Value) -> Vec<String> {
     let mut out = Vec::new();
 
@@ -235,6 +261,7 @@ fn extract_initial_state(item: &Value) -> Vec<String> {
     out
 }
 
+/// "Before you start" lines (mana available, permanents needed…).
 fn extract_prerequisites(item: &Value) -> Vec<String> {
     let mut out = Vec::new();
 
@@ -255,6 +282,7 @@ fn extract_prerequisites(item: &Value) -> Vec<String> {
     out
 }
 
+/// How to perform the combo, step by step.
 fn extract_steps(item: &Value) -> Vec<String> {
     let mut out = Vec::new();
 
@@ -277,6 +305,8 @@ fn extract_steps(item: &Value) -> Vec<String> {
     out
 }
 
+/// Pull readable strings out of Spellbook fields that can be plain text,
+/// lists or objects, depending on the API version.
 fn collect_display_strings(
     value: &Value,
     output: &mut Vec<String>,
@@ -311,6 +341,7 @@ fn collect_display_strings(
     }
 }
 
+/// The combo's card names (from `uses`, or older `cards` fields).
 fn extract_cards(item: &Value) -> Vec<String> {
     let from_uses = item
         .get("uses")
@@ -350,6 +381,7 @@ fn extract_cards(item: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// What the combo produces ("Infinite mana", "Win the game"…), one per line.
 fn extract_result(item: &Value) -> String {
     if let Some(produces) = item.get("produces").and_then(Value::as_array) {
         let parts = produces
@@ -379,6 +411,12 @@ fn extract_result(item: &Value) -> String {
         .to_string()
 }
 
+/// The combo's bracket, from whichever field carries it.
+/// TODO: Spellbook's current API sends `bracketTag` as one letter (e.g.
+/// "S" for spicy, "R" for ruthless), which `bracket_from_text` doesn't
+/// recognise, so most combos get None. That quietly weakens every check
+/// that uses combo brackets (bracket 5 combo picks, the bracket estimate).
+/// Map the letters here.
 fn extract_bracket(item: &Value) -> Option<u8> {
     for key in ["bracket", "bracketTag", "bracket_tag"] {
         if let Some(value) = item.get(key) {
@@ -403,6 +441,7 @@ fn extract_bracket(item: &Value) -> Option<u8> {
     recursive_bracket(item)
 }
 
+/// Fallback: any field with "bracket" in its name, anywhere in the combo.
 fn recursive_bracket(value: &Value) -> Option<u8> {
     match value {
         Value::Object(map) => {
@@ -441,6 +480,8 @@ fn recursive_bracket(value: &Value) -> Option<u8> {
     None
 }
 
+/// Spellbook's bracket words → numbers: ruthless 4, spicy/powerful 3,
+/// oddball/core 2, exhibition 1 (or "bracket N").
 fn bracket_from_text(text: &str) -> Option<u8> {
     let lower = text.to_ascii_lowercase();
 

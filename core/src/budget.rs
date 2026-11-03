@@ -9,6 +9,9 @@
 //!
 //! Basic lands count as free; cards with no price are allowed (usually very
 //! new printings) and count as free.
+//!
+//! Things to work on:
+//! - Prices are only as fresh as the last card-data update.
 
 use crate::{
     analysis::{classify_card, identity_subset, CardRoles},
@@ -39,11 +42,13 @@ pub struct BudgetReport {
 }
 
 impl Budget {
+    /// Budget from the Build screen; zero, negative or non-numbers mean "no limit".
     pub fn new(total: Option<f64>, per_card: Option<f64>) -> Self {
         let clean = |v: Option<f64>| v.filter(|v| v.is_finite() && *v > 0.0);
         Self { total: clean(total), per_card: clean(per_card) }
     }
 
+    /// Any limit at all?
     pub fn is_set(&self) -> bool {
         self.total.is_some() || self.per_card.is_some()
     }
@@ -58,6 +63,7 @@ impl Budget {
         }
     }
 
+    /// Under the per-card ceiling (always true without one).
     pub fn card_ok(&self, card: &Card) -> bool {
         match self.card_cap() {
             Some(cap) => price(card) <= cap,
@@ -74,6 +80,7 @@ impl Budget {
         }
     }
 
+    /// "$150 total, $5.00 per card at most", for logs and notes.
     pub fn describe(&self) -> String {
         match (self.total, self.per_card) {
             (Some(t), Some(c)) => format!("${t:.0} total, ${c:.2} per card at most"),
@@ -93,6 +100,7 @@ pub fn price(card: &Card) -> f64 {
     }
 }
 
+/// Deck price (commanders and main deck) using `price`.
 pub fn deck_price(deck: &ParsedDeck, db: &CardDb) -> f64 {
     deck.commanders
         .iter()
@@ -101,6 +109,7 @@ pub fn deck_price(deck: &ParsedDeck, db: &CardDb) -> f64 {
         .sum()
 }
 
+/// Any land (basic or not).
 fn is_land(card: &Card) -> bool {
     card.type_line.to_ascii_lowercase().contains("land")
 }
@@ -110,6 +119,7 @@ fn colors_made(card: &Card, identity: &str) -> usize {
     identity.chars().filter(|c| card.produced_mana.contains(*c)).count()
 }
 
+/// How many roles two cards share: a cheaper swap should do the same jobs.
 fn shared_roles(a: CardRoles, b: CardRoles) -> u32 {
     [
         (a.ramp, b.ramp),
@@ -127,6 +137,8 @@ fn shared_roles(a: CardRoles, b: CardRoles) -> u32 {
     .count() as u32
 }
 
+/// Which basic to add when a priced land is cut: the deck's color with the
+/// fewest basics so far (Wastes for colorless).
 fn basic_for(identity: &str, deck: &ParsedDeck) -> &'static str {
     // The color with the fewest basics so far, to keep the mana even.
     let names = [('W', "Plains"), ('U', "Island"), ('B', "Swamp"), ('R', "Mountain"), ('G', "Forest")];
@@ -138,6 +150,7 @@ fn basic_for(identity: &str, deck: &ParsedDeck) -> &'static str {
         .unwrap_or("Wastes")
 }
 
+/// Add one copy of a card (merging with an existing line).
 fn add_one(main: &mut Vec<DeckEntry>, name: &str) {
     if let Some(e) = main.iter_mut().find(|e| e.name == name) {
         e.quantity += 1;

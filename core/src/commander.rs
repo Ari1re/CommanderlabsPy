@@ -1,3 +1,15 @@
+//! Commander rules: who can lead a deck, partners, combined colors.
+//!
+//! How it fits: [`resolve_generation_commanders`] turns "A + B" into checked
+//! cards; [`pair_compatible`] / [`can_have_second_commander`] know Partner,
+//! Partner with, Friends forever, Choose a Background and Doctor's companion;
+//! [`combined_identity`] merges colors; [`commander_name_suggestions`] powers
+//! the commander picker.
+//!
+//! Things to work on:
+//! - New pairing mechanics need a code change here; keep a list of the
+//!   keyword wordings in one place with tests.
+
 use crate::{
     archetype::tag_names_for_card,
     data::{
@@ -10,6 +22,9 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 
+/// May these two lead a deck together? Partner + Partner, Friends forever,
+/// "Choose a Background" + a Background, Doctor's companion + a Doctor, or
+/// "Partner with <the other one>".
 pub fn pair_compatible(a: &Card, b: &Card) -> bool {
     let ak = a.keywords.to_ascii_lowercase();
     let bk = b.keywords.to_ascii_lowercase();
@@ -28,6 +43,8 @@ pub fn pair_compatible(a: &Card, b: &Card) -> bool {
         || partner_with_matches(&bo, &a.name)
 }
 
+/// Does this commander allow a second one at all (any of the mechanics
+/// above, from either side)?
 pub fn can_have_second_commander(card: &Card) -> bool {
     let keywords = card.keywords.to_ascii_lowercase();
     let oracle = card.oracle_text.to_ascii_lowercase();
@@ -42,6 +59,7 @@ pub fn can_have_second_commander(card: &Card) -> bool {
         || is_doctor(&type_line)
 }
 
+/// The deck's colors: every color either commander has, in WUBRG order.
 pub fn combined_identity(cards: &[Card]) -> String {
     let mut identity = String::new();
 
@@ -54,6 +72,12 @@ pub fn combined_identity(cards: &[Card]) -> String {
     identity
 }
 
+/// "A" or "A + B" → checked commander cards for generation (Commander
+/// format; PDH uses generator::resolve_pdh_commanders).
+/// Note: a single commander that *can* have a partner gets one picked
+/// automatically: its "Partner with" card, else the best-matching partner
+/// or Background (`choose_best_partner`). That's surprising if the player
+/// wanted it solo.
 pub fn resolve_generation_commanders(
     specification: &str,
     db: &CardDb,
@@ -113,6 +137,9 @@ pub fn resolve_generation_commanders(
     Ok(vec![first])
 }
 
+/// Commander picker results for a typed query: name matches, then matches
+/// for each word, then (still short) eligible popular cards, all ranked by
+/// how well they match the query (`commander_match_score`).
 pub fn commander_name_suggestions(
     query: &str,
     db: &CardDb,
@@ -174,6 +201,9 @@ pub fn commander_name_suggestions(
     Ok(candidates)
 }
 
+/// Turn typed text into one commander: an exact (or folded) name if it can
+/// lead a deck, otherwise the best fuzzy suggestion if it's a confident
+/// match. Every decision is logged under COMMANDER.
 pub fn resolve_commander_name(
     query: &str,
     db: &CardDb,
@@ -268,6 +298,8 @@ pub fn resolve_commander_name(
     }
 }
 
+/// How well a card name matches a typed query: exact, prefix, compacted
+/// match, shared words, edit distance; popularity breaks ties.
 fn commander_match_score(query: &str, card: &Card) -> i32 {
     let query = normalize_name(query);
     let name = normalize_name(&card.name);
@@ -326,6 +358,7 @@ fn commander_match_score(query: &str, card: &Card) -> i32 {
     score
 }
 
+/// Lowercase words without punctuation.
 fn normalize_name(value: &str) -> String {
     value
         .chars()
@@ -342,6 +375,7 @@ fn normalize_name(value: &str) -> String {
         .join(" ")
 }
 
+/// Letters and digits only ("Kefka,Court Mage" ≈ "kefkacourtmage").
 fn compact_name(value: &str) -> String {
     value
         .chars()
@@ -350,6 +384,7 @@ fn compact_name(value: &str) -> String {
         .collect()
 }
 
+/// Share of words two names have in common (0–1).
 fn token_overlap(a: &str, b: &str) -> f64 {
     let a_tokens = a.split_whitespace().collect::<Vec<_>>();
     let b_tokens = b.split_whitespace().collect::<Vec<_>>();
@@ -366,6 +401,7 @@ fn token_overlap(a: &str, b: &str) -> f64 {
     matches as f64 / a_tokens.len().min(b_tokens.len()).max(1) as f64
 }
 
+/// Edit distance between two names (typos).
 fn levenshtein(a: &str, b: &str) -> usize {
     let b_chars = b.chars().collect::<Vec<_>>();
     let mut previous = (0..=b_chars.len()).collect::<Vec<_>>();
@@ -389,6 +425,8 @@ fn levenshtein(a: &str, b: &str) -> usize {
     previous[b_chars.len()]
 }
 
+/// Refuse cards that aren't Commander legal or can't lead a deck, with the
+/// reason in the error and the log.
 fn validate_commander(card: &Card) -> Result<()> {
     if !card.commander_legal {
         return Err(anyhow!(
@@ -431,6 +469,8 @@ fn validate_commander(card: &Card) -> Result<()> {
     Ok(())
 }
 
+/// Pick a partner for a commander that allows one: among popular legal
+/// commanders it can pair with, prefer shared themes and fewer extra colors.
 fn choose_best_partner(card: &Card, db: &CardDb) -> Result<Option<Card>> {
     let pool = db.top_ranked_cards(12_000)?;
     let card_tags = tag_names_for_card(card);
@@ -480,6 +520,7 @@ fn choose_best_partner(card: &Card, db: &CardDb) -> Result<Option<Card>> {
     Ok(best.map(|(candidate, _)| candidate))
 }
 
+/// Split "A + B" (also "A & B" or "A | B") into names.
 fn split_commander_spec(specification: &str) -> Vec<String> {
     for separator in [" + ", " & ", " | "] {
         if specification.contains(separator) {
@@ -501,6 +542,7 @@ fn split_commander_spec(specification: &str) -> Vec<String> {
     }
 }
 
+/// The card named in "Partner with <name>", if any.
 fn explicit_partner_with_name(oracle_text: &str) -> Option<String> {
     let lower = oracle_text.to_ascii_lowercase();
     let needle = "partner with ";
@@ -520,6 +562,7 @@ fn explicit_partner_with_name(oracle_text: &str) -> Option<String> {
     }
 }
 
+/// Is this exact keyword in the card's keyword list?
 fn has_keyword(keywords: &str, expected: &str) -> bool {
     keywords
         .split(',')
@@ -527,16 +570,19 @@ fn has_keyword(keywords: &str, expected: &str) -> bool {
         .any(|keyword| keyword == expected)
 }
 
+/// Does the text say "Partner with <other_name>"?
 fn partner_with_matches(oracle: &str, other_name: &str) -> bool {
     let expected = format!("partner with {}", other_name.to_ascii_lowercase());
     oracle.contains(&expected)
 }
 
+/// Legendary Enchantment — Background.
 fn is_background(type_line: &str) -> bool {
     type_line.contains("legendary enchantment")
         && type_line.contains("background")
 }
 
+/// A Time Lord Doctor creature.
 fn is_doctor(type_line: &str) -> bool {
     type_line.contains("time lord doctor")
 }

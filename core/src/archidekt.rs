@@ -1,3 +1,13 @@
+//! Importing a deck from an Archidekt link.
+//!
+//! How it fits: [`import_archidekt`] fetches `/api/decks/<id>/` and
+//! [`parse_archidekt_payload`] maps categories to zones (Commander, Maybeboard
+//! → Considering, Sideboard). `references.rs` reuses the parser for
+//! reference decks.
+//!
+//! Things to work on:
+//! - Archidekt categories are the player's tags; keep them as tags on import.
+
 use crate::deck::{DeckEntry, ParsedDeck};
 use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
@@ -8,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 const USER_AGENT_VALUE: &str =
     concat!("CommanderLab/", env!("CARGO_PKG_VERSION"), " (local Commander deck analyzer)");
 
+/// Import a public Archidekt deck by URL or numeric id from its JSON API.
 pub fn import_archidekt(url: &str) -> Result<ParsedDeck> {
     let deck_id = extract_deck_id(url)
         .ok_or_else(|| anyhow!("Could not extract an Archidekt numeric deck ID."))?;
@@ -30,6 +41,11 @@ pub fn import_archidekt(url: &str) -> Result<ParsedDeck> {
     parse_archidekt_payload(&payload, &deck_id)
 }
 
+/// Turn Archidekt's deck JSON into a deck. Archidekt files cards under
+/// categories: "Commander"/"Command Zone" (or a premier category) go to the
+/// command zone; categories marked "not in deck", Sideboard and Maybeboard
+/// all go to the sideboard. Copies of the same card are summed.
+/// Split out from the fetch so tests can feed saved JSON.
 pub fn parse_archidekt_payload(
     payload: &Value,
     fallback_name: &str,
@@ -169,6 +185,8 @@ pub fn parse_archidekt_payload(
     })
 }
 
+/// The card's name: oracle name first (so the front face names a DFC), then
+/// its display name or plain name.
 fn archidekt_card_name(entry: &Value) -> Option<String> {
     let card = entry.get("card")?;
 
@@ -185,6 +203,7 @@ fn archidekt_card_name(entry: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Name→count map to deck lines, sorted A→Z without regard to case.
 fn map_entries(map: HashMap<String, u32>) -> Vec<DeckEntry> {
     let mut entries = map
         .into_iter()
@@ -195,6 +214,8 @@ fn map_entries(map: HashMap<String, u32>) -> Vec<DeckEntry> {
     entries
 }
 
+/// The numeric id after "/decks/" (Archidekt URLs add a slug after it:
+/// /decks/123456/my_deck). A bare number is taken as is.
 fn extract_deck_id(url: &str) -> Option<String> {
     let trimmed = url.trim();
 

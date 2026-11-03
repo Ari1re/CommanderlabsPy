@@ -1,3 +1,11 @@
+<!--
+Search tab: Scryfall searches (full Scryfall syntax) with an optional
+"fits this deck" filter, adding results straight to the deck, and
+suggestions when a search finds nothing.
+
+Things to work on:
+- Saved searches per deck would help repeated hunts (e.g. "cheap ramp").
+-->
 <script lang="ts">
   import { api, openExternal } from '../../lib/api';
   import { app } from '../../lib/store.svelte';

@@ -1,3 +1,5 @@
+// Front-end entry point: loads global styles and mounts App.svelte.
+
 import './app.css';
 import { mount } from 'svelte';
 import App from './App.svelte';

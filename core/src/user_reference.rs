@@ -1,3 +1,15 @@
+//! Player-added references (Sources tab → Add reference).
+//!
+//! How it fits: [`import_user_reference`] turns a link into a
+//! [`DeckSource`]: Moxfield/Archidekt links become full reference decks,
+//! other pages are read for their text (strategy articles).
+//! [`extract_urls`] finds links in chat messages so the agent can use them.
+//!
+//! Things to work on:
+//! - Article pages are stored as raw text excerpts; summarising them (with
+//!   the AI model, when available) would make them far more useful to the
+//!   agent.
+
 use crate::{
     archidekt::import_archidekt,
     deck::ParsedDeck,
@@ -21,6 +33,8 @@ use std::{
 const USER_AGENT_VALUE: &str =
     concat!("CommanderLab/", env!("CARGO_PKG_VERSION"), " user-reference importer");
 
+/// Every http(s) link in a piece of text (chat messages, briefs), without
+/// trailing punctuation, de-duplicated.
 pub fn extract_urls(text: &str) -> Vec<String> {
     let re = Regex::new(r#"https?://[^\s<>"']+"#)
         .expect("valid URL regex");
@@ -48,6 +62,9 @@ pub fn extract_urls(text: &str) -> Vec<String> {
     out
 }
 
+/// Turn a link the player added into a source: Moxfield/Archidekt deck
+/// links become full reference decks; anything else is fetched as a web
+/// page and kept as a text excerpt. Cached, so re-adding is instant.
 pub fn import_user_reference(url: &str) -> Result<DeckSource> {
     let trimmed = url.trim();
 
@@ -99,6 +116,7 @@ pub fn import_user_reference(url: &str) -> Result<DeckSource> {
 }
 
 
+/// Same page, same key: no "www.", no trailing slash, lowercase.
 fn canonical_url(url: &str) -> String {
     url.trim()
         .trim_end_matches('/')
@@ -107,6 +125,7 @@ fn canonical_url(url: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Cache file for one added reference.
 fn user_reference_cache_path(url: &str) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     canonical_url(url).hash(&mut hasher);
@@ -117,6 +136,7 @@ fn user_reference_cache_path(url: &str) -> PathBuf {
     .join(format!("{:016x}.json", hasher.finish()))
 }
 
+/// A reference added before, if cached.
 fn load_cached_user_reference(
     url: &str,
 ) -> Option<DeckSource> {
@@ -132,6 +152,7 @@ fn load_cached_user_reference(
     Some(source)
 }
 
+/// Cache an added reference.
 fn save_cached_user_reference(
     source: &DeckSource,
 ) -> Result<()> {
@@ -158,6 +179,7 @@ fn save_cached_user_reference(
     Ok(())
 }
 
+/// Wrap an imported deck as a player-provided source with its full list.
 fn reference_from_deck(
     source: &str,
     url: &str,
@@ -189,6 +211,8 @@ fn reference_from_deck(
     }
 }
 
+/// Fetch an article or page and keep its title and up to 12,000 characters
+/// of plain text as the excerpt the agent reads.
 fn import_web_reference(url: &str) -> Result<DeckSource> {
     let client = Client::builder()
         .timeout(Duration::from_secs(15))
@@ -235,6 +259,7 @@ fn import_web_reference(url: &str) -> Result<DeckSource> {
     })
 }
 
+/// The page's <title>.
 fn extract_title(html: &str) -> Option<String> {
     let re = Regex::new(
         r"(?is)<title[^>]*>(.*?)</title>",
@@ -251,6 +276,7 @@ fn extract_title(html: &str) -> Option<String> {
     (!title.trim().is_empty()).then_some(title)
 }
 
+/// Rough HTML → text: drop scripts, styles and tags, collapse whitespace.
 fn strip_html(value: &str) -> String {
     let without_script = Regex::new(
         r"(?is)<script[^>]*>.*?</script>",

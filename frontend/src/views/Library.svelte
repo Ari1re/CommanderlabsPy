@@ -1,3 +1,11 @@
+<!--
+Deck library: every saved deck with commander art, colors, format,
+bracket and price. Opening one goes to its deck page; "Add deck" opens
+ImportDialog (paste, link, precon, share code).
+
+Things to work on:
+- No folders or tags for decks yet, and no sort/filter beyond the basics.
+-->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '../lib/api';
@@ -22,6 +30,11 @@
   }
 
   onMount(load);
+
+  // A scanned share link (App.svelte) opens Add deck with the code filled in.
+  $effect(() => {
+    if (app.pendingShare) importing = true;
+  });
 
   let shown = $derived(
     (decks ?? []).filter((d) => {
@@ -93,6 +106,7 @@
 
 {#if importing}
   <ImportDialog
+    initialCode={app.pendingShare}
     onclose={() => (importing = false)}
     ondone={(name) => {
       importing = false;

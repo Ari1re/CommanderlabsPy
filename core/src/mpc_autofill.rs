@@ -6,6 +6,14 @@
 //! The tool is downloaded from its GitHub release on first use and run in a
 //! terminal window, because it asks questions there (new project or add to
 //! an existing one) and waits for Enter when it's done. Desktop only.
+//!
+//! Things to work on:
+//! - The tool version is pinned (`TOOL_VERSION`); bump it deliberately and
+//!   check its command-line options still match (`--help`).
+//! - The app can't see the tool's progress once it's running in its own
+//!   window; it could watch the run folder or the tool's log file.
+//! - There's no way to cancel a download or remove the installed tool except
+//!   Settings → Storage (add a "Remove MPC Autofill" there).
 
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::blocking::Client;
@@ -42,10 +50,14 @@ fn release_asset() -> Option<&'static str> {
     }
 }
 
+/// Does MPC Autofill publish a build for this OS/CPU? False on Android and
+/// ARM Linux, where the Order screen shows the XML/text export only.
 pub fn supported() -> bool {
     release_asset().is_some()
 }
 
+/// `data/tools/mpc-autofill/<version>/`. A version bump downloads beside the
+/// old copy instead of over it.
 fn install_dir() -> PathBuf {
     Path::new(TOOLS_DIR).join(TOOL_VERSION)
 }
@@ -241,6 +253,7 @@ fn open_terminal(exe: &Path, args: &[String], dir: &Path) -> Result<String> {
     }
 }
 
+/// Single-quote a path for the terminal command line (an apostrophe becomes '\'').
 #[cfg(unix)]
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))

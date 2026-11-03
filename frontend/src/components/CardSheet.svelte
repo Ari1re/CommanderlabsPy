@@ -1,3 +1,7 @@
+<!--
+The card detail sheet: full image, text, prices, legality and printings;
+inside a deck it can change the card's printing and foil.
+-->
 <script lang="ts">
   import { api } from '../lib/api';
   import type { CardView, Deck, Printing } from '../lib/types';
@@ -133,7 +137,8 @@
       </div>
       <dl>
         <dt>Price</dt>
-        <dd class="num">{money(price(card, app.currency), app.currency)}</dd>
+        <!-- In a deck, the entry's card is priced for its printing and foil. -->
+        <dd class="num">{money(price(ctx?.entry.card ?? card, app.currency), app.currency)}</dd>
         <dt>EDHREC rank</dt>
         <dd class="num">{card.edhrec_rank ? `#${card.edhrec_rank.toLocaleString()}` : '—'}</dd>
         <dt>Printing</dt>

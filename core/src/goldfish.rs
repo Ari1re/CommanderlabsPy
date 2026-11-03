@@ -1,3 +1,19 @@
+//! Goldfish simulation: how fast a deck wins against no opponent.
+//!
+//! How it fits: [`goldfish`] plays many games of draw, land, mana and spells
+//! (cards simplified to cost, land, ramp, draw and tutor) and records when a
+//! known combo line (from `spellbook.rs`) would be assembled.
+//! [`GoldfishResult`] holds keepable-hand rates, mana development (3 mana by
+//! turn 3…) and combo-turn odds. The agent, guide and analysis use it.
+//!
+//! Things to work on:
+//! - Cards are reduced to a few flags, so engines, value and non-combo wins
+//!   aren't modelled; "win turn" really means "combo assembled".
+//! - Mulligans are rough: an unkeepable hand (not 2–5 lands) is reshuffled
+//!   into one fresh seven, with no card put on the bottom.
+//! - Tutors find any combo piece instantly; restricted tutors (creature-only,
+//!   land-only) should only find what they can.
+
 use crate::{
     analysis::classify_card,
     data::CardDb,
@@ -44,6 +60,7 @@ pub struct GoldfishResult {
     pub caveat: String,
 }
 
+/// Goldfish a deck using the complete combos from a Spellbook report.
 pub fn goldfish(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -64,6 +81,12 @@ pub fn goldfish(
     goldfish_with_combo_lines(deck, db, &combo_lines, runs)
 }
 
+/// Play `runs` solo games (8 turns each) and record mana development and the
+/// turn each known combo line comes together. Each game: shuffle, draw 7
+/// (keepable = 2–5 lands; otherwise one fresh seven), then each turn draw, play a land, cast ramp and
+/// draw first, use a tutor to find a missing combo piece, and check whether
+/// every piece of a line has been seen (commanders count from the start).
+/// Keeps one sample game log for display.
 pub fn goldfish_with_combo_lines(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -71,6 +94,8 @@ pub fn goldfish_with_combo_lines(
     runs: u32,
 ) -> Result<GoldfishResult> {
 
+    // The library: every main-deck card as a simple record (cost, land, ramp,
+    // draw, tutor). Needs 70+ cards to be meaningful.
     let mut library = Vec::<GoldCard>::new();
 
     for entry in &deck.main {
@@ -417,6 +442,7 @@ pub fn goldfish_with_combo_lines(
 }
 
 
+/// How many of each card are in hand.
 fn build_counts(hand: &[GoldCard]) -> HashMap<String, u32> {
     let mut counts = HashMap::new();
 
@@ -427,6 +453,7 @@ fn build_counts(hand: &[GoldCard]) -> HashMap<String, u32> {
     counts
 }
 
+/// One fewer of a card in hand.
 fn decrement_count(counts: &mut HashMap<String, u32>, name: &str) {
     let key = name.to_ascii_lowercase();
 
@@ -435,6 +462,7 @@ fn decrement_count(counts: &mut HashMap<String, u32>, name: &str) {
     }
 }
 
+/// Take the first card in hand matching `predicate` (e.g. a land).
 fn remove_first_kind<F>(
     hand: &mut Vec<GoldCard>,
     counts: &mut HashMap<String, u32>,
@@ -450,6 +478,8 @@ where
 }
 
 
+/// The first piece of any combo line that hasn't been seen yet (what a
+/// tutor fetches).
 fn first_missing_combo_piece(
     combo_lines: &[Vec<String>],
     seen: &HashSet<String>,

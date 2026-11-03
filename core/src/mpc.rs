@@ -11,6 +11,12 @@
 //!    plus a plain-text list for pasting into the mpcfill.com web editor.
 //!
 //! Search runs on a worker thread; nothing here touches the UI directly.
+//!
+//! Things to work on:
+//! - Searches hit mpcfill.com once per card; batching where the backend
+//!   allows would make large decks much faster.
+//! - Chosen images are kept in memory per session (`mpc_orders` in
+//!   `api.rs`); save them with the deck so choices survive a restart.
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
@@ -67,6 +73,8 @@ pub struct MpcConfig {
 }
 
 impl Default for MpcConfig {
+    /// Fresh install: mpcfill.com, no cardback, the first stock, every DPI and
+    /// every image, official scans on, MakePlayingCards in Chrome.
     fn default() -> Self {
         Self {
             backend_url: DEFAULT_BACKEND.to_string(),
@@ -86,6 +94,10 @@ impl Default for MpcConfig {
 }
 
 impl MpcConfig {
+    /// Read `data/mpc_config.json`, or write the defaults the first time. It
+    /// also migrates old saves: a retired server address goes back to the
+    /// default, and the untouched pre-0.27.2 limits (300 DPI, 12 images) go to
+    /// "show everything". It saves only when it changed something.
     pub fn load_or_create() -> Self {
         if let Ok(text) = fs::read_to_string(CONFIG_PATH) {
             if let Ok(mut config) = serde_json::from_str::<Self>(&text) {
@@ -120,6 +132,7 @@ impl MpcConfig {
         config
     }
 
+    /// Write the settings back as pretty JSON, creating `data/` if needed.
     pub fn save(&self) -> Result<()> {
         if let Some(parent) = Path::new(CONFIG_PATH).parent() {
             fs::create_dir_all(parent)?;
@@ -128,6 +141,8 @@ impl MpcConfig {
         Ok(())
     }
 
+    /// Step to the next card stock in `STOCKS`, wrapping around. An unknown stock
+    /// counts as the first one.
     pub fn cycle_stock(&mut self) {
         let index = STOCKS
             .iter()
@@ -159,6 +174,8 @@ pub struct MpcImage {
 pub const OFFICIAL_SOURCE: &str = "Scryfall (official)";
 
 impl MpcImage {
+    /// Name the image is saved and listed under: name plus extension, unless the
+    /// name already has a dot in it.
     pub fn file_name(&self) -> String {
         if self.extension.is_empty() || self.name.contains('.') {
             self.name.clone()
@@ -180,6 +197,7 @@ pub struct MpcFace {
 }
 
 impl MpcFace {
+    /// An empty face that only knows what to search for.
     pub fn new(query: impl Into<String>) -> Self {
         Self {
             query: query.into(),
@@ -189,10 +207,12 @@ impl MpcFace {
         }
     }
 
+    /// The art currently picked, or None while nothing was found.
     pub fn chosen(&self) -> Option<&MpcImage> {
         self.candidates.get(self.selected)
     }
 
+    /// Previous/next art arrows: move the selection and wrap at either end.
     pub fn cycle(&mut self, forward: bool) {
         let len = self.candidates.len();
         if len < 2 {
@@ -234,6 +254,10 @@ pub struct OrderLine {
 }
 
 impl MpcOrder {
+    /// Turn deck lines into an order with no art yet. Double-faced cards get a
+    /// front and a back face; everything else gets a front only (the shared
+    /// cardback covers the back). Lines with quantity 0 are dropped. The cardback,
+    /// stock and foil come from the saved settings.
     pub fn from_lines(deck_name: &str, lines: &[OrderLine], config: &MpcConfig) -> Self {
         let cards = lines
             .iter()
@@ -263,14 +287,18 @@ impl MpcOrder {
         }
     }
 
+    /// Number of physical cards (sum of quantities).
     pub fn total_slots(&self) -> u32 {
         self.cards.iter().map(|card| card.quantity).sum()
     }
 
+    /// The MPC order size this many cards needs (see [`bracket_for`]).
     pub fn bracket(&self) -> u32 {
         bracket_for(self.total_slots())
     }
 
+    /// (faces with art, faces in total), for the "34/36 faces ready" counter.
+    /// Counted per card line, not per copy.
     pub fn resolved_faces(&self) -> (usize, usize) {
         let mut resolved = 0;
         let mut total = 0;
@@ -423,6 +451,8 @@ impl MpcOrder {
     }
 }
 
+/// One `<card>` element of the order XML: image id, slot list ("0,1,2"),
+/// file name and the normalised search query.
 fn card_xml(image: &MpcImage, slots: &str, query: &str) -> String {
     format!(
         "    <card>\n      <id>{}</id>\n      <slots>{}</slots>\n      <name>{}</name>\n      <query>{}</query>\n    </card>\n",
@@ -433,6 +463,9 @@ fn card_xml(image: &MpcImage, slots: &str, query: &str) -> String {
     )
 }
 
+/// Smallest MPC bracket (18, 36, 55, …) that fits `quantity` cards. Past
+/// the largest bracket it still returns the largest, so an oversized order
+/// won't fit. TODO: warn or split the order when it is over the top bracket.
 pub fn bracket_for(quantity: u32) -> u32 {
     MPC_BRACKETS
         .iter()
@@ -451,6 +484,8 @@ pub fn search_query(name: &str) -> String {
         .join(" ")
 }
 
+/// Escape the five XML special characters. `&` goes first so the others
+/// aren't escaped twice.
 fn escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -508,6 +543,8 @@ fn alternate_queries(query: &str) -> Vec<String> {
 }
 
 impl MpcClient {
+    /// HTTP client for the configured MPC Autofill server (45 s timeout,
+    /// trailing slash trimmed off the base URL).
     pub fn new(config: &MpcConfig) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(45))
@@ -520,6 +557,10 @@ impl MpcClient {
         })
     }
 
+    /// POST JSON to the backend. A 404/405 almost always means the server
+    /// address points at a normal website instead of the search API, so the error
+    /// says to reset it. Other failures include the first 200 characters of the
+    /// reply.
     fn post(&self, path: &str, body: &Value) -> Result<Value> {
         let url = format!("{}{}", self.base, path);
         let response = self
@@ -543,6 +584,7 @@ impl MpcClient {
         serde_json::from_str(&text).with_context(|| format!("Bad JSON from {path}"))
     }
 
+    /// GET JSON from the backend (used for the source list).
     fn get(&self, path: &str) -> Result<Value> {
         let url = format!("{}{}", self.base, path);
         let response = self
@@ -578,6 +620,10 @@ impl MpcClient {
             .unwrap_or_default()
     }
 
+    /// Ask `/2/editorSearch/` for the image ids matching each query, 20 queries
+    /// per request. Queries with no hits map to an empty list.
+    /// Note: `search` already hands this batches of 20, so the inner chunking
+    /// only matters for other callers.
     fn editor_search(&self, queries: &[String], settings: &Value) -> Result<HashMap<String, Vec<String>>> {
         let mut out = HashMap::new();
         // The backend caps queries per request; batch conservatively.
@@ -619,6 +665,8 @@ impl MpcClient {
         Ok(metadata)
     }
 
+    /// The `searchSettings` body: every source enabled, the minimum DPI from
+    /// Order options, a 1500 DPI / 30 MB ceiling and NSFW art excluded.
     fn settings(&self, config: &MpcConfig, sources: &[Value], fuzzy: bool) -> Value {
         json!({
             "searchTypeSettings": { "fuzzySearch": fuzzy, "filterCardbacks": false },
@@ -634,6 +682,12 @@ impl MpcClient {
         })
     }
 
+    /// Find art for every face query. Steps: exact search; for names with no
+    /// hits, alternate spellings (split cards by half, no punctuation) and then a
+    /// fuzzy search; load details for the first few ids per query and keep the
+    /// rest as pending. Official Scryfall scans are merged in later by the
+/// caller (`MpcOrder::apply_results`), not here.
+    /// `progress(done, total)` drives the order dialog's bar.
     pub fn search(
         &self,
         queries: &[String],
@@ -824,6 +878,9 @@ pub fn localize_official(order: &mut MpcOrder, dir: &Path, mut progress: impl Fn
     Ok((saved, failed))
 }
 
+/// Read one `/2/cards/` entry into an `MpcImage`. It accepts the current and
+/// older field names (sourceName / source_verbose / source, and so on) and
+/// falls back to the request id when the entry has no identifier.
 fn parse_image(id: &str, card: &Value) -> MpcImage {
     let text = |keys: &[&str]| {
         keys.iter()
@@ -867,6 +924,7 @@ pub fn rank_images(images: &mut [MpcImage], preferred: &[String]) {
 mod tests {
     use super::*;
 
+    /// Test helper: a community image with just an id, source and DPI.
     fn image(id: &str, source: &str, dpi: u32) -> MpcImage {
         MpcImage {
             identifier: id.into(),

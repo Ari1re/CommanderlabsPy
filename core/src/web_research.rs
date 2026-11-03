@@ -1,3 +1,16 @@
+//! Web research for the agent: community discussion and rules.
+//!
+//! How it fits: [`research_commander_web`] searches Reddit and DuckDuckGo
+//! for the commander and reads Wizards' rules pages, caching results for 14
+//! days under `data/ai_research_cache`; the AI profile gets the excerpts.
+//! Settings → "Research the web while optimizing" turns it off.
+//!
+//! Things to work on:
+//! - Scraping DuckDuckGo's HTML page is fragile; it will break when their
+//!   markup changes. Log failures clearly so it's noticed.
+//! - Excerpts are long; on-device models are slow with long prompts, so
+//!   summarise or cut them for the built-in engine.
+
 use crate::{
     deep_agent::OptimizationGoal,
     logging,
@@ -23,6 +36,7 @@ const CACHE_DAYS: u64 = 14;
 const USER_AGENT_VALUE: &str =
     concat!("CommanderLab/", env!("CARGO_PKG_VERSION"), " local MTG research assistant");
 
+/// One page found during web research: source, title, URL and a text excerpt.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebResearchDocument {
     pub source: String,
@@ -31,6 +45,7 @@ pub struct WebResearchDocument {
     pub text: String,
 }
 
+/// Everything web research found for one query (cached as a whole).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebResearchBundle {
     pub query: String,
@@ -38,6 +53,11 @@ pub struct WebResearchBundle {
     pub sources: Vec<DeckSource>,
 }
 
+/// Web research for the agent's AI profile. Builds one query from the
+/// commanders, "cEDH"/"EDH" and the goal (stax or win), then: Reddit search
+/// (with top comments), DuckDuckGo results (page excerpts) and Wizards'
+/// rules documents. Cached for 14 days; a stale cache is used if the
+/// network fails. Note: for Pauper Commander it still searches "EDH".
 pub fn research_commander_web<F>(
     commander_names: &[String],
     bracket: u8,
@@ -167,6 +187,7 @@ where
     Ok(bundle)
 }
 
+/// Reddit's JSON search for the query; each hit's post text and permalink.
 fn fetch_reddit_search(
     client: &Client,
     query: &str,
@@ -241,6 +262,7 @@ fn fetch_reddit_search(
     Some(docs)
 }
 
+/// Top comments of a Reddit thread (where the useful advice usually is).
 fn fetch_reddit_comments(
     client: &Client,
     public_url: &str,
@@ -290,6 +312,8 @@ fn fetch_reddit_comments(
     Some(comments)
 }
 
+/// Result links from DuckDuckGo's HTML page, then excerpts of the best few.
+/// Fragile: depends on DuckDuckGo's markup.
 fn fetch_duckduckgo_search(
     client: &Client,
     query: &str,
@@ -388,6 +412,7 @@ fn fetch_duckduckgo_search(
     Some(docs)
 }
 
+/// A page's title and the start of its text.
 fn fetch_page_excerpt(
     client: &Client,
     url: &str,
@@ -412,6 +437,8 @@ fn fetch_page_excerpt(
     Some(text.chars().take(5000).collect())
 }
 
+/// Links to the current Comprehensive Rules and related documents from
+/// Wizards' rules page.
 fn fetch_official_rules_documents(
     client: &Client,
 ) -> Vec<WebResearchDocument> {
@@ -492,6 +519,7 @@ fn fetch_official_rules_documents(
     docs
 }
 
+/// Drop documents with the same URL.
 fn dedupe_documents(docs: &mut Vec<WebResearchDocument>) {
     let mut seen = std::collections::HashSet::new();
 
@@ -506,6 +534,7 @@ fn dedupe_documents(docs: &mut Vec<WebResearchDocument>) {
     });
 }
 
+/// Rough HTML → text.
 fn strip_html(value: &str) -> String {
     let without_tags = Regex::new(r"<[^>]+>")
         .ok()
@@ -518,6 +547,7 @@ fn strip_html(value: &str) -> String {
         .join(" ")
 }
 
+/// Turn DuckDuckGo's redirect links into the real page URL.
 fn normalize_search_url(value: &str) -> String {
     let decoded = html_decode(value);
 
@@ -540,6 +570,7 @@ fn normalize_search_url(value: &str) -> String {
     decoded
 }
 
+/// Undo common HTML entities.
 fn html_decode(value: &str) -> String {
     value
         .replace("&amp;", "&")
@@ -550,6 +581,7 @@ fn html_decode(value: &str) -> String {
         .replace("&gt;", ">")
 }
 
+/// Hash for cache file names (DefaultHasher: not stable across Rust versions).
 fn cache_key(value: &str) -> u64 {
     let mut hasher =
         std::collections::hash_map::DefaultHasher::new();
@@ -557,6 +589,7 @@ fn cache_key(value: &str) -> u64 {
     hasher.finish()
 }
 
+/// Cached research is reused for CACHE_DAYS (14).
 fn cache_fresh(path: &PathBuf) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;

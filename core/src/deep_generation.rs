@@ -7,6 +7,15 @@
 //! synergy, could use), scores cards by synergy rather than raw popularity,
 //! and writes a report of every source it used and every pick it made. It
 //! needs no AI model; an AI model's suggestions are one more source when on.
+//!
+//! Things to work on:
+//! - The tier bonuses and the power-staple quota are tuned on one commander
+//!   (Drana). Build a small benchmark (10 commanders, each format) and
+//!   compare engines on it before re-tuning.
+//! - Game Changers are still under-used at Bracket 3+ and big single threats
+//!   get dropped for synergy cards; the quota only covers structural staples.
+//! - The report lists card reasons but not the numeric score; adding the
+//!   score breakdown would make tuning far easier.
 
 use crate::{
     analysis::CardRoles,
@@ -28,6 +37,8 @@ pub enum GenerationEngine {
 }
 
 impl GenerationEngine {
+    /// Read the Settings value ("peer" = peer-based; anything else, including
+    /// nothing, = deep learning).
     pub fn parse(value: &str) -> Self {
         match value {
             "peer" | "peer_based" => Self::PeerBased,
@@ -35,6 +46,7 @@ impl GenerationEngine {
         }
     }
 
+    /// Name shown in Settings and the report.
     pub fn label(self) -> &'static str {
         match self {
             Self::DeepLearning => "Deep learning generation",
@@ -94,6 +106,7 @@ pub fn commander_mechanics(commanders: &[Card]) -> Vec<String> {
     out
 }
 
+/// "vampire" → "Vampire".
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
@@ -116,6 +129,7 @@ pub enum Tier {
 }
 
 impl Tier {
+    /// Name shown in the report and on the Sources tab.
     pub fn label(self) -> &'static str {
         match self {
             Self::Core => "Commonly played",
@@ -258,6 +272,7 @@ pub struct TierCounts {
 }
 
 impl TierCounts {
+    /// Count one card under its tier (or "none").
     pub fn add(&mut self, tier: Option<Tier>) {
         match tier {
             Some(Tier::Core) => self.core += 1,
@@ -294,6 +309,7 @@ pub struct GenerationReport {
 }
 
 impl GenerationReport {
+    /// The report as Markdown, appended to the deck's `.plan.md`.
     pub fn markdown(&self) -> String {
         let mut out = format!("\n## How this deck was built\n\n_{}_\n\n### Sources\n\n", self.engine);
         for s in &self.sources {
@@ -346,6 +362,7 @@ impl GenerationReport {
 mod tests {
     use super::*;
 
+    /// Test helper: a minimal black card with the given type and text.
     fn card(name: &str, ty: &str, text: &str) -> Card {
         Card {
             oracle_id: name.into(),

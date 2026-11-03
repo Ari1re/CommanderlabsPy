@@ -1,3 +1,12 @@
+<!--
+Sources tab: how the deck was built (the deep learning generation
+report: sources, play styles, evidence tiers, weak spots, why each card),
+references the player added, and the research sources used.
+
+Things to work on:
+- Decks built before the report existed show no report; offer "explain
+  this deck" that runs the evidence pass on an existing list.
+-->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, runJob } from '../../lib/api';

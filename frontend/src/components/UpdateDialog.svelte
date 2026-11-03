@@ -1,3 +1,7 @@
+<!--
+Installs an app update from GitHub (per platform, including the Android
+APK install permission flow).
+-->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invokeNative, openExternal, runJob } from '../lib/api';

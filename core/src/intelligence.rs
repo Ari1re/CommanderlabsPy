@@ -1,3 +1,26 @@
+//! The commander model: everything learned about a commander before cards
+//! are picked.
+//!
+//! How it fits: [`learn_commander_intelligence`] runs during generation (and
+//! the agent reuses it). It merges EDHREC/PDHREC card signals and themes,
+//! gathers reference decks (`references.rs`), estimates how many ramp, draw,
+//! interaction, tutors, wipes, protection and recursion pieces this commander's
+//! decks usually run ([`LearnedRoleTargets`]), and infers "engine terms" from
+//! the commander's text. [`CommanderIntelligence::support_for_card`] then
+//! scores any card against that evidence.
+//!
+//! Things to work on:
+//! - Engine terms are words found in the commander's rules text from a fixed
+//!   list ("vampire", "token"…). Drana's text names no type, so it finds
+//!   none. Deep generation works around this with `commander_mechanics`;
+//!   peer-based doesn't. Make engine detection use the ThemeMatcher rules
+//!   for both.
+//! - `support_for_card` mixes many bonuses with magic numbers; expose the
+//!   breakdown so the generation report can explain a card's score.
+//! - Bracket 5 "competitive first" weighting relies on the competitive share
+//!   of the reference corpus; with 1 competitive list (common for PDH) one
+//!   deck can dominate. Cap its influence when the sample is tiny.
+
 use crate::{
     analysis::{classify_card, identity_subset, CardRoles},
     archetype::tag_names_for_card,
@@ -10,6 +33,9 @@ use crate::{
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
+/// How many cards of each role a deck for this commander usually runs,
+/// learned from the commander's EDHREC cards and reference decks. The
+/// generator's `need_bonus` aims for these.
 #[derive(Debug, Clone, Default)]
 pub struct LearnedRoleTargets {
     pub ramp: u32,
@@ -21,6 +47,8 @@ pub struct LearnedRoleTargets {
     pub recursion: u32,
 }
 
+/// How well the evidence backs one card for this commander: a score, a
+/// 0–100 confidence, the raw numbers behind it and a one-line reason.
 #[derive(Debug, Clone)]
 pub struct CardSupport {
     pub score: i32,
@@ -32,6 +60,9 @@ pub struct CardSupport {
     pub reason: String,
 }
 
+/// Everything research found about a commander, shared by the generator and
+/// the agent: EDHREC (or PDHREC) card signals and themes, reference decks,
+/// engine words, role targets, sources and an overall confidence.
 #[derive(Debug, Clone)]
 pub struct CommanderIntelligence {
     pub commander_names: Vec<String>,
@@ -50,6 +81,17 @@ pub struct CommanderIntelligence {
 }
 
 impl CommanderIntelligence {
+    /// Score one card against everything known about this commander. Pieces:
+    /// - EDHREC: a bonus by EDHREC's own category ("high synergy" counts most),
+    ///   plus inclusion and synergy.
+    /// - Reference decks: the share of decks running it, plus "package"
+    ///   agreement (it appears with the deck's other common cards).
+    /// - Bracket 5 with competitive lists (cEDH or competitive Pauper): those
+    ///   lists dominate and EDHREC drops to a tiebreaker (×0.3).
+    /// - Engine words, core-theme and chosen-theme matches, structural roles.
+    /// - A small penalty (−32) when there's no evidence at all, so unknown cards
+    ///   can still win a slot but not easily.
+    /// Confidence adds up how many kinds of evidence agree.
     pub fn support_for_card(
         &self,
         card: &Card,
@@ -90,6 +132,7 @@ impl CommanderIntelligence {
             .map(EdhrecCardSignal::inclusion_pct)
             .unwrap_or(0.0);
 
+        // EDHREC piece: category bonus + inclusion × 210 + synergy × 240.
         let edhrec_component = signal
             .map(|signal| {
                 let category_bonus = match signal.category.as_str() {
@@ -137,6 +180,8 @@ impl CommanderIntelligence {
             85.0
         };
 
+        // Reference piece: weighted harder at higher brackets, where proven lists
+        // matter more.
         let reference_component = if cedh_first {
             // cEDH share carries the weight; the whole corpus (incl. casual
             // lists) only nudges.
@@ -200,6 +245,8 @@ impl CommanderIntelligence {
             + structural_component
             + uncertainty;
 
+        // Confidence: 40 for EDHREC data, up to 35 (50 for competitive lists) for
+        // reference share, up to 15 for package agreement, 15 engine, 10 core tag.
         let mut confidence = 0u8;
 
         if signal.is_some() {
@@ -286,6 +333,10 @@ impl CommanderIntelligence {
         }
     }
 
+    /// Does a combo belong in this commander's deck? Average support of its
+    /// pieces, plus how many pieces have any support at all, plus a big bonus
+    /// when the combo actually shows up in reference decks. The generator
+    /// needs 120–180 depending on where the combo comes from and the bracket.
     pub fn combo_relevance(
     &self,
     cards: &[String],
@@ -343,6 +394,7 @@ impl CommanderIntelligence {
         + (coverage * 180.0) as i32
         + observed_combo_bonus
 }
+    /// "ramp 8 • draw 9 • …" for the log.
     pub fn role_summary(&self) -> String {
         format!(
             "ramp {} • draw {} • interaction {} • tutors {} • wipes {} • protection {} • recursion {}",
@@ -357,6 +409,12 @@ impl CommanderIntelligence {
     }
 }
 
+/// Research a commander (generation step 3, and the agent's research).
+/// `with_format` (format_sources.rs) and `with_depth` (references.rs) set
+/// by the caller decide PDH vs Commander sources and how many reference
+/// decks to read. Every step reports a "[EVIDENCE]", "[REFERENCES]",
+/// "[EDHREC]" or "[MODEL]" line to `progress`; those are the lines in the
+/// build log.
 pub fn learn_commander_intelligence<F>(
     commanders: &[Card],
     selected_theme: &str,
@@ -382,6 +440,8 @@ where
         commander_names.join(" + ")
     ));
 
+    // 1. Themes: EDHREC's theme tags for the commander (none for PDH: PDHREC
+    //    has no theme pages). The top 4 are the "core tags".
     // EDHREC doesn't cover Pauper Commander; PDHREC has no theme pages.
     let theme_rows = if pdh { Vec::new() } else { commander_themes(commanders, 10) };
     let normal_themes = theme_rows
@@ -408,6 +468,10 @@ where
         }
     ));
 
+    // 2. Card signals: PDHREC for Pauper Commander; otherwise EDHREC's cards
+    //    for the chosen theme merged with the base commander page (keeping the
+    //    stronger signal for each card), so a niche theme adds to the normal
+    //    build instead of replacing it.
     // Pauper Commander: PDHREC's per-commander inclusion and synergy take
     // EDHREC's place.
     let pdhrec = if pdh { crate::format_sources::pdhrec_commander(&commander_names) } else { None };
@@ -466,6 +530,8 @@ where
         }
     ));
 
+    // 3. Reference decks (references.rs), then log where they came from, the
+    //    most common cards and recurring combos.
     let references =
         gather_reference_decks(&commander_names, bracket);
 
@@ -556,6 +622,7 @@ where
         })
         .collect::<HashMap<_, _>>();
 
+    // 4. Engine words, role targets, sources, confidence.
     let engine_terms =
         infer_commander_engine_terms(commanders, &core_tags);
 
@@ -621,6 +688,12 @@ where
     })
 }
 
+/// Role targets from a sample of up to 180 EDHREC cards and the 120 most
+/// common reference cards (legal, in colors, nonland): role density in the
+/// sample × 64 nonland slots, clamped to sensible ranges (ramp 8–14, draw
+/// 8–14, interaction 8–16…). Tutors are clamped by bracket instead.
+/// Note: the legality check uses Commander legality even for PDH builds;
+/// harmless for the counts but worth knowing.
 fn learn_role_targets(
     edhrec: &[EdhrecCardSignal],
     references: &ReferenceSnapshot,
@@ -724,6 +797,8 @@ fn learn_role_targets(
     }
 }
 
+/// 0–100: how much evidence there is (EDHREC themes, EDHREC cards,
+/// reference decks, recurring combos). Shown in the log as "confidence".
 fn learn_confidence(
     themes: &[crate::edhrec::EdhrecTheme],
     edhrec: &[EdhrecCardSignal],
@@ -746,6 +821,8 @@ fn learn_confidence(
         .min(100)
 }
 
+/// Rank EDHREC signals when merging theme and base pages: category weight
+/// + inclusion + synergy.
 fn raw_signal_score(signal: &EdhrecCardSignal) -> f64 {
     let category = match signal.category.as_str() {
         "highsynergycards" => 2.2,
@@ -761,6 +838,9 @@ fn raw_signal_score(signal: &EdhrecCardSignal) -> f64 {
         + signal.synergy.max(-0.5) * 4.0
 }
 
+/// Engine words: core theme names and common types/mechanics that appear in
+/// the commander's own rules text. See the module notes: it finds nothing
+/// for commanders like Drana; deep generation uses `commander_mechanics`.
 fn infer_commander_engine_terms(
     commanders: &[Card],
     core_tags: &[String],
@@ -816,6 +896,7 @@ fn infer_commander_engine_terms(
     terms
 }
 
+/// Same rule as generator.rs's copy: any engine word in name, type or text.
 fn card_matches_engine(card: &Card, terms: &[String]) -> bool {
     if terms.is_empty() {
         return false;
@@ -831,6 +912,8 @@ fn card_matches_engine(card: &Card, terms: &[String]) -> bool {
     terms.iter().any(|term| haystack.contains(term))
 }
 
+/// Does a card fit a theme? Its archetype tags, or the theme's name (4+
+/// letters) appearing in its type or text. "A + B" matches either.
 fn card_matches_tag(card: &Card, tag: &str) -> bool {
     if tag.trim().is_empty() {
         return false;

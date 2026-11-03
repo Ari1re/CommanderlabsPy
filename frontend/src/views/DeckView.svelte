@@ -1,3 +1,13 @@
+<!--
+One deck's page: header (name, commanders, size check, price, bracket),
+actions (export, share, rename, change commander, format) and the tabs:
+Cards, Search, Suggestions, Analysis, Combos, How to play, History,
+Proxies, Sources, AI Agent. Each tab is its own component in views/deck/.
+
+Things to work on:
+- ~650 lines of mostly header/dialog logic; the action dialogs could move
+  into components.
+-->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { api, copyText, download, openExternal, runtime } from '../lib/api';

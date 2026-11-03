@@ -1,3 +1,12 @@
+//! Importing a deck from a Moxfield link.
+//!
+//! How it fits: [`import_moxfield`] reads the deck from Moxfield's API (v3,
+//! then v2) with browser-like headers and maps its boards to zones.
+//!
+//! Things to work on:
+//! - Moxfield can refuse automated requests; the import dialog tells users to
+//!   paste the text export instead. Tags from the API aren't imported yet.
+
 use crate::deck::{DeckEntry, ParsedDeck};
 use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
@@ -9,6 +18,11 @@ use serde_json::Value;
 const USER_AGENT_VALUE: &str =
     concat!("Mozilla/5.0 CommanderLab/", env!("CARGO_PKG_VERSION"), " (local Commander deck analyzer)");
 
+/// Import a public Moxfield deck from its URL (or bare id). It tries the v3,
+/// then the v2 API, and takes the first answer that has cards. Only names and
+/// counts come across: printings, tags and the format are dropped.
+/// TODO: keep set/collector number and Moxfield's tags, since the deck view
+/// supports both now.
 pub fn import_moxfield(url: &str) -> Result<ParsedDeck> {
     let deck_id = extract_deck_id(url)
         .ok_or_else(|| anyhow!("Could not extract a Moxfield deck ID from that URL."))?;
@@ -66,6 +80,8 @@ pub fn import_moxfield(url: &str) -> Result<ParsedDeck> {
     ))
 }
 
+/// GET one API route with browser-like Origin/Referer headers. Moxfield sits
+/// behind Cloudflare, which blocks bare clients more often.
 fn request_deck(client: &Client, api_url: &str) -> Result<Value> {
     client
         .get(api_url)
@@ -82,6 +98,8 @@ fn request_deck(client: &Client, api_url: &str) -> Result<Value> {
         .context("Could not parse the Moxfield deck response")
 }
 
+/// The id after "/decks/" in a Moxfield URL, without ?query or #fragment.
+/// Text with no slash is taken as the id itself.
 fn extract_deck_id(url: &str) -> Option<String> {
     let trimmed = url.trim();
 
@@ -111,6 +129,8 @@ fn extract_deck_id(url: &str) -> Option<String> {
     (!id.is_empty()).then(|| id.to_string())
 }
 
+/// Cards in one board ("commanders", "mainboard", "sideboard"). Handles both
+/// the v2 shape (board at the top level) and the v3 shape (`boards.<key>.cards`).
 fn collect_zone(root: &Value, key: &str) -> Vec<DeckEntry> {
     // v2-ish shape:
     // { "mainboard": { "Card Name": { quantity, card: {...} } } }
@@ -140,6 +160,7 @@ fn collect_zone(root: &Value, key: &str) -> Vec<DeckEntry> {
     Vec::new()
 }
 
+/// A board's cards, whether keyed by name (object) or listed (array).
 fn collect_zone_value(zone: &Value) -> Vec<DeckEntry> {
     match zone {
         Value::Object(map) => map
@@ -156,6 +177,8 @@ fn collect_zone_value(zone: &Value) -> Vec<DeckEntry> {
     }
 }
 
+/// One board entry: quantity (or count, default 1) and the card name from
+/// the nested `card`, the entry itself, or a face name.
 fn parse_card_object(value: &Value) -> Option<DeckEntry> {
     let quantity = value
         .get("quantity")

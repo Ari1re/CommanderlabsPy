@@ -1,3 +1,14 @@
+<!--
+Proxies tab: MPC proxy orders. Finds art for every card (MPC Autofill's
+community scans and official Scryfall art), lets you pick per card, then
+exports the order or fills it straight onto MakePlayingCards/PrinterStudio
+with the MPC Autofill desktop tool (desktop only).
+
+Things to work on:
+- Art choices are lost when the app restarts (kept in memory in the core).
+- Once the autofill tool is running in its own window, this tab can't see
+  its progress.
+-->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, copyText, download, runJob, runtime } from '../../lib/api';

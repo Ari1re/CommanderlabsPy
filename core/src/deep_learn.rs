@@ -1,3 +1,18 @@
+//! Deck research and testing for the agent ("Deep Learn").
+//!
+//! How it fits: [`deep_learn_deck`] gathers what's known about a deck's
+//! commander (EDHREC, references, combos) into a [`DeepLearnReport`];
+//! [`simulate_deep_learn_games`] goldfishes a deck many times
+//! ([`TestingIntensity`] sets how many) and summarizes win turns and keepable
+//! hands. `deep_agent.rs` uses both every round.
+//!
+//! Things to work on:
+//! - Name clash: "Deep Learn" (agent research) and "deep learning
+//!   generation" (the generator) are different things. Renaming this one
+//!   (e.g. "agent research") would avoid confusion.
+//! - Testing intensity only changes run counts; also vary opening-hand rules
+//!   (mulligans) so results reflect real play.
+
 use crate::{
     analysis::{
         classify_card, has_copy_rule_override, identity_subset,
@@ -16,6 +31,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+/// How much simulation a test runs (the agent's "testing depth").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TestingIntensity {
     Quick,
@@ -25,12 +41,14 @@ pub enum TestingIntensity {
 }
 
 impl Default for TestingIntensity {
+    /// Standard depth by default.
     fn default() -> Self {
         Self::Thorough
     }
 }
 
 impl TestingIntensity {
+    /// Depth name for logs.
     pub fn label(self) -> &'static str {
         match self {
             TestingIntensity::Quick => "QUICK",
@@ -40,6 +58,7 @@ impl TestingIntensity {
         }
     }
 
+    /// Opening-hand shuffles: 10k quick … 1M exhaustive.
     pub fn draw_runs(self) -> u32 {
         match self {
             TestingIntensity::Quick => 10_000,
@@ -49,6 +68,7 @@ impl TestingIntensity {
         }
     }
 
+    /// Goldfish games: 5k quick … 500k exhaustive.
     pub fn goldfish_runs(self) -> u32 {
         match self {
             TestingIntensity::Quick => 5_000,
@@ -58,6 +78,7 @@ impl TestingIntensity {
         }
     }
 
+    /// What the depth is for, in words.
     pub fn description(self) -> &'static str {
         match self {
             TestingIntensity::Quick => {
@@ -113,6 +134,8 @@ pub struct DeepLearnTestSummary {
     pub goldfish: GoldfishResult,
 }
 
+/// Goldfish a deck at an intensity: opening hands plus games, summarized
+/// as win (combo) turns and keepable-hand rates.
 pub fn simulate_deep_learn_games<F>(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -131,6 +154,7 @@ where
     )
 }
 
+/// Same, with explicit run counts (the agent's final re-test).
 pub fn simulate_deep_learn_games_with_runs<F>(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -238,6 +262,9 @@ where
 }
 
 
+/// The agent's research step: the commander model (intelligence.rs, with
+/// EDHREC's top theme as a hint) turned into a report of the cards the
+/// evidence supports, missing staples, combos and findings.
 pub fn deep_learn_deck<F>(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -317,6 +344,8 @@ where
     build_report(deck, db, intelligence, progress)
 }
 
+/// Turn the commander model into the research report the agent and its
+/// AI profile read.
 fn build_report<F>(
     deck: &ParsedDeck,
     db: &CardDb,

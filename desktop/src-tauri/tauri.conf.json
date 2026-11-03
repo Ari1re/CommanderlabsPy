@@ -22,6 +22,11 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "mobile": [{ "scheme": ["commanderlab"], "host": "deck", "appLink": false }]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

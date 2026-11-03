@@ -1,3 +1,13 @@
+//! Opening-hand and draw simulation for the Analysis tab.
+//!
+//! How it fits: [`run_draw_simulation`] shuffles the deck thousands of times
+//! and reports opening-hand land counts and how often hands are keepable
+//! ([`DrawSimulation`]).
+//!
+//! Things to work on:
+//! - Shares its idea of "keepable" with `goldfish.rs` but not its code; one
+//!   shared hand evaluator would keep them consistent.
+
 use crate::{
     analysis::classify_card,
     data::CardDb,
@@ -24,6 +34,8 @@ pub struct DrawSimulation {
     pub early_ramp_by_t2_pct: f64,
 }
 
+/// Shuffle the deck `runs` times and record opening-hand land counts and
+/// how often the seven is keepable (the Analysis tab's hand numbers).
 pub fn run_draw_simulation(
     deck: &ParsedDeck,
     db: &CardDb,

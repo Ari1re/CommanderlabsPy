@@ -12,6 +12,8 @@ use std::{collections::HashMap, fs, time::Duration};
 const TAGS_PATH: &str = "./data/scryfall-oracle-tags.json";
 const TAGS_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
 
+/// HTTP client for Scryfall (25 s timeout, Commander Lab user agent, which
+/// Scryfall asks API users to send).
 pub fn client() -> Result<Client> {
     Ok(Client::builder()
         .timeout(Duration::from_secs(25))
@@ -19,6 +21,7 @@ pub fn client() -> Result<Client> {
         .build()?)
 }
 
+/// Split a Scryfall query into terms, keeping "quoted phrases" together.
 /// Split a search into terms, keeping quoted phrases together.
 pub fn terms(q: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -44,6 +47,8 @@ pub fn terms(q: &str) -> Vec<String> {
     out
 }
 
+/// A term's keyword and value ("ci<=bg" → ("ci", "bg")), ignoring a
+/// leading "-", "(" or "!".
 fn key_of(term: &str) -> Option<(String, String)> {
     let t = term.trim_start_matches(['-', '(', '!']).trim_end_matches(')');
     let idx = t.find([':', '<', '>', '='])?;
@@ -52,6 +57,9 @@ fn key_of(term: &str) -> Option<(String, String)> {
     Some((k.to_ascii_lowercase(), v.trim_matches('"').to_string()))
 }
 
+/// Combine the player's search with the deck's "fits this deck" filter.
+/// If the player's search sets the format or colors itself, the filter's
+/// version of that is dropped so the two don't contradict.
 /// The user's search plus the deck filter, grouped so `or` in the search
 /// doesn't escape the filter, and without filter parts the search already sets.
 pub fn compose(user: &str, filter: &str) -> String {
@@ -77,6 +85,8 @@ pub fn compose(user: &str, filter: &str) -> String {
     }
 }
 
+/// One page of Scryfall results; None when nothing matches. Retries twice
+/// when Scryfall says to slow down (HTTP 429).
 /// One page of results, or None when nothing matches.
 pub fn search_page(client: &Client, q: &str, order: &str, dir: &str, unique: &str, page: u32) -> Result<Option<Value>> {
     let url = reqwest::Url::parse_with_params(
@@ -102,6 +112,7 @@ pub fn search_page(client: &Client, q: &str, order: &str, dir: &str, unique: &st
     Err(anyhow!("Scryfall is busy. Try again in a moment."))
 }
 
+/// How many cards a search finds (for suggestion labels); 0 on any error.
 fn count(client: &Client, q: &str) -> u64 {
     std::thread::sleep(Duration::from_millis(110));
     search_page(client, q, "edhrec", "auto", "cards", 1)
@@ -118,6 +129,7 @@ struct TagCache {
     tags: HashMap<String, u64>,
 }
 
+/// Seconds since 1970, for cache ages.
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -187,6 +199,7 @@ fn wording(word: &str) -> &'static [&'static str] {
     }
 }
 
+/// Lowercase dashed form of a tag name ("Board Wipe" → "board-wipe").
 fn slug(s: &str) -> String {
     s.to_lowercase()
         .chars()

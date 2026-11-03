@@ -1,6 +1,12 @@
 //! Official Commander precons from MTGJSON (https://mtgjson.com), an open
 //! dataset of every product decklist. The index is cached for a few days;
 //! each deck is fetched when the user picks it.
+//!
+//! Things to work on:
+//! - MTGJSON lists ~200 Commander precons; Secret Lair commander decks and
+//!   some older products are typed differently and don't show. Check other
+//!   `type` values.
+//! - No preview before importing (commander image, card count, price).
 
 use crate::deck::{DeckEntry, ParsedDeck};
 use anyhow::{anyhow, Context, Result};
@@ -26,6 +32,7 @@ pub struct Precon {
     pub release_date: String,
 }
 
+/// HTTP client for MTGJSON (60 s timeout; the deck index is large).
 fn client() -> Result<Client> {
     Ok(Client::builder()
         .timeout(Duration::from_secs(60))
@@ -33,6 +40,7 @@ fn client() -> Result<Client> {
         .build()?)
 }
 
+/// GET a MTGJSON file as JSON, with clear errors.
 fn fetch_json(url: &str) -> Result<Value> {
     client()?
         .get(url)
@@ -44,6 +52,7 @@ fn fetch_json(url: &str) -> Result<Value> {
         .context("MTGJSON sent an unreadable answer")
 }
 
+/// The cached precon index, if younger than three days.
 fn cached_index() -> Option<Value> {
     let path = Path::new(INDEX_CACHE);
     let age = fs::metadata(path).ok()?.modified().ok()?.elapsed().ok()?;

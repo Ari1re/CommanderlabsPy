@@ -1,3 +1,18 @@
+//! Deck analysis: roles, curve, mana and what to add or cut.
+//!
+//! How it fits: [`classify_card`] decides a card's roles (ramp, draw, tutor,
+//! removal, counterspell, wipe, recursion, protection) from its rules text.
+//! Almost everything uses it: analysis, generation scoring, auto-tag,
+//! suggestions, goldfish. `analyze_deck` builds the Analysis tab.
+//!
+//! Things to work on:
+//! - Role detection is substring matching on rules text, so it misreads
+//!   some cards: Bojuka Bog counts as removal ("exile target" graveyard);
+//!   "Add one mana of any color" wasn't ramp until recently. Add tests for
+//!   tricky staples whenever one is found.
+//! - No "win condition" or "engine" role yet, which auto-tag and the
+//!   generator would both use.
+
 use crate::{
     archetype::{detect_deck_tags, tag_fit_score, ArchetypeTag},
     bracket::{estimate_bracket, BracketEstimate},
@@ -47,6 +62,7 @@ pub struct CardRoles {
 }
 
 impl CardRoles {
+    /// How many roles a card has (cards with several are more flexible).
     pub fn count(self) -> u32 {
         [
             self.ramp,
@@ -113,6 +129,20 @@ pub struct DeckAnalysis {
     pub unpriced_cards: u32,
 }
 
+/// Everything on the Analysis tab, in one pass over the deck:
+/// 1. Commander checks: 100 cards, a commander, at most a legal pair, each
+///    commander legal and eligible, colors from the commanders.
+/// 2. Copies: anything over one copy that its text doesn't allow.
+/// 3. Per card: price totals (USD/EUR/tix, sideboard separately), legality
+///    and color problems, types, roles, mana curve, colored pip demand vs
+///    mana sources.
+/// 4. Tags (archetype.rs), bracket (bracket.rs), and advice: structural
+///    recommendations, cut candidates and add suggestions.
+/// 5. For PDH and Highlander, the Commander-only issues are replaced by
+///    that format's own check.
+/// Note: commander eligibility here reads the stored flag
+/// (`card.commander_eligible`), not `effective_commander_eligible`, so very
+/// old databases can still report a false "not eligible".
 pub fn analyze_deck(deck: &ParsedDeck, db: &CardDb) -> Result<DeckAnalysis> {
     let mut legality_issues = Vec::new();
     let mut unknown_cards = Vec::new();
@@ -179,6 +209,7 @@ pub fn analyze_deck(deck: &ParsedDeck, db: &CardDb) -> Result<DeckAnalysis> {
         );
     }
 
+    // Step 2: singleton check (basics and "any number of" cards are exempt).
     let mut counts: HashMap<String, u32> = HashMap::new();
     for entry in deck.commanders.iter().chain(deck.main.iter()) {
         *counts.entry(entry.name.to_ascii_lowercase()).or_default() += entry.quantity;
@@ -199,6 +230,7 @@ pub fn analyze_deck(deck: &ParsedDeck, db: &CardDb) -> Result<DeckAnalysis> {
         }
     }
 
+    // Step 3: walk every card once and add up everything the tab shows.
     let mut types = TypeStats::default();
     let mut roles = RoleStats::default();
     let mut curve = [0u64; 8];
@@ -324,6 +356,7 @@ for entry in &deck.sideboard {
         0.0
     };
 
+    // Step 4: themes, bracket and advice.
     let tags = detect_deck_tags(deck, db)?;
     let bracket = estimate_bracket(deck, db)?;
 
@@ -398,6 +431,12 @@ for entry in &deck.sideboard {
     })
 }
 
+/// A card's roles from its rules text (simple phrase checks):
+/// ramp ("add {", "add one mana…", Treasure, land search), draw, tutor,
+/// removal, counterspell, board wipe, recursion, protection, graveyard use.
+/// Used everywhere: analysis, generator scores, auto-tag, suggestions,
+/// goldfish. Known misreads: utility lands (Bojuka Bog counts as removal);
+/// cards that draw only conditionally count as draw.
 pub fn classify_card(card: &Card) -> CardRoles {
     let oracle = card.oracle_text.to_ascii_lowercase();
     let type_line = card.type_line.to_ascii_lowercase();
@@ -452,9 +491,14 @@ pub fn classify_card(card: &Card) -> CardRoles {
             || oracle.contains("target creature gets -")
             || oracle.contains("target permanent's controller sacrifices"));
 
-    let counter = oracle.contains("counter target spell")
-        || oracle.contains("counter target activated")
-        || oracle.contains("counter target triggered");
+    // "Counter target <anything> spell/ability" in one sentence, so Swan
+    // Song ("counter target enchantment, instant, or sorcery spell") and
+    // Negate ("noncreature spell") count, not just "counter target spell".
+    let counter = oracle.match_indices("counter target").any(|(i, _)| {
+        let rest = &oracle[i..];
+        let sentence = &rest[..rest.find('.').unwrap_or(rest.len())];
+        sentence.contains("spell") || sentence.contains("ability")
+    });
 
     let recursion = (oracle.contains("from your graveyard")
         && (oracle.contains("return target")
@@ -487,6 +531,8 @@ pub fn classify_card(card: &Card) -> CardRoles {
     }
 }
 
+/// Count a card under every type it has (an artifact creature counts as
+/// both).
 fn classify_types(card: &Card, qty: u32, stats: &mut TypeStats) {
     let ty = card.type_line.to_ascii_lowercase();
 
@@ -516,6 +562,7 @@ fn classify_types(card: &Card, qty: u32, stats: &mut TypeStats) {
     }
 }
 
+/// Add a card's roles (× copies) to the deck's role totals.
 fn add_roles(stats: &mut RoleStats, roles: CardRoles, qty: u32) {
     if roles.ramp {
         stats.ramp += qty;
@@ -546,12 +593,14 @@ fn add_roles(stats: &mut RoleStats, roles: CardRoles, qty: u32) {
     }
 }
 
+/// Count colored mana symbols in a cost, per color (demand).
 fn add_pips(mana_cost: &str, qty: u32, pips: &mut [u64; 5]) {
     for (i, c) in ['W', 'U', 'B', 'R', 'G'].into_iter().enumerate() {
         pips[i] += mana_cost.chars().filter(|x| *x == c).count() as u64 * qty as u64;
     }
 }
 
+/// Count which colors a card can produce (supply).
 fn add_sources(produced: &str, qty: u32, sources: &mut [u64; 5]) {
     for (i, c) in ['W', 'U', 'B', 'R', 'G'].into_iter().enumerate() {
         if produced.contains(c) {
@@ -560,6 +609,7 @@ fn add_sources(produced: &str, qty: u32, sources: &mut [u64; 5]) {
     }
 }
 
+/// Lands that search for other lands (count as fixing).
 fn is_fetch_land(card: &Card) -> bool {
     let o = card.oracle_text.to_ascii_lowercase();
     let t = card.type_line.to_ascii_lowercase();
@@ -575,6 +625,9 @@ fn is_fetch_land(card: &Card) -> bool {
             || o.contains("land card"))
 }
 
+/// The plain-language checks: land count for the curve, ramp/draw below
+/// ~10, interaction below 8, wipes below 2, and colors whose share of mana
+/// symbols is 10+ points above their share of sources.
 fn build_recommendations(
     types: TypeStats,
     roles: RoleStats,
@@ -660,6 +713,8 @@ fn build_recommendations(
     out
 }
 
+/// Cards worth reconsidering: weakest-looking non-commander cards (off
+/// theme, no role, expensive), lands only when there are more than 38.
 fn build_cut_candidates(
     deck: &ParsedDeck,
     cards: &[(Card, u32, CardRoles)],
@@ -755,6 +810,11 @@ fn build_cut_candidates(
     cuts
 }
 
+/// Cards to add for each shortfall (ramp, draw, interaction, wipes,
+/// protection, theme fit): up to 6 per need from the 5,000 most played
+/// cards in the deck's colors, by theme fit, popularity and cost.
+/// TODO: checks colors but not the deck's format, so a Pauper Commander
+/// deck can be offered rares here (the Suggestions tab filters properly).
 fn build_add_suggestions(
     db: &CardDb,
     identity: &str,
@@ -848,6 +908,7 @@ fn build_add_suggestions(
     Ok(output)
 }
 
+/// Cards a deck may run several of: basics, "any number of", "up to seven".
 pub fn has_copy_rule_override(card: &Card) -> bool {
     if card.is_basic {
         return true;
@@ -860,6 +921,7 @@ pub fn has_copy_rule_override(card: &Card) -> bool {
         || oracle.contains("a deck can have up to nine cards named")
 }
 
+/// Is this many copies allowed? One, unless the card's text says otherwise.
 pub fn copies_allowed(card: &Card, qty: u32) -> bool {
     if card.is_basic {
         return true;
@@ -883,12 +945,14 @@ pub fn copies_allowed(card: &Card, qty: u32) -> bool {
 }
 
 
+/// Is a card inside the colors? (Every color it has is in the identity.)
 pub fn identity_subset(card_identity: &str, commander_identity: &str) -> bool {
     card_identity
         .chars()
         .all(|c| commander_identity.contains(c))
 }
 
+/// Combine two color identities, in WUBRG order.
 fn union_identity(a: &str, b: &str) -> String {
     let mut s = String::new();
     for c in ['W', 'U', 'B', 'R', 'G'] {
@@ -899,6 +963,7 @@ fn union_identity(a: &str, b: &str) -> String {
     s
 }
 
+/// "Colorless" instead of an empty string.
 pub fn pretty_identity(identity: &str) -> String {
     if identity.is_empty() {
         "Colorless".to_string()

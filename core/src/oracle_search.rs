@@ -2,6 +2,12 @@
 //! "Landfall") against every card's Oracle text and type line, so older or
 //! rarely played cards that do the job are found even when no decklist runs
 //! them.
+//!
+//! Things to work on:
+//! - Themes not in the built-in list fall back to matching their words, which
+//!   is noisy ("Combo" matches nothing; "Tap / Untap" matches almost
+//!   everything). Add rules for the themes EDHREC and PDHREC actually use.
+//! - `archetype.rs` has a second, weaker set of theme rules; merge them here.
 
 use crate::{
     analysis::{classify_card, identity_subset},
@@ -43,6 +49,7 @@ pub struct DeepFind {
     pub edhrec_rank: Option<u32>,
 }
 
+/// Shorthand for one rule: case-insensitive regex, reason text, weight.
 fn r(pattern: &str, label: &'static str, weight: i32) -> Rule {
     Rule { re: Regex::new(&format!("(?i){pattern}")).expect("theme pattern"), label, weight }
 }
@@ -51,6 +58,8 @@ fn r(pattern: &str, label: &'static str, weight: i32) -> Rule {
 fn singular(word: &str) -> String {
     let w = word.trim();
     let lower = w.to_ascii_lowercase();
+    // Irregular plurals. Note "thalids" is misspelled (Thallids), so that one
+    // never matches.
     let irregular = [
         ("elves", "elf"), ("dwarves", "dwarf"), ("wolves", "wolf"), ("werewolves", "werewolf"),
         ("merfolk", "merfolk"), ("faeries", "faerie"), ("sphinxes", "sphinx"), ("fungi", "fungus"),
@@ -93,6 +102,12 @@ const CREATURE_TYPES: &[&str] = &[
 ];
 
 impl ThemeMatcher {
+    /// Build the matcher for a theme name. Known themes ("Tokens", "-1/-1
+    /// Counters", "Aristocrats"…) get hand-written rules with weights (payoffs
+    /// weigh more than enablers). Otherwise: a creature type becomes a typal
+    /// matcher (type line, "Elves you control", changelings); anything else
+    /// falls back to matching the theme's own words (4+ letters) in card text,
+    /// which is noisy ("Combo" matches nothing, "Tap / Untap" almost everything).
     pub fn new(theme: &str) -> Self {
         let name = theme.trim().to_string();
         let key = name
@@ -354,6 +369,7 @@ impl ThemeMatcher {
         (score, best.map(|(label, _)| label))
     }
 
+    /// A card fits when its rules add up to 2 or more.
     pub fn matches(&self, card: &Card) -> bool {
         self.score(card).0 >= 2
     }
@@ -389,6 +405,9 @@ pub fn deep_search_excluding(
         return Ok(Vec::new());
     }
 
+    // Walk every card in the database once: skip basics, lands (unless a land
+    // theme was asked for), cards illegal in the format, outside the colors or
+    // excluded, then keep each card's best theme match.
     let mut finds = Vec::<DeepFind>::new();
     db.scan_cards(|card| {
         if card.is_basic || card.type_line.to_ascii_lowercase().contains("land") && !lands_theme(themes) {
@@ -447,6 +466,7 @@ pub fn deep_search_excluding(
     Ok(finds)
 }
 
+/// Did the player ask for a land theme (Landfall, Lands)? Then lands count.
 fn lands_theme(themes: &[String]) -> bool {
     themes.iter().any(|t| {
         let t = t.to_ascii_lowercase();
@@ -454,6 +474,7 @@ fn lands_theme(themes: &[String]) -> bool {
     })
 }
 
+/// First letter uppercase, for reasons shown to players.
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
@@ -466,6 +487,7 @@ fn capitalize(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Test helper: a minimal black card with the given type and text.
     fn card(name: &str, ty: &str, text: &str) -> Card {
         Card {
             oracle_id: name.into(),

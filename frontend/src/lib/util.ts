@@ -1,3 +1,6 @@
+// Small shared helpers: card images, prices and money formatting, bracket
+// and power-level names, format list, card-type ordering.
+
 import type { CardView, Entry } from './types';
 
 export const MANA = ['W', 'U', 'B', 'R', 'G'] as const;
@@ -21,17 +24,23 @@ export function manaSymbols(cost: string): string[] {
   return [...(cost ?? '').matchAll(/\{([^}]+)\}/g)].map((m) => m[1]);
 }
 
+/** Scryfall's SVG for a mana symbol ("U/B" becomes UB.svg). */
 export function symbolUrl(sym: string): string {
   return `https://svgs.scryfall.io/card-symbols/${sym.replace(/\//g, '').toUpperCase()}.svg`;
 }
 
 export type Currency = 'usd' | 'eur' | 'tix';
 
+/** The card's price in the chosen currency (null when Scryfall has none). */
 export function price(card: CardView | null | undefined, currency: Currency): number | null {
   if (!card) return null;
   return currency === 'eur' ? card.price_eur : currency === 'tix' ? card.price_tix : card.price_usd;
 }
 
+/**
+ * Format a price for display: locale currency for USD/EUR, "1.23 tix" for
+ * MTGO, an em dash when unknown.
+ */
 export function money(value: number | null | undefined, currency: Currency): string {
   if (value == null) return '—';
   if (currency === 'tix') return `${value.toFixed(2)} tix`;
@@ -55,10 +64,15 @@ export const KIND_ORDER = [
   'Other',
 ];
 
+/** "1 card" / "3 cards". Pass `many` for irregular plurals. */
 export function plural(n: number, word: string, many = word + 's') {
   return `${n} ${n === 1 ? word : many}`;
 }
 
+/**
+ * Rough relative time ("5 min ago", "3 days ago"), then a plain date past
+ * a month.
+ */
 export function timeAgo(ms: number): string {
   const diff = Date.now() - ms;
   const min = Math.round(diff / 60000);
@@ -97,6 +111,7 @@ export const FORMATS: { id: FormatId; label: string; short: string; summary: str
   },
 ];
 
+/** Display name for a format id. Unknown or missing ids mean Commander. */
 export function formatLabel(id: string | undefined | null): string {
   return FORMATS.find((f) => f.id === id)?.label ?? 'Commander';
 }

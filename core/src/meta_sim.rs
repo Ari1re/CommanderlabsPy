@@ -1,3 +1,16 @@
+//! Matchup simulation against reference decks.
+//!
+//! How it fits: [`simulate_meta_matchups`] races the deck against reference
+//! decks (`references.rs`) by comparing goldfish speed and interaction, and
+//! returns [`MetaMatchupSummary`] for the agent.
+//!
+//! Things to work on:
+//! - It's a speed race, not a game: no interaction between the decks. Treat
+//!   results as a rough "faster/slower than the field" signal.
+//! - Opponents come from the same commander's references, so it compares a
+//!   deck mostly to variants of itself; a general meta sample would be more
+//!   useful.
+
 use crate::{
     data::CardDb,
     deck::{DeckEntry, ParsedDeck},
@@ -36,6 +49,7 @@ pub struct MetaMatchupSummary {
     pub caveat: String,
 }
 
+/// A reference decklist as a deck that can be goldfished (counts merged).
 fn reference_as_deck(reference: &ReferenceDeck) -> ParsedDeck {
     let mut counts = HashMap::<String, (String, u32)>::new();
 
@@ -66,6 +80,8 @@ fn reference_as_deck(reference: &ReferenceDeck) -> ParsedDeck {
     }
 }
 
+/// Draw one "win turn" from a goldfish result's distribution (None = it
+/// didn't win in the simulated turns).
 fn sample_turn<R: Rng + ?Sized>(
     result: &GoldfishResult,
     rng: &mut R,
@@ -88,6 +104,8 @@ fn sample_turn<R: Rng + ?Sized>(
     None
 }
 
+/// Who wins a race: the earliest win turn takes it; ties split the win.
+/// Returns (won, tied, equity).
 fn race_equity(
     hero: Option<u8>,
     opponents: &[Option<u8>],
@@ -117,6 +135,9 @@ fn race_equity(
     }
 }
 
+/// Race the deck against reference decks: goldfish each, then sample win
+/// turns for the deck and a pod of opponents many times and count how often
+/// it wins first. A speed comparison only: decks never interact.
 pub fn simulate_meta_matchups<F>(
     deck: &ParsedDeck,
     db: &CardDb,

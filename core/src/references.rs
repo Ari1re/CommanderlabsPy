@@ -1,3 +1,33 @@
+//! Reference decklists: other players' decks for a commander.
+//!
+//! How it fits: `intelligence.rs` calls [`gather_reference_decks`] during
+//! generation; the cards those decks share become "commonly played"
+//! evidence, and their recurring combos become win packages. Decks are
+//! cached per site under `data/source_cache/` and merged into a
+//! per-commander archive that grows across runs.
+//!
+//! Sources:
+//! - Archidekt (format 3 Commander, 17 Pauper EDH), by commander name, most
+//!   viewed first. [`ReferenceDepth`] controls how many pages and decks a run
+//!   reads (deep generation reads more than peer-based).
+//! - Moxfield search. Currently returns nothing useful: its search ignores
+//!   the commander filter and returns the site's most viewed decks, which the
+//!   commander check then throws away.
+//! - Bracket 5: the cEDH Decklist Database (Commander), or Archidekt Pauper
+//!   EDH lists titled as competitive (cPDH, competitive, tournament…).
+//!   [`is_cedh_source`] marks these so they're weighted first.
+//!
+//! Things to work on:
+//! - Replace or remove the Moxfield search; it costs a request every run for
+//!   nothing.
+//! - Archidekt deck fetches often fail the commander check (12 fetched, 5
+//!   kept for Drana). Log why each is rejected; some may be partner or
+//!   companion layouts the check doesn't understand.
+//! - Competitive Pauper detection is title-based and finds few lists. A
+//!   curated list of cPDH sources would be more reliable.
+//! - The cache never expires old decks for archetype shifts (new sets). Age
+//!   out decks older than a year or weight them lower.
+
 use crate::{
     archidekt::parse_archidekt_payload,
     deck::{DeckEntry, ParsedDeck},
@@ -60,6 +90,7 @@ pub fn with_depth<T>(depth: ReferenceDepth, f: impl FnOnce() -> T) -> T {
     out
 }
 
+/// New decks one source may download this run (see ReferenceDepth).
 fn fetch_budget() -> usize {
     DEPTH.with(|d| d.get().fetch_budget)
 }
@@ -69,6 +100,7 @@ const NORMAL_COMBO_ANALYSIS_LIMIT: usize = 24;
 const CEDH_COMBO_ANALYSIS_LIMIT: usize = 36;
 const CACHE_SCHEMA: u8 = 3;
 
+/// A complete combo Commander Spellbook found in one reference deck.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReferenceCombo {
     pub cards: Vec<String>,
@@ -76,6 +108,9 @@ pub struct ReferenceCombo {
     pub bracket: Option<u8>,
 }
 
+/// One public decklist for the commander: where it's from, its card names
+/// (commanders included), and its combos once Spellbook has scanned it
+/// (`combo_scan_complete` stops re-scanning decks that have none).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReferenceDeck {
     pub source: String,
@@ -88,6 +123,11 @@ pub struct ReferenceDeck {
     pub combo_scan_complete: bool,
 }
 
+/// The reference corpus for one commander and bracket, with everything
+/// counted once so lookups are cheap: how many decks run each card (and
+/// how many competitive lists), card pairs that recur together
+/// ("packages"), and recurring combos with their results and brackets.
+/// Saved under `data/reference_cache/` and reused for CACHE_HOURS.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReferenceSnapshot {
     pub query: String,
@@ -114,6 +154,8 @@ pub struct ReferenceSnapshot {
     pub combo_brackets: HashMap<String, Option<u8>>,
 }
 
+/// Which search page to read next per site, so repeated runs discover new
+/// decks instead of re-reading page 1 (`data/source_cache/crawl_state/`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ReferenceCrawlState {
     archidekt_page: usize,
@@ -122,6 +164,7 @@ struct ReferenceCrawlState {
 }
 
 impl Default for ReferenceCrawlState {
+    /// Start every crawl at page 1.
     fn default() -> Self {
         Self {
             archidekt_page: 1,
@@ -133,6 +176,7 @@ impl Default for ReferenceCrawlState {
 
 
 impl ReferenceSnapshot {
+    /// How many reference decks run this card.
     pub fn frequency(&self, card_name: &str) -> u32 {
         self.card_frequency
             .get(&card_name.to_ascii_lowercase())
@@ -140,6 +184,7 @@ impl ReferenceSnapshot {
             .unwrap_or(0)
     }
 
+    /// How many reference decks the snapshot holds.
     pub fn deck_count(&self) -> usize {
         self.decks.len()
     }
@@ -152,6 +197,7 @@ impl ReferenceSnapshot {
             .unwrap_or(0)
     }
 
+    /// The most-run cards, with their proper names restored.
     pub fn top_cards(&self, limit: usize) -> Vec<(String, u32)> {
         let mut items = self
             .card_frequency
@@ -173,6 +219,12 @@ impl ReferenceSnapshot {
     }
 
 
+    /// The strongest "package" a card is part of: the highest count of any
+    /// recurring pair that includes it.
+    /// TODO: scans every recurring pair on each call, and the generator calls
+    /// it for every candidate card (via support_for_card), which can be
+    /// thousands × tens of thousands of pairs. An index from card → best pair
+    /// count, built once in `build_snapshot`, would make this instant.
     pub fn package_frequency(&self, card_name: &str) -> u32 {
         let needle = card_name.to_ascii_lowercase();
 
@@ -188,6 +240,7 @@ impl ReferenceSnapshot {
             .unwrap_or(0)
     }
 
+    /// Recurring card pairs seen together in at least `minimum_count` decks.
     pub fn top_pairs(
         &self,
         limit: usize,
@@ -213,11 +266,14 @@ impl ReferenceSnapshot {
         items
     }
 
+    /// How many reference decks contain this exact combo (order doesn't matter).
     pub fn combo_frequency_for_cards(&self, cards: &[String]) -> u32 {
         let key = canonical_combo_key(cards);
         self.combo_frequency.get(&key).copied().unwrap_or(0)
     }
 
+    /// Recurring combos, most common first: (cards, result, Spellbook
+    /// bracket, how many decks).
     pub fn top_combos(
         &self,
         limit: usize,
@@ -252,6 +308,9 @@ impl ReferenceSnapshot {
     }
 }
 
+/// Every cached reference deck (any commander) with 70+ cards and known
+/// combos, cEDH-sourced and combo-rich first. The agent's matchup
+/// simulation (meta_sim.rs) uses these as opponents.
 pub fn load_cached_meta_reference_decks(
     limit: usize,
 ) -> Vec<ReferenceDeck> {
@@ -296,6 +355,40 @@ pub fn load_cached_meta_reference_decks(
     decks
 }
 
+/// Competitive lists in the local reference cache (any commander): how
+/// many there are, and how many of them run each card (lower-case name).
+/// Offline only; it reads what earlier bracket-5 builds downloaded. Auto-tag
+/// uses it for the "Competitive" tag.
+pub fn competitive_card_counts() -> (usize, HashMap<String, u32>) {
+    let mut counts = HashMap::<String, u32>::new();
+    let mut lists = 0;
+    let mut seen = HashSet::<String>::new();
+    let Ok(entries) = fs::read_dir("./data/source_cache/reference_decks") else {
+        return (0, counts);
+    };
+    for deck in entries
+        .flatten()
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .filter_map(|text| serde_json::from_str::<ReferenceDeck>(&text).ok())
+        .filter(|deck| is_cedh_source(deck) && deck.cards.len() >= 50)
+    {
+        let key = canonical_reference_url(&deck.url);
+        if !key.is_empty() && !seen.insert(key) {
+            continue;
+        }
+        lists += 1;
+        let names: HashSet<String> = deck.cards.iter().map(|c| c.to_ascii_lowercase()).collect();
+        for name in names {
+            *counts.entry(name).or_insert(0) += 1;
+        }
+    }
+    (lists, counts)
+}
+
+/// Forget the saved snapshot so the next run rebuilds it (per-site caches
+/// and the archive are kept).
+/// TODO: builds the cache key without the "PDH: " prefix that
+/// `gather_reference_decks` uses, so it can't invalidate Pauper snapshots.
 pub fn invalidate_reference_snapshot(
     commander_names: &[String],
     bracket: u8,
@@ -324,6 +417,15 @@ pub fn invalidate_reference_snapshot(
     Ok(())
 }
 
+/// Build (or reuse) the reference corpus for a commander and bracket:
+/// 1. a fresh enough cached snapshot with enough decks is returned as is;
+/// 2. otherwise start from the commander's archive (decks found on earlier
+///    runs) and any stale snapshot;
+/// 3. discover new decks: Archidekt (several pages when deep), Moxfield
+///    (not for PDH), and competitive lists at bracket 5 (cEDH Decklist
+///    Database, or competitive Pauper lists);
+/// 4. scan up to 24 (36 at bracket 5) not-yet-scanned decks with Spellbook;
+/// 5. count everything into a snapshot and cache it.
 pub fn gather_reference_decks(
     commander_names: &[String],
     bracket: u8,
@@ -337,6 +439,8 @@ pub fn gather_reference_decks(
         commander_names.join(" + ")
     };
 
+    // Step 1: a fresh cached snapshot with enough decks for this depth is used
+    // as is (after syncing its decks with the per-deck cache).
     let depth = DEPTH.with(|d| d.get());
     if let Some(mut cached) = load_cache(&query, bracket).filter(|c| c.deck_count() >= depth.min_decks) {
             // Reconcile snapshot data into the per-source cache.
@@ -364,6 +468,7 @@ pub fn gather_reference_decks(
         return cached;
     }
 
+    // Step 2: start from every deck found on earlier runs.
     // Reuse stale snapshots as historical evidence; spend network budget on new material.
     let mut decks = load_commander_archive(&query);
 
@@ -388,6 +493,7 @@ pub fn gather_reference_decks(
         ),
     );
 
+    // Step 3: discover new decks, continuing from where the last run stopped.
     let mut crawl = load_crawl_state(&query);
 
     for _ in 0..depth.pages.max(1) {
@@ -502,6 +608,8 @@ pub fn gather_reference_decks(
         decks.sort_by_key(|deck| if is_cedh_source(deck) { 0 } else { 1 });
     }
 
+    // Step 4: Spellbook combo scan, a limited number of new decks per run
+    // (each is a network call); scanned decks are remembered.
     let combo_scan_limit = if bracket >= 5 {
         CEDH_COMBO_ANALYSIS_LIMIT
     } else {
@@ -559,6 +667,7 @@ pub fn gather_reference_decks(
         &decks,
     );
 
+    // Step 5: count it all and cache the snapshot.
     let snapshot = build_snapshot(query.clone(), decks);
 
     logging::record(
@@ -580,6 +689,7 @@ pub fn gather_reference_decks(
 }
 
 
+/// Archidekt lists for the commander (see `fetch_archidekt_references_where`).
 fn fetch_archidekt_references(
     commander_names: &[String],
     limit: usize,
@@ -727,6 +837,11 @@ fn fetch_archidekt_references_where(
     out
 }
 
+/// Moxfield search for the commander's decks, most viewed first, then each
+/// deck's full list (budgeted, cached per deck).
+/// Currently returns nothing: Moxfield's search ignores the `commander`
+/// and `q` filters and returns its most viewed decks overall, which
+/// `deck_matches_commanders` then rejects. Kept for if the API changes.
 fn fetch_moxfield_references(
     commander_names: &[String],
     limit: usize,
@@ -840,7 +955,6 @@ fn fetch_moxfield_references(
     out
 }
 
-/// Lists from the cEDH Decklist Database (competitive, tournament-proven).
 /// A competitive list: from the cEDH Decklist Database, a competitive
 /// Pauper Commander list, or titled as one. Bracket 5 builds weigh these
 /// first.
@@ -862,6 +976,12 @@ pub fn is_competitive_title(title: &str) -> bool {
 /// The label competitive Pauper Commander lists from Archidekt carry.
 pub const COMPETITIVE_PAUPER_SOURCE: &str = "Archidekt (competitive Pauper)";
 
+/// Competitive lists from the cEDH Decklist Database: reads its home page,
+/// finds Moxfield links near each mention of the commander's name, and
+/// imports those decks (budgeted, cached).
+/// TODO: it slices the page around each name by byte offsets; a name next
+/// to multi-byte characters (accents, emoji) could split a character and
+/// panic. Snap `left`/`right` to char boundaries.
 fn fetch_cedh_ddb_references(
     commander_names: &[String],
     limit: usize,
@@ -967,6 +1087,9 @@ fn fetch_cedh_ddb_references(
     out
 }
 
+/// Ask Spellbook which complete combos each not-yet-scanned reference deck
+/// contains (up to `limit` decks per run, a short pause between calls).
+/// Results are saved with the cached deck so each deck is scanned once.
 fn analyze_reference_combos(
     commander_names: &[String],
     decks: &mut [ReferenceDeck],
@@ -1063,6 +1186,8 @@ fn analyze_reference_combos(
     );
 }
 
+/// Pull (deck id, deck name) pairs out of an Archidekt search response,
+/// wherever they sit in the JSON (the layout has changed before).
 fn collect_archidekt_summaries(
     value: &Value,
     output: &mut Vec<(String, String)>,
@@ -1106,6 +1231,7 @@ fn collect_archidekt_summaries(
     }
 }
 
+/// Reduce an imported deck to a ReferenceDeck: sorted, de-duplicated names.
 fn reference_from_parsed(
     source: &str,
     title: String,
@@ -1132,6 +1258,9 @@ fn reference_from_parsed(
     }
 }
 
+/// Is this imported deck really for our commander(s)? Each must be in its
+/// command zone or named in its title. This is the check that rejects most
+/// wrong search results (and, sometimes, decks with unusual layouts).
 fn deck_matches_commanders(
     deck: &ParsedDeck,
     commander_names: &[String],
@@ -1147,6 +1276,13 @@ fn deck_matches_commanders(
     })
 }
 
+/// Count a set of reference decks into a snapshot: per-card counts
+/// (and competitive-only counts), card pairs that recur in 2+ decks, and
+/// recurring combos.
+/// Note: the pair counting is quadratic per deck (~5,000 pairs for a
+/// 100-card list), so large corpora make big snapshot files.
+/// TODO: for PDH the query starts with "PDH: ", so the commander isn't
+/// recognised in `commander_set` and gets counted in pairs.
 fn build_snapshot(
     query: String,
     decks: Vec<ReferenceDeck>,
@@ -1255,6 +1391,7 @@ fn build_snapshot(
     }
 }
 
+/// One key per combo regardless of card order or capitalization.
 fn canonical_combo_key(cards: &[String]) -> String {
     let mut names = cards
         .iter()
@@ -1267,6 +1404,7 @@ fn canonical_combo_key(cards: &[String]) -> String {
     names.join("\u{1f}")
 }
 
+/// Remove duplicate decks (same URL, or same site and title).
 fn dedupe_reference_decks(decks: &mut Vec<ReferenceDeck>) {
     let mut seen = HashSet::new();
 
@@ -1285,6 +1423,8 @@ fn dedupe_reference_decks(decks: &mut Vec<ReferenceDeck>) {
     });
 }
 
+/// Cached-deck version of `deck_matches_commanders`: each commander must
+/// be among its cards or in its title.
 fn reference_deck_matches_commanders(
     deck: &ReferenceDeck,
     commander_names: &[String],
@@ -1300,6 +1440,11 @@ fn reference_deck_matches_commanders(
     })
 }
 
+/// Hash used for cache file names.
+/// TODO: DefaultHasher's output isn't stable across Rust versions, so a
+/// compiler update renames every cache file and orphans the old ones
+/// (e.g. switching from nightly to stable). A fixed hash (FNV, or a
+/// sanitized name) would keep caches across builds.
 fn source_key(value: &str) -> u64 {
     let mut hasher =
         std::collections::hash_map::DefaultHasher::new();
@@ -1307,6 +1452,7 @@ fn source_key(value: &str) -> u64 {
     hasher.finish()
 }
 
+/// Same deck, same key: no "www.", no trailing slash, lowercase.
 fn canonical_reference_url(url: &str) -> String {
     url.trim()
         .trim_end_matches('/')
@@ -1315,6 +1461,7 @@ fn canonical_reference_url(url: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Where one reference deck is cached.
 fn source_deck_cache_path(url: &str) -> PathBuf {
     let canonical = canonical_reference_url(url);
 
@@ -1325,6 +1472,8 @@ fn source_deck_cache_path(url: &str) -> PathBuf {
         ))
 }
 
+/// A cached reference deck by URL. Stale copies are still used (a decklist
+/// doesn't stop being evidence), just logged as stale.
 fn load_cached_reference_deck(
     url: &str,
 ) -> Option<ReferenceDeck> {
@@ -1369,6 +1518,7 @@ fn load_cached_reference_deck(
     Some(deck)
 }
 
+/// Cache one reference deck (skipped for decks without a URL).
 fn save_cached_reference_deck(
     deck: &ReferenceDeck,
 ) -> Result<()> {
@@ -1396,6 +1546,7 @@ fn save_cached_reference_deck(
     Ok(())
 }
 
+/// Where a search page response is cached.
 fn search_cache_path(url: &str, extension: &str) -> PathBuf {
     PathBuf::from("./data/source_cache/search_pages")
         .join(format!(
@@ -1405,6 +1556,7 @@ fn search_cache_path(url: &str, extension: &str) -> PathBuf {
         ))
 }
 
+/// Search pages are reused for SEARCH_CACHE_HOURS.
 fn search_cache_is_fresh(path: &PathBuf) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;
@@ -1425,6 +1577,8 @@ fn search_cache_is_fresh(path: &PathBuf) -> bool {
     )
 }
 
+/// GET a JSON search page: fresh cache first, then the network (saving the
+/// result), then any stale cache if the site is down or refuses.
 fn fetch_json_with_search_cache(
     client: &Client,
     url: &str,
@@ -1496,6 +1650,7 @@ fn fetch_json_with_search_cache(
     None
 }
 
+/// Same as `fetch_json_with_search_cache` for HTML pages.
 fn fetch_text_with_search_cache(
     client: &Client,
     url: &str,
@@ -1550,6 +1705,8 @@ fn fetch_text_with_search_cache(
     None
 }
 
+/// Refresh decks from their per-deck cache (which has scan results), and
+/// seed the cache for decks that aren't in it yet.
 fn hydrate_reference_decks_from_source_cache(
     decks: &mut [ReferenceDeck],
 ) {
@@ -1581,6 +1738,8 @@ fn hydrate_reference_decks_from_source_cache(
     }
 }
 
+/// Add or update decks in the commander's archive (every deck ever found
+/// for it, up to MAX_COMMANDER_ARCHIVE_DECKS).
 fn merge_commander_archive(
     query: &str,
     updated: &[ReferenceDeck],
@@ -1620,6 +1779,7 @@ fn merge_commander_archive(
     save_commander_archive(query, &archive)
 }
 
+/// Where a commander's archive is stored.
 fn commander_archive_path(query: &str) -> PathBuf {
     PathBuf::from("./data/source_cache/commander_archives")
         .join(format!(
@@ -1628,6 +1788,7 @@ fn commander_archive_path(query: &str) -> PathBuf {
         ))
 }
 
+/// Every deck found for this commander on earlier runs.
 fn load_commander_archive(
     query: &str,
 ) -> Vec<ReferenceDeck> {
@@ -1644,6 +1805,7 @@ fn load_commander_archive(
         .unwrap_or_default()
 }
 
+/// Save the archive, de-duplicated and capped (oldest dropped first).
 fn save_commander_archive(
     query: &str,
     decks: &[ReferenceDeck],
@@ -1686,6 +1848,7 @@ fn save_commander_archive(
     Ok(())
 }
 
+/// Where a commander's crawl state is stored.
 fn crawl_state_path(query: &str) -> PathBuf {
     PathBuf::from("./data/source_cache/crawl_state")
         .join(format!(
@@ -1694,6 +1857,7 @@ fn crawl_state_path(query: &str) -> PathBuf {
         ))
 }
 
+/// Which pages to read next for this commander (page 1 if unknown).
 fn load_crawl_state(
     query: &str,
 ) -> ReferenceCrawlState {
@@ -1710,6 +1874,7 @@ fn load_crawl_state(
         .unwrap_or_default()
 }
 
+/// Remember which pages to read next time.
 fn save_crawl_state(
     query: &str,
     state: &ReferenceCrawlState,
@@ -1734,6 +1899,8 @@ fn save_crawl_state(
     Ok(())
 }
 
+/// Snapshot cache file: one per commander and bracket, versioned by
+/// CACHE_SCHEMA so format changes don't load old files.
 fn cache_path(query: &str, bracket: u8) -> PathBuf {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     query.to_ascii_lowercase().hash(&mut hasher);
@@ -1748,6 +1915,7 @@ fn cache_path(query: &str, bracket: u8) -> PathBuf {
         ))
 }
 
+/// A snapshot newer than CACHE_HOURS, if any.
 fn load_cache(query: &str, bracket: u8) -> Option<ReferenceSnapshot> {
     let path = cache_path(query, bracket);
     let metadata = fs::metadata(&path).ok()?;
@@ -1762,6 +1930,8 @@ fn load_cache(query: &str, bracket: u8) -> Option<ReferenceSnapshot> {
     serde_json::from_str(&text).ok()
 }
 
+/// Any saved snapshot, however old (used as extra evidence when
+/// rebuilding).
 fn load_cache_any_age(
     query: &str,
     bracket: u8,
@@ -1771,6 +1941,7 @@ fn load_cache_any_age(
     serde_json::from_str(&text).ok()
 }
 
+/// Save a snapshot for reuse.
 fn save_cache(
     query: &str,
     bracket: u8,
@@ -1795,6 +1966,7 @@ fn save_cache(
 mod cedh_tests {
     use super::*;
 
+    /// Test helper: a reference deck from a source and card names.
     fn deck(source: &str, cards: &[&str]) -> ReferenceDeck {
         ReferenceDeck {
             source: source.to_string(),

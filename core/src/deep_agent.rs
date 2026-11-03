@@ -1,3 +1,24 @@
+//! The AI Agent's optimizer: rebuilds a deck toward a goal and tests each
+//! version.
+//!
+//! How it fits: `start_agent` in `api.rs` calls [`run_optimization_agent`]
+//! when someone asks the agent for changes ("make it faster", "upgrade it").
+//! It researches the commander (`deep_learn.rs`), optionally gets the AI
+//! model's profile (`ai.rs`), then runs rounds: generate a candidate upgrade
+//! (`generator::generate_ai_upgrade`), goldfish-test it, and keep it if it
+//! scores better on the goal ([`OptimizationGoal`]: fast win or stax lock).
+//! The best versions come back as [`DeepAgentResult`] for the Agent tab.
+//!
+//! Things to work on:
+//! - Only two goals exist; requests like "more interaction" or "cheaper" are
+//!   mapped to the nearest one. Turn the request into weights instead.
+//! - Doesn't support Canadian Highlander (no commander); the Agent tab sends
+//!   Highlander requests to the Highlander builder instead.
+//! - Rounds are sequential and each re-runs simulations from scratch; caching
+//!   per-card simulation stats between rounds would speed it up a lot.
+//! - `simulate_stax_lock` uses a rough pressure model; document which cards
+//!   it counts and let the report show them.
+
 use crate::{
     ai::{build_ai_commander_profile, AiCommanderProfile},
     bracket::{estimate_bracket, refine_with_combo_report},
@@ -21,6 +42,8 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// What the agent optimizes for, read from the player's request: win as
+/// fast as possible, or lock the table (stax).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OptimizationGoal {
     FastWin,
@@ -28,12 +51,14 @@ pub enum OptimizationGoal {
 }
 
 impl Default for OptimizationGoal {
+    /// Winning fast is the default goal.
     fn default() -> Self {
         Self::FastWin
     }
 }
 
 impl OptimizationGoal {
+    /// Goal name for logs.
     pub fn label(self) -> &'static str {
         match self {
             Self::FastWin => "FAST WIN",
@@ -41,6 +66,7 @@ impl OptimizationGoal {
         }
     }
 
+    /// What the goal means, for the agent's report.
     pub fn description(self) -> &'static str {
         match self {
             Self::FastWin => {
@@ -54,6 +80,8 @@ impl OptimizationGoal {
 
 }
 
+/// How fast a deck "locks" the table in simulation: lock-turn odds and
+/// which cards counted as lock pieces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaxSimulation {
     pub runs: u32,
@@ -68,6 +96,8 @@ pub struct StaxSimulation {
     pub caveat: String,
 }
 
+/// One optimization round: its bracket and score, whether it was kept,
+/// cards added and removed, and a summary for "What the agent tried".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRound {
     pub round: u16,
@@ -79,6 +109,8 @@ pub struct AgentRound {
     pub removed_cards: Vec<String>,
 }
 
+/// A progress update for the Agent tab (`completed` = a finished step to
+/// tick off).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AgentProgress {
     pub percent: u8,
@@ -88,6 +120,7 @@ pub struct AgentProgress {
 }
 
 impl AgentProgress {
+    /// A step in progress.
     fn working(
         percent: u8,
         task: impl Into<String>,
@@ -101,6 +134,7 @@ impl AgentProgress {
         }
     }
 
+    /// A finished step with its summary.
     fn finished(
         percent: u8,
         task: impl Into<String>,
@@ -118,6 +152,7 @@ impl AgentProgress {
     }
 }
 
+/// One tested version of the deck (shown under Results, can be saved).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDeckIteration {
     pub round: u16,
@@ -128,6 +163,8 @@ pub struct AgentDeckIteration {
     pub stax: Option<StaxSimulation>,
 }
 
+/// Everything the agent run produced: the best deck, top versions, rounds,
+/// research, the AI profile and the final testing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeepAgentResult {
     pub goal: OptimizationGoal,
@@ -143,6 +180,21 @@ pub struct DeepAgentResult {
     pub trace: Vec<String>,
 }
 
+/// The AI Agent's optimizer (Agent tab → a change request):
+/// 1. research the commander (deep_learn.rs) and add the player's own
+///    references;
+/// 2. ask the AI model for a profile (optional; it carries on without);
+/// 3. goldfish the current deck as the baseline (quick runs), and stax
+///    simulation if the goal is a lock;
+/// 4. pick candidate themes to try: a stax goal tries only Stax; otherwise
+///    the chosen archetype, a style named at the start of the brief
+///    ("Combo…", "Control…"), the AI's recommended and primary archetypes,
+///    the commander's suggested themes, and "no theme";
+/// 5. each round: build an upgrade with one theme (generate_ai_upgrade),
+///    reject it if it misses the bracket, goldfish it, score it for the
+///    goal, keep it if it beats the best so far;
+/// 6. re-test the winner at the chosen intensity and return the top versions.
+/// Fails with a clear message if no candidate beat the current deck.
 pub fn run_optimization_agent<F>(
     starting_deck: &ParsedDeck,
     db: &CardDb,
@@ -179,6 +231,8 @@ where
         "Collecting commander shell, reference consensus, recurring packages, and verified combo evidence.",
     ));
 
+    // Step 1: research (EDHREC, references, combos) plus the player's own
+    // references.
     let mut research = deep_learn_deck(
         starting_deck,
         db,
@@ -230,6 +284,7 @@ where
         "Grounding the local model with rules, references, community research, deck structure, and the user's build brief.",
     ));
 
+    // Step 2: the AI model's profile. Its priority cards feed every upgrade.
     let ai_profile = build_ai_commander_profile(
         starting_deck,
         db,
@@ -327,6 +382,7 @@ where
         "Running the baseline quick simulation so candidate decks have a fair comparison point.",
     ));
 
+    // Step 3: the baseline every candidate must beat.
     let baseline_testing = simulate_deep_learn_games(
         starting_deck,
         db,
@@ -373,6 +429,8 @@ where
     ));
 
 
+    // A current deck in the wrong bracket starts with a very low score, so any
+    // valid candidate beats it.
     let mut best_score = if baseline_bracket == target_bracket {
         objective_score(
             goal,
@@ -395,6 +453,7 @@ where
     let commander_cards =
         resolve_generation_commanders(&commander_specification, db)?;
 
+    // Step 4: which themes the rounds try, one per round in turn.
     let candidate_themes = if goal == OptimizationGoal::StaxLock {
         vec![Some("Stax".to_string())]
     } else {
@@ -529,6 +588,7 @@ where
         },
     )];
 
+    // Step 5: the rounds.
     for round in 1..=rounds {
         let preferred_theme = candidate_themes[
             ((round - 1) as usize) % candidate_themes.len()
@@ -624,6 +684,7 @@ where
         let (added_cards, removed_cards) =
             deck_diff(&previous, &candidate.deck);
 
+        // Keep a candidate only if it strictly beats the best so far.
         let accepted = score > best_score + 0.01;
 
 
@@ -719,6 +780,7 @@ where
         ));
     }
 
+    // Step 6: nothing beat the current deck → explain instead of returning it.
     let mut best = best_generated.ok_or_else(|| {
         anyhow!(
             "Agent tested all configured candidates but none beat the current deck's objective score inside Bracket {}. The current list is already better than the generated candidates under this test model.",
@@ -745,6 +807,7 @@ where
         ),
     ));
 
+    // Re-test the winner with the full number of runs (rounds use quick runs).
     let final_testing = simulate_deep_learn_games_with_runs(
         &best.deck,
         db,
@@ -945,6 +1008,7 @@ Ok(DeepAgentResult {
     })
 }
 
+/// A deck's bracket, including Spellbook combos.
 fn detect_bracket(deck: &ParsedDeck, db: &CardDb) -> Result<u8> {
     let mut estimate = estimate_bracket(deck, db)?;
 
@@ -955,6 +1019,8 @@ fn detect_bracket(deck: &ParsedDeck, db: &CardDb) -> Result<u8> {
     Ok(estimate.bracket)
 }
 
+/// Tidy an internal progress line for the Agent tab: drop "[TAGS]", use
+/// dashes, cap at 180 characters.
 fn clean_agent_detail(line: &str) -> String {
     let mut value = line.trim().to_string();
 
@@ -976,6 +1042,11 @@ fn clean_agent_detail(line: &str) -> String {
 }
 
 
+/// The number rounds compete on. Fast win: earlier combo turns and higher
+/// "combo by turn N" odds, plus keepable hands. Stax: earlier lock turns.
+/// Note: "fast win" only measures combo assembly (goldfish.rs), so decks
+/// that win through combat or value score near zero and the agent leans
+/// toward combo builds.
 fn objective_score(
     goal: OptimizationGoal,
     testing: &DeepLearnTestSummary,
@@ -1020,6 +1091,7 @@ fn objective_score(
     }
 }
 
+/// The "by turn N" percentage from a (turn, pct) list.
 fn cumulative_pct(items: &[(u8, f64)], turn: u8) -> f64 {
     items
         .iter()
@@ -1028,6 +1100,7 @@ fn cumulative_pct(items: &[(u8, f64)], turn: u8) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Cards added and removed between two versions (main deck).
 fn deck_diff(
     before: &ParsedDeck,
     after: &ParsedDeck,
@@ -1074,6 +1147,10 @@ struct StaxCard {
     lock_weight: u8,
 }
 
+/// Simulate how fast lock pieces come down: each game draws and plays
+/// cards by mana, adding up lock "pressure" from stax pieces
+/// (`stax_lock_weight`); 3 pressure counts as locked. A rough model: no
+/// opponents, no interaction.
 pub fn simulate_stax_lock(
     deck: &ParsedDeck,
     db: &CardDb,
@@ -1340,6 +1417,8 @@ pub fn simulate_stax_lock(
     })
 }
 
+/// How much a card locks the table (0–3) from its text: taxes, "can't
+/// untap", search/cast restrictions, rule-of-law effects…
 fn stax_lock_weight(card: &Card) -> u8 {
     let oracle = card.oracle_text.to_ascii_lowercase();
     let name = card.name.to_ascii_lowercase();

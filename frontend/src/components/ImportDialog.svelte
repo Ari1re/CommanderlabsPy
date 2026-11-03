@@ -1,10 +1,22 @@
+<!--
+Add a deck: paste a list, a Moxfield/Archidekt link, a Commander precon
+(MTGJSON) or a share code / QR scan.
+
+Things to work on:
+- Precons show no preview (commander, price) before importing.
+-->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { api, runJob } from '../lib/api';
   import { app } from '../lib/store.svelte';
   import Modal from './Modal.svelte';
   import QrScanner from './QrScanner.svelte';
 
-  let { onclose, ondone }: { onclose: () => void; ondone: (name: string) => void } = $props();
+  let {
+    onclose,
+    ondone,
+    initialCode = null,
+  }: { onclose: () => void; ondone: (name: string) => void; initialCode?: string | null } = $props();
 
   let mode = $state<'paste' | 'link' | 'precon' | 'share'>('paste');
   let name = $state('');
@@ -57,6 +69,15 @@
       app.error(err);
     }
   }
+
+  // Opened from a scanned share link: go straight to its preview.
+  onMount(() => {
+    if (initialCode) {
+      mode = 'share';
+      checkCode(initialCode);
+      app.pendingShare = null;
+    }
+  });
 
   async function save() {
     busy = true;

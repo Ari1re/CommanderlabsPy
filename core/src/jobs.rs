@@ -4,6 +4,10 @@
 //! search, AI agent runs) run on worker threads. The UI starts a job, gets an
 //! id back immediately, and polls [`Jobs::get`] for progress and the result.
 //! Polling works identically for the Tauri app and the web server.
+//!
+//! Things to work on:
+//! - Jobs can't be cancelled (long generations, model downloads). A
+//!   cancellation flag checked between steps would cover most of them.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -49,6 +53,7 @@ pub struct JobState {
     pub finished_ms: Option<u128>,
 }
 
+/// Milliseconds since 1970, for started/finished times.
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -70,6 +75,9 @@ pub struct JobHandle {
 }
 
 impl JobHandle {
+    /// Move the progress bar. An empty `step` keeps the previous step name. Each
+    /// distinct "NN% step — detail" line is also appended to the log, trimmed to
+    /// the last `MAX_LOG_LINES`.
     pub fn progress(&self, percent: u16, step: impl Into<String>, detail: impl Into<String>) {
         let step = step.into();
         let detail = detail.into();
@@ -101,6 +109,9 @@ impl JobHandle {
         });
     }
 
+    /// Add a raw line to the log (sources used, agent thinking).
+    /// TODO: unlike `progress`, this doesn't trim to MAX_LOG_LINES, so a chatty job
+    /// can grow its log without limit.
     pub fn log(&self, line: impl Into<String>) {
         let line = line.into();
         self.jobs.update(self.id, |job| {
@@ -110,6 +121,10 @@ impl JobHandle {
 }
 
 impl Jobs {
+    /// Start `work` on its own thread and return the job id at once. The UI then
+    /// polls `get(id)`. Errors and panics both end as `Error` with a message, so a
+    /// crashing generator never leaves a job stuck on "Running". Old finished jobs
+    /// are pruned here.
     pub fn spawn<F>(self: &Arc<Self>, kind: &str, subject: &str, work: F) -> u64
     where
         F: FnOnce(JobHandle) -> Result<Value> + Send + 'static,
@@ -165,12 +180,14 @@ impl Jobs {
         id
     }
 
+    /// Change one job under the lock. Unknown (pruned) ids are ignored.
     fn update(&self, id: u64, f: impl FnOnce(&mut JobState)) {
         if let Some(job) = self.map.lock().unwrap().get_mut(&id) {
             f(job);
         }
     }
 
+    /// Full job state, including the result, for the UI's polling.
     pub fn get(&self, id: u64) -> Option<JobState> {
         self.map.lock().unwrap().get(&id).cloned()
     }
@@ -193,6 +210,8 @@ impl Jobs {
         jobs
     }
 
+    /// Is the same task already running (same kind and deck/commander)? The API
+    /// uses this to reattach instead of starting a duplicate.
     pub fn running(&self, kind: &str, subject: &str) -> Option<u64> {
         self.map
             .lock()
@@ -202,6 +221,8 @@ impl Jobs {
             .map(|job| job.id)
     }
 
+    /// Keep only the newest `KEEP_FINISHED` finished jobs. Running ones always
+    /// stay.
     fn prune(map: &mut HashMap<u64, JobState>) {
         let mut finished: Vec<u64> = map
             .values()

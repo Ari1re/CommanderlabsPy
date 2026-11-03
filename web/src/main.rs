@@ -30,6 +30,8 @@ struct Options {
     data: std::path::PathBuf,
 }
 
+/// Hand-rolled flag parsing (four flags didn't justify clap). Bad values keep
+/// the default, and unknown flags print a warning instead of exiting.
 fn parse_args() -> Options {
     let mut opts = Options {
         host: "127.0.0.1".into(),
@@ -59,6 +61,12 @@ fn parse_args() -> Options {
     opts
 }
 
+/// POST /api/<cmd>: the same `Engine::call` as the desktop app, run on a
+/// blocking thread. Engine errors come back as 200 with `{ok:false,error}`
+/// (the UI shows them as toasts); only a panic gives a 500.
+/// Security note: with --host 0.0.0.0 anyone on the network can call every
+/// command, including deleting decks. There is no auth; keep it on trusted
+/// networks.
 async fn api(State(engine): State<Arc<Engine>>, Path(cmd): Path<String>, body: Option<Json<Value>>) -> Response {
     let args = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let result = tokio::task::spawn_blocking(move || engine.call(&cmd, args)).await;
@@ -69,6 +77,8 @@ async fn api(State(engine): State<Arc<Engine>>, Path(cmd): Path<String>, body: O
     }
 }
 
+/// Serve the built UI embedded in the binary. Unknown paths get index.html
+/// so hash routes and reloads keep working.
 async fn static_files(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
@@ -82,6 +92,10 @@ async fn static_files(uri: Uri) -> Response {
     }
 }
 
+/// Start the browser edition. Steps: open the engine, mount /api and
+/// /health, bind the first free port from --port up to +19, print the URL
+/// (open the browser unless --no-browser), serve until Ctrl+C, then shut the
+/// engine down cleanly.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opts = parse_args();

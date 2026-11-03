@@ -6,6 +6,12 @@
 //! without an API key, or the model not started) Commander Lab answers from
 //! its own analysis: card text and roles, curve, mana, price, bracket, combos,
 //! mulligans, how the deck wins, what to cut and add.
+//!
+//! Things to work on:
+//! - The deck context is the same size for every question (~6,200 tokens).
+//!   Send less for simple questions, especially to the on-device model.
+//! - The offline (no AI) answers recognise a fixed set of question shapes;
+//!   log unanswered questions so the common ones can be added.
 
 use crate::{
     ai::LocalAi,
@@ -30,6 +36,9 @@ pub struct DeckFacts {
     pub combos: Option<ComboReport>,
 }
 
+/// Collect everything a question might need: the full analysis, the play
+/// guide, every card's data (commanders flagged), sideboard, Considering
+/// and the last combo check. Runs once per question.
 pub fn gather(deck: &ParsedDeck, db: &CardDb, combos: Option<ComboReport>, plan: Option<&GamePlan>) -> Result<DeckFacts> {
     let analysis = analyze_deck(deck, db)?;
     let guide = build_guide(deck, db, &analysis, combos.as_ref(), plan).ok();
@@ -55,6 +64,7 @@ pub fn gather(deck: &ParsedDeck, db: &CardDb, combos: Option<ComboReport>, plan:
     })
 }
 
+/// A card's roles as words ("ramp", "card draw"…).
 fn role_names(r: CardRoles) -> Vec<&'static str> {
     let mut out = Vec::new();
     for (on, name) in [
@@ -75,6 +85,7 @@ fn role_names(r: CardRoles) -> Vec<&'static str> {
     out
 }
 
+/// "$1.99", or "—" for basics and unpriced cards.
 fn price_of(c: &Card) -> String {
     match c.price_usd {
         Some(p) if !c.is_basic => format!("${p:.2}"),
@@ -82,6 +93,7 @@ fn price_of(c: &Card) -> String {
     }
 }
 
+/// Rules text squeezed onto one line and cut to `max` characters.
 fn one_line(text: &str, max: usize) -> String {
     let flat = text.replace('\n', " ");
     if flat.chars().count() <= max {
@@ -91,6 +103,8 @@ fn one_line(text: &str, max: usize) -> String {
     }
 }
 
+/// Lowercase words (apostrophes kept), for matching card names in
+/// questions.
 fn normalize(s: &str) -> String {
     s.to_lowercase()
         .chars()
@@ -256,6 +270,10 @@ pub trait AnswerProgress {
     fn text(&self, text: &str);
 }
 
+/// Answer with the AI model. The system prompt carries the whole deck
+/// context (~6,000 tokens for a 100-card deck), plus the player's notes and
+/// the last 20 chat turns. Reports each step and streams the answer through
+/// `progress`.
 pub fn ai_answer(
     facts: &DeckFacts,
     history: &[(String, String)],
@@ -293,11 +311,15 @@ pub fn ai_answer(
     Ok(ai.chat_streaming(&system, &turns, &|text| progress.text(text))?.trim().to_string())
 }
 
+/// Does the question contain one of these words (or phrases)? Simple
+/// plurals count ("combos" matches "combo").
 fn has_word(q: &str, words: &[&str]) -> bool {
     let tokens: Vec<&str> = q.split_whitespace().collect();
     words.iter().any(|w| if w.contains(' ') { q.contains(w) } else { tokens.iter().any(|t| t == w || t.trim_end_matches('s') == *w) })
 }
 
+/// "Why is this card here?" in a sentence: its roles, shared themes, combos
+/// it's part of, Game Changer status, price.
 fn card_blurb(facts: &DeckFacts, c: &Card) -> String {
     let roles = role_names(classify_card(c));
     let qty = facts.cards.iter().find(|(_, x, _)| x.name == c.name);
@@ -342,10 +364,12 @@ fn card_blurb(facts: &DeckFacts, c: &Card) -> String {
     s
 }
 
+/// A section of the play guide by title.
 fn section<'a>(facts: &'a DeckFacts, title: &str) -> Option<&'a crate::guide::GuideSection> {
     facts.guide.as_ref()?.sections.iter().find(|s| s.title.eq_ignore_ascii_case(title))
 }
 
+/// A play guide section as plain text.
 fn section_text(facts: &DeckFacts, title: &str) -> Option<String> {
     let s = section(facts, title)?;
     let mut out = s.text.clone();

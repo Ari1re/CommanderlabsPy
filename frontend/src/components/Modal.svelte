@@ -1,3 +1,6 @@
+<!--
+Shared modal dialog (title, body, footer buttons; Escape closes).
+-->
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import Icon from './Icon.svelte';

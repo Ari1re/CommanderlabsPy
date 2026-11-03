@@ -1,3 +1,7 @@
+// App-wide state: the current route (URL hash), app status, settings
+// (theme, currency, deck generation engine), toasts and the card sheet.
+// `load()` runs once at start: reads settings and status.
+
 import { api } from './api';
 import type { CardView, Deck, Entry, Status, UpdateInfo } from './types';
 import type { Currency } from './util';
@@ -9,6 +13,11 @@ export type Route =
   | { page: 'game' }
   | { page: 'settings' };
 
+/**
+ * Read the route from the URL hash: #/deck/<name>/<tab>, #/build, #/game,
+ * #/settings, else the library. The tab is the last segment, so deck names
+ * with "/" still work (everything between is the name).
+ */
 function parseHash(): Route {
   const raw = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
   const [page, ...rest] = raw.split('/');
@@ -23,6 +32,10 @@ function parseHash(): Route {
   return { page: 'library' };
 }
 
+/**
+ * Navigate by setting the hash. The hashchange listener updates
+ * `app.route`, so the back button and links behave the same way.
+ */
 export function go(route: Route) {
   let hash = '#/';
   if (route.page === 'deck') hash = `#/deck/${encodeURIComponent(route.name)}/${route.tab}`;
@@ -53,6 +66,8 @@ class AppState {
   /** Set by the open deck view so other components can push an updated deck. */
   deckUpdated: ((deck: Deck) => void) | null = null;
   updatingCards = $state<{ percent: number; step: string } | null>(null);
+  /** A share code from a scanned QR link, waiting for the Library's Add deck dialog. */
+  pendingShare = $state<string | null>(null);
   /** Latest release info from GitHub (null until checked). */
   update = $state<UpdateInfo | null>(null);
   /** The update dialog is open. */

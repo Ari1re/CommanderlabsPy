@@ -1,3 +1,17 @@
+//! Commander Bracket estimate (the official 1–5 brackets).
+//!
+//! How it fits: [`estimate_bracket`] counts what the bracket rules care
+//! about (Game Changers, tutors, fast mana, extra turns, mass land denial,
+//! early two-card combos) and returns a [`BracketEstimate`] with the reasons.
+//! [`refine_with_combo_report`] raises it when Commander Spellbook finds
+//! combos. Deck header, generator bracket lock and the agent all use it.
+//!
+//! Things to work on:
+//! - The Game Changers list comes from Scryfall's flag; check it's refreshed
+//!   when Wizards updates the list.
+//! - "Intent" brackets (a casual deck with one Game Changer) can't be
+//!   expressed; consider letting the player pin a bracket on a deck.
+
 use crate::{
     analysis::classify_card,
     data::CardDb,
@@ -6,6 +20,9 @@ use crate::{
 };
 use anyhow::Result;
 
+/// A deck's estimated bracket with what drove it: Game Changers found, fast
+/// mana, tutors, extra turns, mass land denial, fast ("ruthless") combos,
+/// reasons in words and a confidence note.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BracketEstimate {
     pub bracket: u8,
@@ -21,11 +38,19 @@ pub struct BracketEstimate {
 }
 
 impl BracketEstimate {
+    /// "Bracket 3 — Upgraded".
     pub fn display_name(&self) -> String {
         format!("Bracket {} — {}", self.bracket, self.label)
     }
 }
 
+/// Estimate the bracket from the cards alone (combos come later via
+/// `refine_with_combo_report`):
+/// - 4+ Game Changers → 4; 1–3 → 3;
+/// - otherwise mass land denial or 3+ extra-turn cards → 4,
+///   5+ tutors or 4+ fast mana → 3, 2+ tutors or any fast mana → 2, else 1;
+/// - bracket 5 only when a 4 also has 4+ Game Changers, 5+ fast mana and 7+
+///   tutors (cEDH profile), since 5 is about intent, not a checklist.
 pub fn estimate_bracket(deck: &ParsedDeck, db: &CardDb) -> Result<BracketEstimate> {
     let mut game_changers = Vec::new();
     let mut fast_mana = 0u32;
@@ -83,6 +108,7 @@ pub fn estimate_bracket(deck: &ParsedDeck, db: &CardDb) -> Result<BracketEstimat
 
     let gc = game_changers.len();
 
+    // The bracket rules, strongest signal first (see the function notes).
     let (mut bracket, mut label) = if gc >= 4 {
         (4, "Optimized".to_string())
     } else if gc >= 1 {
@@ -151,6 +177,10 @@ pub fn estimate_bracket(deck: &ParsedDeck, db: &CardDb) -> Result<BracketEstimat
     })
 }
 
+/// Raise the estimate for complete combos Commander Spellbook found: a combo
+/// tagged bracket 4+ ("ruthless") makes the deck at least 4, 3+ at least 3,
+/// 2+ at least 2. Never lowers it. Depends on Spellbook's bracket tags,
+/// which spellbook.rs currently fails to read for most combos.
 pub fn refine_with_combo_report(
     estimate: &mut BracketEstimate,
     report: &ComboReport,

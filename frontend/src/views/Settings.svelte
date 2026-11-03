@@ -1,3 +1,14 @@
+<!--
+Settings: appearance, updates, Deck generation (deep learning or
+peer-based), card data, AI model (on-device models, online APIs, Ollama
+under Advanced), storage cleanup and about.
+
+Things to work on:
+- AI model presets for online services hard-code model names that will
+  date; "List models" fetches the real ones.
+- Settings is one long page; it may want sections or a search box as it
+  grows.
+-->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, runJob } from '../lib/api';

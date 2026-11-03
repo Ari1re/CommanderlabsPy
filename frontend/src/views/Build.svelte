@@ -1,3 +1,15 @@
+<!--
+The Build screen: generate a new deck. Pick a format, a commander (or
+colors for Canadian Highlander), play styles, bracket/power and an optional
+budget, then `generate` runs as a job and opens the new deck.
+The engine (deep learning or peer-based) comes from Settings → Deck
+generation. "Let the AI model help" appears only when an AI model is set
+up; "Deep card search" only for peer-based (deep learning always does it).
+
+Things to work on:
+- The build log is shown raw; the deck's Sources tab report is easier to
+  read, so link to it from the finished toast.
+-->
 <script lang="ts">
   import { api, runJob, type Job } from '../lib/api';
   import { app, go } from '../lib/store.svelte';
@@ -11,6 +23,13 @@
     name: string;
     score: number;
     reason: string;
+  }
+
+  /** One entry of EDHREC's full theme/typal list (the `archetypes` call). */
+  interface Archetype {
+    name: string;
+    deck_count: number;
+    typal: boolean;
   }
 
   let format = $state<FormatId>('commander');
@@ -67,18 +86,55 @@
     colors = colors.includes(c) ? colors.filter((x) => x !== c) : [...colors, c];
   }
 
+  // Every archetype EDHREC tracks, loaded the first time the list is opened
+  // or the custom box is focused. Filtered by what's typed in that box.
+  let archetypes = $state<Archetype[] | null>(null);
+  let browsing = $state(false);
+  let browseFilter = $derived(customTheme.trim().toLowerCase());
+  let browseList = $derived(
+    (archetypes ?? []).filter((a) => !browseFilter || a.name.toLowerCase().includes(browseFilter)),
+  );
+
+  async function loadArchetypes() {
+    if (archetypes) return;
+    archetypes = [];
+    try {
+      archetypes = (await api<{ archetypes: Archetype[] }>('archetypes')).archetypes;
+    } catch (err) {
+      app.error(err);
+      archetypes = null;
+      browsing = false;
+    }
+  }
+
+  function toggleBrowse() {
+    browsing = !browsing;
+    if (browsing) loadArchetypes();
+  }
+
+  function archetypeReason(a: Archetype) {
+    const kind = a.typal ? 'EDHREC typal' : 'EDHREC theme';
+    return a.deck_count ? `${kind} • ${a.deck_count.toLocaleString()} deck(s) site-wide` : kind;
+  }
+
   function addCustomTheme() {
     const name = customTheme.trim();
     if (!name) return;
+    const known = archetypes?.find((a) => a.name.toLowerCase() === name.toLowerCase());
+    addTheme(known?.name ?? name, known ? archetypeReason(known) : `Your own play style: cards whose rules text matches "${name}".`);
+    customTheme = '';
+  }
+
+  /** Add a play style that isn't in the commander's suggestions and pick it. */
+  function addTheme(name: string, reason: string) {
     if (!themes) themes = [];
     if (!themes.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
-      themes = [{ name, score: 0, reason: `Your own play style: cards whose rules text matches "${name}".` }, ...themes];
+      themes = [{ name, score: 0, reason }, ...themes];
     }
     if (!picked.some((t) => t.toLowerCase() === name.toLowerCase())) {
       if (picked.length >= MAX_THEMES) picked = picked.slice(0, MAX_THEMES - 1);
       picked = [...picked, name];
     }
-    customTheme = '';
     deep = true;
   }
   let canPair = $derived(
@@ -279,9 +335,52 @@
 
       {#if format === 'canlander' || commanders.length}
         <form class="custom" onsubmit={(e) => { e.preventDefault(); addCustomTheme(); }}>
-          <input class="input" bind:value={customTheme} placeholder="Add your own (e.g. -1/-1 Counters, Elves, Landfall)" aria-label="Add your own play style" />
+          <input
+            class="input"
+            bind:value={customTheme}
+            onfocus={loadArchetypes}
+            list="archetype-list"
+            placeholder="Add your own (e.g. -1/-1 Counters, Elves, Landfall)"
+            aria-label="Add your own play style"
+          />
           <button class="btn" disabled={!customTheme.trim()}>Add</button>
         </form>
+        <datalist id="archetype-list">
+          {#each archetypes ?? [] as a (a.name)}<option value={a.name}></option>{/each}
+        </datalist>
+        <button class="btn ghost browse" onclick={toggleBrowse} aria-expanded={browsing}>
+          {browsing ? 'Hide' : 'Browse'} all EDHREC play styles{archetypes?.length ? ` (${archetypes.length})` : ''}
+        </button>
+        {#if browsing}
+          <!-- Full EDHREC list, themes then typal, filtered by the box above. -->
+          {#if !archetypes?.length}
+            <p class="muted small">Loading EDHREC's play styles…</p>
+          {:else if browseList.length === 0}
+            <p class="muted small">No EDHREC play style matches "{customTheme.trim()}". Add it as your own.</p>
+          {:else}
+            {#each [{ label: 'Themes', typal: false }, { label: 'Typal', typal: true }] as group (group.label)}
+              {@const list = browseList.filter((a) => a.typal === group.typal)}
+              {#if list.length}
+                <h3 class="small muted browse-head">{group.label} · {list.length}</h3>
+                <div class="themes browse-list">
+                  {#each list as a (a.name)}
+                    {@const on = picked.some((p) => p.toLowerCase() === a.name.toLowerCase())}
+                    <button
+                      class="theme"
+                      aria-pressed={on}
+                      disabled={!on && picked.length >= MAX_THEMES}
+                      onclick={() => (on ? toggleTheme(picked.find((p) => p.toLowerCase() === a.name.toLowerCase())!) : addTheme(a.name, archetypeReason(a)))}
+                      title={archetypeReason(a)}
+                    >
+                      {a.name}
+                      {#if a.deck_count}<span class="small dim num">{a.deck_count.toLocaleString()}</span>{/if}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            {/each}
+          {/if}
+        {/if}
       {/if}
 
       <div class="label-row">
@@ -418,6 +517,16 @@
   .custom .input {
     flex: 1;
     min-width: 0;
+  }
+  .browse {
+    align-self: flex-start;
+  }
+  .browse-head {
+    margin: 0.25rem 0 0;
+  }
+  .browse-list {
+    max-height: 18rem;
+    overflow-y: auto;
   }
   .segmented.wrap {
     flex-wrap: wrap;

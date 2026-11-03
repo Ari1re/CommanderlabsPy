@@ -1,3 +1,13 @@
+<!--
+Game tracker: life totals, commander damage, counters (poison, commander
+tax, custom ones), turns and a chess clock, with each format's life and
+commander-damage rules (Commander, Pauper Commander, duels…). The game in
+progress survives closing the app; finished games are saved
+(`game_record`) for history and stats. State lives in lib/game.svelte.ts.
+
+Things to work on:
+- ~1,150 lines; player layout code could move into components/game/.
+-->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { api } from '../lib/api';

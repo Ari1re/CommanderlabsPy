@@ -14,6 +14,8 @@ use std::path::PathBuf;
 pub const CARD_BACK: &str =
     "https://backs.scryfall.io/large/0/a/0aeebaf5-8c7d-4636-9e82-8c27447861f7.jpg";
 
+/// Table position for a deck object: side by side along x, face down
+/// (rotated 180° on two axes, as TTS expects for a deck).
 fn transform(x: f64) -> Value {
     json!({ "posX": x, "posY": 1.0, "posZ": 0.0, "rotX": 0.0, "rotY": 180.0, "rotZ": 180.0,
             "scaleX": 1.0, "scaleY": 1.0, "scaleZ": 1.0 })
@@ -50,6 +52,9 @@ fn face_urls(entry: &DeckEntry, db: &CardDb) -> (String, Option<String>, String,
     (front, back, name, text)
 }
 
+/// One TTS card: its CardID (deck key × 100 + index), name and rules text
+/// as the tooltip, plus a CustomDeck entry pointing at the face and the shared
+/// card back.
 fn card_object(id: u32, deck_key: u32, face: &str, name: &str, text: &str, x: f64) -> Value {
     json!({
         "Name": "Card",

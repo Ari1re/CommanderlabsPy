@@ -1,3 +1,6 @@
+<!--
+Camera QR scanner for share codes (Android and browsers with a camera).
+-->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import jsQR from 'jsqr';
@@ -12,8 +15,33 @@
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
+  // The system's own QR reader (Chrome/Android WebView): much better than
+  // jsQR at dense codes on a live camera, so it goes first when present.
+  let native: { detect(source: CanvasImageSource): Promise<{ rawValue: string }[]> } | null = null;
+  async function loadNative() {
+    const Detector = (window as any).BarcodeDetector;
+    if (!Detector) return;
+    try {
+      const formats: string[] | undefined = await Detector.getSupportedFormats?.();
+      if (!formats || formats.includes('qr_code')) native = new Detector({ formats: ['qr_code'] });
+    } catch {
+      native = null;
+    }
+  }
+
+  async function detectNative(source: CanvasImageSource): Promise<string | null> {
+    if (!native) return null;
+    try {
+      return (await native.detect(source))[0]?.rawValue ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** jsQR fallback. A whole deck makes a dense code (version 20+), so frames
+   *  are scaled to 1280px, not lower, or the modules blur together. */
   function decodeFrom(source: CanvasImageSource, w: number, h: number): string | null {
-    const scale = Math.min(1, 900 / Math.max(w, h));
+    const scale = Math.min(1, 1280 / Math.max(w, h));
     canvas.width = Math.round(w * scale);
     canvas.height = Math.round(h * scale);
     ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
@@ -21,10 +49,11 @@
     return jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' })?.data ?? null;
   }
 
-  function tickFrame() {
+  async function tickFrame() {
     if (!video || !running) return;
     if (video.readyState >= 2 && video.videoWidth) {
-      const text = decodeFrom(video, video.videoWidth, video.videoHeight);
+      const text = (await detectNative(video)) ?? decodeFrom(video, video.videoWidth, video.videoHeight);
+      if (!running) return;
       if (text) {
         stop();
         onfound(text);
@@ -41,7 +70,12 @@
       return;
     }
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+      await loadNative();
+      // Ask for HD: at 480p a version-20 code is too small to read.
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false,
+      });
       video!.srcObject = stream;
       await video!.play();
       running = true;
@@ -63,7 +97,8 @@
     if (!file) return;
     try {
       const bitmap = await createImageBitmap(file);
-      const text = decodeFrom(bitmap, bitmap.width, bitmap.height);
+      await loadNative();
+      const text = (await detectNative(bitmap)) ?? decodeFrom(bitmap, bitmap.width, bitmap.height);
       if (text) onfound(text);
       else error = "Couldn't find a QR code in that picture. Try a closer, sharper photo.";
     } catch {

@@ -5,6 +5,9 @@
 //! Commander legality, commander placement) are repaired automatically and
 //! re-verified; soft rules (land count, structural role minimums, opening-hand
 //! goldfish) are reported as warnings so the user knows the list's risks.
+//!
+//! Things to work on:
+//! - Repairs swap cards silently; list them in the generation report.
 
 use crate::{
     analysis::{classify_card, copies_allowed, identity_subset},
@@ -35,10 +38,13 @@ pub struct IntegrityReport {
 }
 
 impl IntegrityReport {
+    /// Passed when no hard rule is still broken.
     pub fn passed(&self) -> bool {
         self.hard_failures.is_empty()
     }
 
+    /// One line for the build notes: pass/fail, size, lands, roles, keepable
+    /// hands, number of repairs and warnings.
     pub fn summary(&self) -> String {
         format!(
             "Integrity {}: {} cards • {} lands • ramp {} • draw {} • interaction {}{} • {} repair(s) • {} warning(s)",
@@ -56,6 +62,7 @@ impl IntegrityReport {
         )
     }
 
+    /// The summary plus every repair, warning and failure, as build notes.
     pub fn notes(&self) -> Vec<String> {
         let mut out = vec![self.summary()];
         out.extend(self.repairs.iter().map(|line| format!("Integrity repair: {line}")));
@@ -69,6 +76,7 @@ impl IntegrityReport {
     }
 }
 
+/// The basic land for a color (Wastes for colorless).
 fn basic_for_color(color: char) -> &'static str {
     match color {
         'W' => "Plains",
@@ -80,10 +88,12 @@ fn basic_for_color(color: char) -> &'static str {
     }
 }
 
+/// Any land.
 fn is_land(card: &Card) -> bool {
     card.type_line.to_ascii_lowercase().contains("land")
 }
 
+/// Cards in the deck, commanders included.
 fn deck_total(deck: &ParsedDeck) -> u32 {
     deck.commanders.iter().map(|e| e.quantity).sum::<u32>()
         + deck.main.iter().map(|e| e.quantity).sum::<u32>()
@@ -321,6 +331,10 @@ pub fn require_integrity(
     Ok(report)
 }
 
+/// Too many cards: remove extra basics first, then the least played
+/// (worst EDHREC rank) unprotected nonland spells, until it's 100.
+/// Note: "least played overall" can cut a commander-specific card that's
+/// obscure but central; the protected set only covers commanders and combos.
 fn trim_to_size(
     deck: &mut ParsedDeck,
     db: &CardDb,
@@ -371,6 +385,7 @@ fn trim_to_size(
     Ok(())
 }
 
+/// Too few cards: add basics, cycling through the deck's colors.
 fn fill_with_basics(deck: &mut ParsedDeck, identity: &str, missing: u32) {
     let colors: Vec<char> = if identity.is_empty() {
         vec!['C']
@@ -398,6 +413,7 @@ fn fill_with_basics(deck: &mut ParsedDeck, identity: &str, missing: u32) {
 mod tests {
     use super::*;
 
+    /// Test helper: a deck from a commander and (count, name) lines.
     fn deck(commander: &str, main: &[(u32, &str)]) -> ParsedDeck {
         ParsedDeck {
             name: "t".into(),

@@ -1,3 +1,7 @@
+<!--
+Commander search box for the Build screen and "change commander"
+(`commander_suggestions`, with Pauper Commander's own rules).
+-->
 <script lang="ts">
   import { api } from '../lib/api';
   import type { CardView } from '../lib/types';

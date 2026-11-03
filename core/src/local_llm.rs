@@ -5,6 +5,16 @@
 //! The model is loaded on first use and kept in memory until AI is stopped.
 //! It only computes while answering a request; nothing runs in the
 //! background, which keeps phone battery use to the moments it's asked.
+//!
+//! Things to work on:
+//! - "Ask about this deck" sends ~6,200 tokens of deck context per question;
+//!   reading it took 14.7 of 15.6 seconds on a desktop with the 0.5B model and
+//!   will take much longer on a phone. Trim the context for the built-in
+//!   engine (only the cards the question mentions plus a short summary).
+//! - Each request builds a fresh context and re-reads the whole prompt; keep
+//!   the KV cache between turns of the same chat.
+//! - No GPU offload yet (Vulkan on Android/desktop would speed it up), and
+//!   downloads can't be cancelled or resumed.
 
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::blocking::Client;
@@ -59,14 +69,17 @@ pub const PRESETS: &[ModelPreset] = &[
     },
 ];
 
+/// A downloadable model by its id ("repo:quant").
 pub fn preset(id: &str) -> Option<&'static ModelPreset> {
     PRESETS.iter().find(|p| p.id.eq_ignore_ascii_case(id.trim()))
 }
 
+/// Where a model's file lives (`data/models/<file>.gguf`).
 fn model_path(preset: &ModelPreset) -> PathBuf {
     Path::new(MODELS_DIR).join(preset.file)
 }
 
+/// Has this model been downloaded?
 pub fn is_installed(preset: &ModelPreset) -> bool {
     model_path(preset).is_file()
 }
@@ -134,6 +147,7 @@ pub fn download(preset: &ModelPreset, mut progress: impl FnMut(u64, u64)) -> Res
     Ok(())
 }
 
+/// Unload and delete a downloaded model.
 pub fn delete(preset: &ModelPreset) -> Result<()> {
     unload();
     let path = model_path(preset);
@@ -159,21 +173,25 @@ pub struct ChatRequest<'a> {
 #[cfg(feature = "local-llm")]
 pub use engine::{chat, load, loaded_model, unload};
 
+/// Builds without the engine: loading always fails with a clear message.
 #[cfg(not(feature = "local-llm"))]
 pub fn load(_model: &'static ModelPreset) -> Result<()> {
     Err(anyhow!("This build of Commander Lab doesn't include the built-in AI engine."))
 }
 
+/// Builds without the engine: chatting always fails with a clear message.
 #[cfg(not(feature = "local-llm"))]
 pub fn chat(_request: &ChatRequest<'_>) -> Result<String> {
     Err(anyhow!("This build of Commander Lab doesn't include the built-in AI engine."))
 }
 
+/// Builds without the engine: nothing is ever loaded.
 #[cfg(not(feature = "local-llm"))]
 pub fn loaded_model() -> Option<&'static str> {
     None
 }
 
+/// Builds without the engine: nothing to unload.
 #[cfg(not(feature = "local-llm"))]
 pub fn unload() {}
 
@@ -216,6 +234,7 @@ mod engine {
 
     static ENGINE: Mutex<Option<Loaded>> = Mutex::new(None);
 
+    /// Which model is in memory right now, if any.
     pub fn loaded_model() -> Option<&'static str> {
         ENGINE.lock().ok()?.as_ref().map(|l| l.id)
     }
@@ -226,6 +245,8 @@ mod engine {
         }
     }
 
+    /// CPU threads to use: up to 4 on phones (the big cores; more mostly adds
+    /// heat), up to 8 elsewhere.
     fn threads() -> i32 {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         // Phones: stay on the big cores; more threads mostly add heat.
@@ -250,6 +271,8 @@ ws     ::= | " " | "\n" [ \t]{0,20}
         ensure_loaded(&mut guard, model)
     }
 
+    /// Load `preset` into memory unless it's already the loaded one (the old
+    /// model is freed first).
     fn ensure_loaded(guard: &mut Option<Loaded>, preset: &'static ModelPreset) -> Result<()> {
         if guard.as_ref().map(|l| l.id) == Some(preset.id) {
             return Ok(());
@@ -268,6 +291,15 @@ ws     ::= | " " | "\n" [ \t]{0,20}
         Ok(())
     }
 
+    /// Answer one chat with the built-in engine:
+    /// 1. load the model if needed; build the prompt with the model's own chat
+    ///    template;
+    /// 2. keep the newest part if the prompt is too long, size the context to
+    ///    prompt + answer;
+    /// 3. read the prompt in 512-token batches (the slow part for long prompts);
+    /// 4. sample up to 1,536 tokens (JSON grammar if asked, repeat penalty,
+    ///    greedy at temperature ~0), streaming text to `on_text`, stopping on
+    ///    end-of-turn or when the model starts repeating itself.
     pub fn chat(request: &ChatRequest<'_>) -> Result<String> {
         let mut guard = ENGINE.lock().map_err(|_| anyhow!("The AI engine crashed earlier; restart the app."))?;
         ensure_loaded(&mut guard, request.model)?;
@@ -282,6 +314,7 @@ ws     ::= | " " | "\n" [ \t]{0,20}
         let template = model.chat_template(None).map_err(|e| anyhow!("The model has no chat template: {e}"))?;
         let prompt = model.apply_chat_template(&template, &messages, true)?;
 
+        // Prompt → tokens; keep the newest part if it's too long.
         let vocab = model.vocab();
         let mut tokens = vocab.tokenize(prompt.as_bytes(), false, true);
         // Keep the newest part of a long conversation, leaving room to answer.
@@ -300,6 +333,7 @@ ws     ::= | " " | "\n" [ \t]{0,20}
             .new_context(&loaded.backend, params)
             .map_err(|e| anyhow!("Not enough memory for the AI model's working space: {e}"))?;
 
+        // Read the prompt in batches; only the last token's output is needed.
         // Feed the prompt in batches.
         let mut batch = LlamaBatch::new(512, 1);
         let last = tokens.len() - 1;
@@ -312,6 +346,8 @@ ws     ::= | " " | "\n" [ \t]{0,20}
             ctx.decode(&mut batch).map_err(|e| anyhow!("The AI model failed reading the prompt: {e}"))?;
         }
 
+        // How the next token is picked: JSON grammar (if asked), repeat penalty,
+        // then greedy (temperature ~0) or top-k/top-p sampling.
         let mut samplers = Vec::new();
         if request.json {
             if let Ok(grammar) = LlamaSampler::grammar(model, JSON_GRAMMAR, "root") {

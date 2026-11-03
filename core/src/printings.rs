@@ -55,6 +55,7 @@ struct Page {
 
 type Value = serde_json::Value;
 
+/// Printings cache file for a card (sanitized name, cached for a week).
 fn cache_path(name: &str) -> PathBuf {
     let key: String = name
         .to_ascii_lowercase()
@@ -64,6 +65,7 @@ fn cache_path(name: &str) -> PathBuf {
     PathBuf::from(CACHE_DIR).join(format!("{key}.json"))
 }
 
+/// A printing's image: its own, or its front face's for double-faced cards.
 fn image_of(card: &Value) -> String {
     let pick = |uris: &Value| {
         uris.get("normal")
@@ -83,10 +85,13 @@ fn image_of(card: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// One link from a URI map ("" if missing).
 fn uri(uris: Option<&Value>, key: &str) -> String {
     uris.and_then(|u| u.get(key)).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
+/// One Scryfall printing → what the picker shows (set, number, date,
+/// prices, finishes, image, links). Skips entries without a set.
 fn parse(card: &Value) -> Option<Printing> {
     let s = |k: &str| card.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     let price = |k: &str| {
@@ -156,6 +161,16 @@ fn parse(card: &Value) -> Option<Printing> {
             })
             .unwrap_or_default(),
     })
+}
+
+/// The printings saved for `name`, however old, without going online.
+/// Empty if the card's printings were never fetched. Deck prices use this,
+/// since the deck screen can't wait on Scryfall for every card.
+pub fn cached(name: &str) -> Vec<Printing> {
+    fs::read_to_string(cache_path(name))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 /// All English paper printings of `name`, newest first. Cached for a week.

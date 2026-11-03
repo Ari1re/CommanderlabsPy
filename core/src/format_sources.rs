@@ -10,6 +10,12 @@
 //!
 //! Everything is cached under data/format-sources so repeat builds don't hit
 //! the sites again.
+//!
+//! Things to work on:
+//! - PDHREC pages are scraped HTML; keep the parser tolerant and log when a
+//!   page yields no cards.
+//! - Canadian Highlander lists come from MTGTop8 and Moxfield's search; the
+//!   same Moxfield filter problem as `references.rs` may apply.
 
 use crate::{
     data::CardDb,
@@ -48,10 +54,16 @@ thread_local! {
     static ACTIVE: Cell<Format> = const { Cell::new(Format::Commander) };
 }
 
+/// The format the current build is for (Commander unless a caller set
+/// another with `with_format`). Read deep inside research code so PDH
+/// builds use PDHREC and Pauper EDH decklists without passing the format
+/// through every function.
 pub fn active_format() -> Format {
     ACTIVE.with(Cell::get)
 }
 
+/// Run `run` with `format` as the active format, then restore the old one.
+/// Thread-local, so it only applies to the current job's thread.
 pub fn with_format<T>(format: Format, run: impl FnOnce() -> T) -> T {
     let previous = ACTIVE.with(|a| a.replace(format));
     let out = run();
@@ -63,6 +75,7 @@ pub fn with_format<T>(format: Format, run: impl FnOnce() -> T) -> T {
 // Small HTTP + cache helpers
 // ---------------------------------------------------------------------------
 
+/// HTTP client for these sources (25 s timeout, follows redirects).
 fn client() -> Option<Client> {
     Client::builder()
         .timeout(Duration::from_secs(25))
@@ -71,6 +84,8 @@ fn client() -> Option<Client> {
         .ok()
 }
 
+/// Cache file named by kind and a sanitized key (stable across builds,
+/// unlike references.rs's hashed names).
 fn cache_file(kind: &str, key: &str) -> PathBuf {
     let key: String = key
         .to_ascii_lowercase()
@@ -81,6 +96,7 @@ fn cache_file(kind: &str, key: &str) -> PathBuf {
     PathBuf::from(CACHE_DIR).join(format!("{kind}-{key}.json"))
 }
 
+/// Is the file younger than `ttl`?
 fn fresh(path: &PathBuf, ttl: Duration) -> bool {
     fs::metadata(path)
         .and_then(|m| m.modified())
@@ -90,6 +106,7 @@ fn fresh(path: &PathBuf, ttl: Duration) -> bool {
         .unwrap_or(false)
 }
 
+/// Read a cache file; with a `ttl`, only if it's fresh enough.
 fn read_cache<T: for<'de> Deserialize<'de>>(path: &PathBuf, ttl: Option<Duration>) -> Option<T> {
     if let Some(ttl) = ttl {
         if !fresh(path, ttl) {
@@ -99,6 +116,7 @@ fn read_cache<T: for<'de> Deserialize<'de>>(path: &PathBuf, ttl: Option<Duration
     fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok())
 }
 
+/// Save a cache file (errors ignored: caching is best-effort).
 fn write_cache<T: Serialize>(path: &PathBuf, value: &T) {
     let _ = fs::create_dir_all(CACHE_DIR);
     if let Ok(text) = serde_json::to_string(value) {
@@ -106,6 +124,7 @@ fn write_cache<T: Serialize>(path: &PathBuf, value: &T) {
     }
 }
 
+/// GET a page's text, failing on HTTP errors.
 fn get_text(client: &Client, url: &str) -> Result<String> {
     let response = client.get(url).header("User-Agent", UA).send()?;
     let status = response.status();
@@ -214,6 +233,7 @@ pub fn parse_pdhrec(html: &str, url: &str) -> PdhrecPage {
     PdhrecPage { url: url.to_string(), decks, cards }
 }
 
+/// Undo the few HTML entities PDHREC uses in card names.
 fn html_unescape(s: &str) -> String {
     s.replace("&amp;", "&")
         .replace("&#39;", "'")
@@ -280,6 +300,7 @@ pub struct HighlanderEvidence {
 }
 
 impl HighlanderEvidence {
+    /// Weighted share of matching Highlander decks that play this card.
     pub fn share_of(&self, name: &str) -> f64 {
         self.share.get(&name.to_ascii_lowercase()).copied().unwrap_or(0.0)
     }
@@ -305,6 +326,7 @@ fn archetype_colors(name: &str) -> Option<String> {
         .and_then(|(_, c)| (!c.is_empty()).then(|| c.to_string()))
 }
 
+/// A deck's colors from its cards, in WUBRG order.
 fn colors_of(cards: &[String], db: &CardDb) -> String {
     let mut seen = String::new();
     for name in cards {
@@ -322,10 +344,12 @@ fn colors_of(cards: &[String], db: &CardDb) -> String {
     ['W', 'U', 'B', 'R', 'G'].iter().filter(|c| seen.contains(**c)).collect()
 }
 
+/// Are all of `colors` inside `of`?
 fn subset(colors: &str, of: &str) -> bool {
     colors.chars().all(|c| of.contains(c))
 }
 
+/// Every card name in a deck (main and command zone).
 fn deck_cards(deck: &ParsedDeck) -> Vec<String> {
     deck.commanders
         .iter()
@@ -439,6 +463,7 @@ fn moxfield_highlander_list(client: &Client) -> Vec<(String, String, String)> {
     out
 }
 
+/// Import one Moxfield Canadian Highlander deck as Highlander evidence.
 fn moxfield_deck(id: &str, name: &str, db: &CardDb) -> Option<HighlanderDeck> {
     let path = cache_file("moxfield-deck", id);
     if let Some(cached) = read_cache::<HighlanderDeck>(&path, Some(Duration::from_secs(30 * 24 * 3600))) {

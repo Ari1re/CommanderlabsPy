@@ -1,3 +1,9 @@
+//! Which local AI runtime is running (Settings → AI model → Start/Stop).
+//!
+//! How it fits: [`LocalAiRuntime::ensure_running`] starts whatever the
+//! config selects (built-in/llama.cpp, Ollama, or nothing for online APIs)
+//! and the engine keeps it until Stop or exit.
+
 use crate::{
     ai::{AiConfig, AiProvider},
     llama::LlamaRuntime,
@@ -12,6 +18,8 @@ pub enum LocalAiRuntime {
 }
 
 impl LocalAiRuntime {
+    /// Start whatever the config selects; an error (with the reason) if it
+    /// isn't ready.
     pub fn ensure_running() -> Result<Self> {
         let config = AiConfig::load_or_create();
 
@@ -36,6 +44,7 @@ impl LocalAiRuntime {
         }
     }
 
+    /// Can requests be sent now? (Online APIs always count as ready.)
     pub fn is_ready(&self) -> bool {
         match self {
             Self::Llama(runtime) => runtime.is_ready(),
@@ -44,6 +53,7 @@ impl LocalAiRuntime {
         }
     }
 
+    /// Status text for Settings.
     pub fn status_line(&self) -> String {
         match self {
             Self::Llama(runtime) => runtime.status_line(),
@@ -59,6 +69,7 @@ impl LocalAiRuntime {
         }
     }
 
+    /// Stop the runtime (free the model or stop the server).
     pub fn shutdown(&mut self) {
         match self {
             Self::Llama(runtime) => runtime.shutdown(),

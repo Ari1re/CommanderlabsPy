@@ -44,6 +44,10 @@ export const GAME_MODES: GameMode[] = [
   { id: 'constructed', label: '60-card', life: 20, cmd: null, players: 2, hint: 'Standard, Modern, Pauper and other 60-card formats: 20 life.' },
 ];
 
+/**
+ * Look up a game mode by id. Unknown ids (old saves) fall back to the first,
+ * four-player Commander.
+ */
 export function gameMode(id: string | undefined): GameMode {
   return GAME_MODES.find((m) => m.id === id) ?? GAME_MODES[0];
 }
@@ -133,6 +137,10 @@ const KEY = 'commanderlab.game.v2';
 const MAX_UNDO = 200;
 const MAX_LOG = 600;
 
+/**
+ * The saved game from localStorage, or null (none, unreadable, or storage
+ * blocked).
+ */
 function load(): GameState | null {
   try {
     const raw = localStorage.getItem(KEY);
@@ -142,6 +150,10 @@ function load(): GameState | null {
   }
 }
 
+/**
+ * A fresh seat: default name and colour, starting life, no counters or
+ * commander damage.
+ */
 export function newPlayer(id: number, startLife: number): Player {
   return {
     id,
@@ -157,6 +169,11 @@ export function newPlayer(id: number, startLife: number): Player {
   };
 }
 
+/**
+ * Why a player has lost, or null if still in: conceded, 0 life, 10 poison,
+ * lethal commander damage from any one commander, or (with the chess clock)
+ * out of time.
+ */
 export function isOut(p: Player, clockOn = false, cmdLethal: number | null = CMD_LETHAL): string | null {
   if (p.conceded) return 'Conceded';
   if (p.life <= 0) return 'Out of life';
@@ -172,6 +189,10 @@ export function seatOrder(players: Player[]): number[] {
   return [...players.slice(0, top), ...players.slice(top).reverse()].map((p) => p.id);
 }
 
+/**
+ * The seating layout. Saves from before layouts existed only had
+ * `tableMode`.
+ */
 export function layoutOf(s: Pick<GameState, 'layout' | 'tableMode'>): Layout {
   return s.layout ?? (s.tableMode ? 'table' : 'facing');
 }
@@ -179,6 +200,7 @@ export function layoutOf(s: Pick<GameState, 'layout' | 'tableMode'>): Layout {
 /** Whether the screen is wider than tall (phone held long ways). */
 export const screen = $state({ wide: typeof window !== 'undefined' && window.innerWidth > window.innerHeight });
 if (typeof window !== 'undefined') {
+  /** Re-measure on resize and rotation. */
   const update = () => (screen.wide = window.innerWidth > window.innerHeight);
   window.addEventListener('resize', update);
   window.addEventListener('orientationchange', update);
@@ -207,6 +229,7 @@ export function panelRotation(s: GameState, id: number): Rotation {
   return p.rotation ?? layoutRotation(layoutOf(s), i, s.players.length);
 }
 
+/** Chess clock text, "m:ss", rounded up so 0:00 only shows at zero. */
 export function fmtClock(ms: number) {
   const s = Math.max(0, Math.ceil(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;

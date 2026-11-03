@@ -6,6 +6,13 @@
 //! points list (see `format.rs`). Because there's no commander, the player
 //! picks colors and play styles; the builder reads the rules text of every
 //! legal card in those colors, so it doesn't depend on Commander decklists.
+//!
+//! Things to work on:
+//! - The agent can't optimize Highlander decks (no commander); its change
+//!   requests rebuild through this builder and keep only the cards named in
+//!   the request.
+//! - Play-style detection for existing decks (`archetype.rs`) misses combo
+//!   and storm, so rebuilds can drift from the original plan.
 
 use crate::{
     analysis::{classify_card, identity_subset, CardRoles},
@@ -36,6 +43,9 @@ enum Style {
     Ramp,
 }
 
+/// The deck's speed from its themes: the first theme that implies one wins
+/// (Burn means Aggro, Stax means Control, Landfall means Ramp, and so on).
+/// Otherwise Midrange. This sets the slot targets in `targets`.
 fn style_of(themes: &[String]) -> Style {
     for t in themes {
         match t.to_ascii_lowercase().as_str() {
@@ -57,6 +67,9 @@ fn is_style_word(theme: &str) -> bool {
     )
 }
 
+/// Guild/shard/wedge name for the deck title ("WB" is Orzhov). Expects
+/// canonical WUBRG order (see `canonical`). Four colours fall through to
+/// "4-Color".
 fn color_name(colors: &str) -> String {
     let named = [
         ("", "Colorless"), ("W", "Mono-White"), ("U", "Mono-Blue"), ("B", "Mono-Black"),
@@ -74,11 +87,13 @@ fn color_name(colors: &str) -> String {
         .unwrap_or_else(|| format!("{}-Color", colors.len()))
 }
 
+/// Colours in WUBRG order with duplicates and junk dropped ("gw" becomes "WG").
 fn canonical(colors: &str) -> String {
     let up = colors.to_ascii_uppercase();
     ['W', 'U', 'B', 'R', 'G'].iter().filter(|c| up.contains(**c)).collect()
 }
 
+/// Any land, including MDFCs whose type line mentions Land.
 fn is_land(card: &Card) -> bool {
     card.type_line.to_ascii_lowercase().contains("land")
 }
@@ -169,6 +184,9 @@ struct Counts {
     theme: u32,
 }
 
+/// How many cards of each role a 100-card deck aims for, per speed. These are
+/// hand-tuned starting points: Aggro is creature-heavy, Control is
+/// interaction- and draw-heavy, Ramp gets 12 ramp pieces.
 fn targets(style: Style) -> Counts {
     match style {
         Style::Aggro => Counts { creatures: 26, interaction: 9, draw: 4, ramp: 2, theme: 22 },
@@ -602,6 +620,9 @@ where
     })
 }
 
+/// Sources tab entries for a Highlander build: the three fixed format sites
+/// (MTGTop8, Moxfield, the points list) plus every reference list the
+/// evidence step actually read.
 fn highlander_sources(evidence: &crate::format_sources::HighlanderEvidence) -> Vec<crate::sources::DeckSource> {
     use crate::sources::DeckSource;
     let mut out = vec![
@@ -635,6 +656,9 @@ fn highlander_sources(evidence: &crate::format_sources::HighlanderEvidence) -> V
     out
 }
 
+/// Fill `total` basic-land slots, split by how many coloured pips each colour
+/// has. The last colour takes the remainder, so rounding never loses a land.
+/// A colourless deck gets Wastes.
 fn add_weighted_basics(main: &mut Vec<DeckEntry>, weight: &[(char, usize)], total: usize) {
     if total == 0 {
         return;

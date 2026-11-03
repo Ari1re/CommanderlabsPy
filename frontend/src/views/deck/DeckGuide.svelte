@@ -1,3 +1,11 @@
+<!--
+How to play tab: a guide built from the deck itself (mulligans, early
+turns, how it wins, key cards, combos).
+
+Things to work on:
+- With an AI model running, the guide could be written in prose from the
+  same facts.
+-->
 <script lang="ts">
   import { api } from '../../lib/api';
   import { app } from '../../lib/store.svelte';

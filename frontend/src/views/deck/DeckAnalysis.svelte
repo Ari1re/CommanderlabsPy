@@ -1,3 +1,12 @@
+<!--
+Analysis tab: curve, colors and mana sources, roles (ramp, draw,
+interaction…), bracket details, opening-hand simulation and win-speed
+goldfishing, with add/cut suggestions.
+
+Things to work on:
+- Role counts come from `classify_card` in the core, which misreads some
+  cards; a way to correct a card's roles here would also improve tags.
+-->
 <script lang="ts">
   import { api, runJob } from '../../lib/api';
   import { go } from '../../lib/store.svelte';

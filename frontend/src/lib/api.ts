@@ -6,6 +6,10 @@ type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 let tauriInvoke: Invoke | null = null;
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
+/**
+ * Tauri's `invoke`, loaded lazily the first time (so the browser edition never
+ * downloads the Tauri module), or null outside the app.
+ */
 async function getInvoke(): Promise<Invoke | null> {
   if (!isTauri) return null;
   if (!tauriInvoke) {
@@ -49,6 +53,11 @@ export async function invokeNative<T = any>(cmd: string, args: Record<string, un
   }
 }
 
+/**
+ * Call one engine command (`Engine::call` in core/src/api.rs) and return its
+ * data. Both transports throw ApiError with the engine's message, so callers
+ * handle errors the same way on every platform.
+ */
 export async function api<T = any>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   const invoke = await getInvoke();
   if (invoke) {
@@ -95,6 +104,13 @@ export async function runJob<T = any>(
   return waitJob<T>(id, onProgress, intervalMs);
 }
 
+/**
+ * Poll a background job until it finishes, reporting each poll to
+ * `onProgress` (progress bar, log, streamed text). Resolves with the result;
+ * throws on a job error.
+ * TODO: no timeout or cancel. If the engine restarts mid-job the id is gone,
+ * `job` errors and this throws, which is fine, but a hung job polls forever.
+ */
 export async function waitJob<T = any>(id: number, onProgress?: (job: Job) => void, intervalMs = 600): Promise<T> {
   for (;;) {
     const job = await api<Job>('job', { id });
@@ -105,6 +121,11 @@ export async function waitJob<T = any>(id: number, onProgress?: (job: Job) => vo
   }
 }
 
+/**
+ * Copy to the clipboard. Falls back to a hidden textarea + execCommand where
+ * the Clipboard API is blocked (plain http on a phone, older WebViews).
+ * Returns whether it worked.
+ */
 export async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);

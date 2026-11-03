@@ -1,3 +1,13 @@
+<!--
+Suggestions tab: cards to add, mixed from several sources (combo
+completions, EDHREC synergy and popularity, rules-text matches for the
+deck's play styles, role gaps) plus "Dig deeper" for any ability or play
+style (`deep_search`).
+
+Things to work on:
+- Suggestions don't show a "cut this instead" pairing; the Analysis tab
+  has cut ideas, and showing both together would make swaps one click.
+-->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, runJob } from '../../lib/api';

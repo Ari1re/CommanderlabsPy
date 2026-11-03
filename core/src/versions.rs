@@ -35,14 +35,17 @@ pub struct VersionMeta {
     pub changes: Vec<Change>,
 }
 
+/// Folder holding one deck's snapshots: `decks/.versions/<safe deck name>/`.
 fn dir(deck: &str) -> PathBuf {
     PathBuf::from(ROOT).join(safe_deck_filename(deck))
 }
 
+/// The deck's `index.json`: version metadata, oldest first.
 fn index_path(deck: &str) -> PathBuf {
     dir(deck).join("index.json")
 }
 
+/// Milliseconds since 1970. Doubles as the version id.
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -50,6 +53,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Every saved version of a deck, oldest first (empty if none or unreadable).
 pub fn list(deck: &str) -> Vec<VersionMeta> {
     fs::read_to_string(index_path(deck))
         .ok()
@@ -57,21 +61,26 @@ pub fn list(deck: &str) -> Vec<VersionMeta> {
         .unwrap_or_default()
 }
 
+/// Write the version list back.
 fn save_index(deck: &str, index: &[VersionMeta]) -> Result<()> {
     fs::create_dir_all(dir(deck))?;
     fs::write(index_path(deck), serde_json::to_string_pretty(index)?)?;
     Ok(())
 }
 
+/// The deck text saved for one version (`<id>.txt`).
 pub fn text(deck: &str, id: u64) -> Result<String> {
     fs::read_to_string(dir(deck).join(format!("{id}.txt")))
         .map_err(|_| anyhow!("That version no longer exists."))
 }
 
+/// One version parsed back into a deck (History → view or restore).
 pub fn load(deck: &str, id: u64) -> Result<ParsedDeck> {
     parse_deck_text(deck, &text(deck, id)?)
 }
 
+/// Copies per (zone, card name), so moving a card to the sideboard shows as
+/// a remove plus an add.
 fn counts(deck: &ParsedDeck) -> BTreeMap<(String, String), i64> {
     let mut map = BTreeMap::new();
     for (zone, list) in [("commander", &deck.commanders), ("main", &deck.main), ("sideboard", &deck.sideboard)] {
@@ -82,6 +91,8 @@ fn counts(deck: &ParsedDeck) -> BTreeMap<(String, String), i64> {
     map
 }
 
+/// What changed between two decks: adds first, then removes, each A→Z.
+/// With no `before` (the first version) everything is an add.
 pub fn diff(before: Option<&ParsedDeck>, after: &ParsedDeck) -> Vec<Change> {
     let a = before.map(counts).unwrap_or_default();
     let b = counts(after);
@@ -141,6 +152,8 @@ pub fn record(name: &str, deck: &ParsedDeck, message: &str) -> Result<Option<Ver
     Ok(Some(meta))
 }
 
+/// Move a deck's history to its new name, or copy it when `keep_original`
+/// (Copy deck). Files are copied one by one and errors are ignored.
 pub fn rename(from: &str, to: &str, keep_original: bool) {
     let (a, b) = (dir(from), dir(to));
     if !a.exists() {
@@ -157,6 +170,7 @@ pub fn rename(from: &str, to: &str, keep_original: bool) {
     }
 }
 
+/// Drop a deck's whole history (deck deleted).
 pub fn delete(name: &str) {
     let _ = fs::remove_dir_all(dir(name));
 }
@@ -166,6 +180,7 @@ mod tests {
     use super::*;
     use crate::deck::DeckEntry;
 
+    /// Test helper: a deck with only main-deck lines.
     fn deck(main: &[(u32, &str)]) -> ParsedDeck {
         ParsedDeck {
             name: "t".into(),

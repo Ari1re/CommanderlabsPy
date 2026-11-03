@@ -1,3 +1,12 @@
+<!--
+Combos tab: Commander Spellbook combos. "Have or almost have" lists
+complete combos and ones a card away; "Could add" lists combos the deck
+has few pieces of. Every suggested piece is legal in the deck's format and
+inside its colors.
+
+Things to work on:
+- Add a one-click "add the missing pieces" for a combo.
+-->
 <script lang="ts">
   import { api, runJob } from '../../lib/api';
   import { app } from '../../lib/store.svelte';

@@ -1,3 +1,16 @@
+//! Deck sources: where a deck's evidence came from, shown on the Sources tab.
+//!
+//! How it fits: [`DeckSource`] is one source (site, title, URL, detail, and
+//! optionally a full reference deck). Generation saves them next to the deck
+//! ([`save_sources_for_deck`]); players add their own references
+//! (`user_reference.rs`), which the agent and upgrades weigh above automatic
+//! research.
+//!
+//! Things to work on:
+//! - Generic "public deck references" entries are added before anything is
+//!   fetched; generation now filters out sites that supplied nothing, but the
+//!   agent and other paths still list them.
+
 use crate::{
     data::Card,
     deck::ParsedDeck,
@@ -27,6 +40,7 @@ pub struct DeckSource {
 }
 
 impl DeckSource {
+    /// A source Commander Lab found itself (not added by the player).
     pub fn automatic(
         source: impl Into<String>,
         title: impl Into<String>,
@@ -46,6 +60,8 @@ impl DeckSource {
     }
 }
 
+/// Sources for a generated deck: PDH or Commander basics, then each
+/// reference deck that was read (with its link).
 pub fn generation_sources(
     commanders: &[Card],
     selected_theme: &str,
@@ -110,6 +126,9 @@ pub fn pdh_sources(commanders: &[Card]) -> Vec<DeckSource> {
     ]
 }
 
+/// Commander sources every deck relies on: Scryfall, Commander Spellbook,
+/// the Commander rules, the commander's EDHREC page, and the decklist
+/// sites used for references.
 pub fn standard_sources(
     commanders: &[Card],
     selected_theme: &str,
@@ -161,7 +180,7 @@ pub fn standard_sources(
         for page in &pages {
             let url = match page {
                 None => format!("https://edhrec.com/commanders/{slug}"),
-                Some(theme) => format!("https://edhrec.com/commanders/{}/{}", slug, slugify(theme)),
+                Some(theme) => format!("https://edhrec.com/commanders/{}/{}", slug, crate::edhrec::theme_slug(theme)),
             };
             let label = page.as_deref().unwrap_or("base commander page");
 
@@ -218,6 +237,10 @@ pub fn standard_sources(
     out
 }
 
+/// Default sources for a deck that never saved any (imported or typed
+/// decks): by format (PDH, Highlander, Commander).
+/// Note: decks named "…Generated…" also get a "Commander Lab generation
+/// engine" entry whose link is just https://github.com/.
 pub fn sources_for_existing_deck(
     deck: &ParsedDeck,
     commanders: &[Card],
@@ -267,6 +290,7 @@ pub fn sources_for_existing_deck(
     out
 }
 
+/// Save a deck's sources next to it (`<deck>.sources.json`).
 pub fn save_sources_for_deck(
     deck_path: &Path,
     sources: &[DeckSource],
@@ -284,6 +308,7 @@ pub fn save_sources_for_deck(
     Ok(path)
 }
 
+/// A deck's saved sources, or None if it never had any.
 pub fn load_sources_for_deck(
     deck_path: &Path,
 ) -> Result<Option<Vec<DeckSource>>> {
@@ -305,6 +330,7 @@ pub fn load_sources_for_deck(
     ))
 }
 
+/// Remove a deck's sources file (when the deck is deleted).
 pub fn delete_sources_sidecar(deck_path: &Path) {
     let path = sidecar_path(deck_path);
 
@@ -313,6 +339,7 @@ pub fn delete_sources_sidecar(deck_path: &Path) {
     }
 }
 
+/// `<deck>.sources.json` next to the deck file.
 pub fn sidecar_path(deck_path: &Path) -> PathBuf {
     let stem = deck_path
         .file_stem()
@@ -325,6 +352,7 @@ pub fn sidecar_path(deck_path: &Path) -> PathBuf {
         .join(format!("{stem}.sources.json"))
 }
 
+/// Add a source unless one with the same URL and title is already there.
 pub fn push_unique(
     out: &mut Vec<DeckSource>,
     source: DeckSource,
@@ -339,6 +367,7 @@ pub fn push_unique(
     }
 }
 
+/// Only the sources the player added.
 pub fn user_sources(
     sources: &[DeckSource],
 ) -> Vec<DeckSource> {
@@ -349,6 +378,8 @@ pub fn user_sources(
         .collect()
 }
 
+/// Add the player's own sources to a list (after what's there, skipping
+/// duplicates).
 pub fn merge_user_sources(
     target: &mut Vec<DeckSource>,
     user_sources: &[DeckSource],
@@ -358,6 +389,7 @@ pub fn merge_user_sources(
     }
 }
 
+/// URL slug for EDHREC/PDHREC links (same accent caveat as edhrec.rs).
 fn slugify(value: &str) -> String {
     let mut slug = String::new();
     let mut dash = false;

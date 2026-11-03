@@ -1,3 +1,14 @@
+//! Per-deck agent memory: chat, briefs and agent runs.
+//!
+//! How it fits: a JSON sidecar next to each deck ([`history_path`]) holds the
+//! Agent tab's chat, the last brief and recent agent results
+//! ([`DeckHistory`]). Version history of the list itself is separate
+//! (`versions.rs`).
+//!
+//! Things to work on:
+//! - The chat grows forever; trim old messages (the model only sees the last
+//!   20 anyway).
+
 use crate::{
     ai::AgentChatMessage,
     deep_agent::DeepAgentResult,
@@ -21,6 +32,8 @@ pub struct DeckRunRecord {
     pub log: Vec<String>,
 }
 
+/// One deck's agent memory: past runs, the chat, the last brief, the latest
+/// research, agent result and matchup simulation.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeckHistory {
     pub deck_name: String,
@@ -38,6 +51,7 @@ pub struct DeckHistory {
     pub latest_meta_matchup: Option<MetaMatchupSummary>,
 }
 
+/// `decks/logs/<deck>.history.json`.
 pub fn history_path(deck_path: &Path) -> PathBuf {
     let stem = deck_path
         .file_stem()
@@ -51,6 +65,7 @@ pub fn history_path(deck_path: &Path) -> PathBuf {
         .join(format!("{stem}.history.json"))
 }
 
+/// Where older versions kept it (next to the deck file).
 fn legacy_history_path(deck_path: &Path) -> PathBuf {
     let stem = deck_path
         .file_stem()
@@ -63,6 +78,7 @@ fn legacy_history_path(deck_path: &Path) -> PathBuf {
         .join(format!("{stem}.history.json"))
 }
 
+/// Move an old-location history file into decks/logs/.
 fn migrate_legacy_history(deck_path: &Path) {
     let old_path = legacy_history_path(deck_path);
     let new_path = history_path(deck_path);
@@ -84,6 +100,7 @@ fn migrate_legacy_history(deck_path: &Path) {
     }
 }
 
+/// Remove a deck's history (both locations).
 pub fn delete_history(deck_path: &Path) {
     let path = history_path(deck_path);
     let legacy = legacy_history_path(deck_path);
@@ -97,6 +114,7 @@ pub fn delete_history(deck_path: &Path) {
     }
 }
 
+/// A deck's history (migrating the old location first); empty if none.
 pub fn load_history(deck_path: &Path) -> DeckHistory {
     migrate_legacy_history(deck_path);
 
@@ -120,6 +138,7 @@ pub fn load_history(deck_path: &Path) -> DeckHistory {
         })
 }
 
+/// Write a deck's history.
 fn save_history(
     deck_path: &Path,
     history: &DeckHistory,
@@ -147,6 +166,7 @@ fn save_history(
     Ok(())
 }
 
+/// Save the chat, brief and latest agent results in one go.
 pub fn save_agent_session(
     deck_path: &Path,
     chat: &[AgentChatMessage],
@@ -166,6 +186,7 @@ pub fn save_agent_session(
     save_history(deck_path, &history)
 }
 
+/// Record one run (kind, summary, log); keeps the newest 80.
 pub fn append_run(
     deck_path: &Path,
     kind: impl Into<String>,
@@ -193,6 +214,7 @@ pub fn append_run(
     Ok(())
 }
 
+/// Past runs as plain text lines (old terminal UI).
 pub fn render_history_lines(deck_path: &Path) -> Vec<String> {
     let history = load_history(deck_path);
     let mut lines = Vec::new();

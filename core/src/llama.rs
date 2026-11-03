@@ -1,3 +1,17 @@
+//! llama.cpp as a separate server (the older way to run local AI).
+//!
+//! How it fits: when the llama.cpp provider points at a non-default address,
+//! or the app is built without the built-in engine, [`LlamaRuntime`] finds a
+//! `llama`/`llama-server` program, starts it with the configured model and
+//! waits for it to answer. With the default address in a build that has the
+//! engine, it just loads the built-in model (`local_llm.rs`) instead.
+//!
+//! Things to work on:
+//! - Auto-install only exists on Windows (winget). Linux and macOS users of
+//!   the server path have to install llama.cpp themselves.
+//! - Most users won't need this path now; consider moving it under Settings →
+//!   AI model → Advanced like Ollama.
+
 use crate::{
     ai::{AiConfig, AiProvider},
     logging,
@@ -29,6 +43,7 @@ pub enum LlamaStartupState {
 }
 
 impl LlamaStartupState {
+    /// What happened when starting llama.cpp, in words.
     pub fn status_line(&self) -> String {
         match self {
             Self::Disabled => "llama.cpp is not selected.".to_string(),
@@ -64,6 +79,13 @@ pub struct LlamaRuntime {
 }
 
 impl LlamaRuntime {
+    /// Make llama.cpp usable (only when it's the selected provider):
+    /// - default address + built-in engine: load the downloaded model in-process;
+    /// - another address: wait for that server;
+    /// - otherwise: find (or, on Windows, install with winget) the `llama` or
+    ///   `llama-server` program, start it with the model and wait up to 30
+    ///   minutes (first start can download the model).
+    /// Always returns a runtime whose state says what happened.
     pub fn ensure_running() -> Self {
         let config = AiConfig::load_or_create();
 
@@ -83,6 +105,8 @@ impl LlamaRuntime {
             );
         }
 
+        // Built-in engine: no server. Load the model now so the first answer is
+        // quick.
         if config.uses_built_in() {
             let Some(preset) = crate::local_llm::resolve_installed(&config.model) else {
                 return Self::new(
@@ -111,6 +135,7 @@ impl LlamaRuntime {
             config.model,
         );
 
+        // Someone else's server (custom address): just wait for it to answer.
         if !is_local_llama_url(&config.base_url) {
             println!(
                 "Waiting for configured llama.cpp endpoint {}...",
@@ -305,6 +330,7 @@ impl LlamaRuntime {
         }
     }
 
+    /// Build the runtime and log its state.
     fn new(
         child: Option<Child>,
         state: LlamaStartupState,
@@ -323,6 +349,7 @@ impl LlamaRuntime {
         }
     }
 
+    /// Can requests be sent now?
     pub fn is_ready(&self) -> bool {
         matches!(
             self.state,
@@ -334,6 +361,7 @@ impl LlamaRuntime {
         )
     }
 
+    /// State plus model status, for Settings.
     pub fn status_line(&self) -> String {
         format!(
             "{} • {}",
@@ -342,6 +370,7 @@ impl LlamaRuntime {
         )
     }
 
+    /// Free the built-in model, or stop the server Commander Lab started.
     pub fn shutdown(&mut self) {
         if matches!(self.state, LlamaStartupState::BuiltIn) {
             // Give the model's memory back.
@@ -381,6 +410,7 @@ impl LlamaRuntime {
 }
 
 impl Drop for LlamaRuntime {
+    /// Clean up when the runtime is dropped.
     fn drop(&mut self) {
         self.shutdown();
     }
@@ -392,6 +422,8 @@ enum LlamaCommand {
     Server(PathBuf),
 }
 
+/// Is this the default local address? That address means "use the
+/// built-in engine" in builds that have it.
 pub(crate) fn is_local_llama_url(url: &str) -> bool {
     let lower = url
         .trim()
@@ -402,6 +434,7 @@ pub(crate) fn is_local_llama_url(url: &str) -> bool {
         || lower == "http://localhost:8080"
 }
 
+/// Does a llama.cpp server answer here (/health or /v1/models)?
 fn server_responding(base_url: &str) -> bool {
     let Ok(client) = Client::builder()
         .timeout(Duration::from_millis(1500))
@@ -438,6 +471,7 @@ fn server_responding(base_url: &str) -> bool {
         .is_some()
 }
 
+/// Poll until the server answers or time runs out.
 fn wait_for_server(
     base_url: &str,
     timeout: Duration,
@@ -455,6 +489,7 @@ fn wait_for_server(
     false
 }
 
+/// Can this program run (`--version` succeeds)?
 fn command_works(
     path: &PathBuf,
     args: &[&str],
@@ -468,6 +503,8 @@ fn command_works(
         .unwrap_or(false)
 }
 
+/// Find a working llama.cpp program: the newer `llama` (run as `llama
+/// serve`) or the older `llama-server`.
 fn detect_llama_command() -> Option<LlamaCommand> {
     let unified = llama_executable_candidates("llama");
 
@@ -488,6 +525,7 @@ fn detect_llama_command() -> Option<LlamaCommand> {
     None
 }
 
+/// Where to look: PATH, and on Windows the WinGet and WindowsApps folders.
 fn llama_executable_candidates(name: &str) -> Vec<PathBuf> {
     let mut candidates = vec![PathBuf::from(name)];
 
@@ -514,6 +552,7 @@ fn llama_executable_candidates(name: &str) -> Vec<PathBuf> {
     candidates
 }
 
+/// After installing, wait for the program to appear.
 fn wait_for_llama_command(
     timeout: Duration,
 ) -> Option<LlamaCommand> {
@@ -530,6 +569,8 @@ fn wait_for_llama_command(
     None
 }
 
+/// Start the server with the model (`-hf` repo:quant), port, 16k context
+/// and full GPU offload, output captured.
 fn spawn_llama_server(
     command: &LlamaCommand,
     model: &str,
@@ -575,6 +616,8 @@ fn spawn_llama_server(
         })
 }
 
+/// Keep reading the server's output so it never blocks on a full pipe;
+/// echo it only during startup.
 fn drain_llama_output<R>(
     reader: R,
     visible: Arc<AtomicBool>,
@@ -604,6 +647,7 @@ fn drain_llama_output<R>(
     });
 }
 
+/// Windows: install llama.cpp with winget.
 #[cfg(windows)]
 fn install_llama_if_supported() -> Result<bool, String> {
     let winget_available = Command::new("winget")
@@ -645,6 +689,7 @@ fn install_llama_if_supported() -> Result<bool, String> {
     }
 }
 
+/// Other platforms: no automatic install.
 #[cfg(not(windows))]
 fn install_llama_if_supported() -> Result<bool, String> {
     Ok(false)

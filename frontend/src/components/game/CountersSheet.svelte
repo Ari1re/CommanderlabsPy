@@ -1,3 +1,8 @@
+<!--
+A player's full-screen menu in the Game tracker, turned to face them:
+counters (poison, commander tax, custom), commander damage from each
+opponent, their name and the card art behind their panel.
+-->
 <script lang="ts">
   import { api } from '../../lib/api';
   import { COUNTERS, cmdLethalOf, game, type Player, type Rotation } from '../../lib/game.svelte';

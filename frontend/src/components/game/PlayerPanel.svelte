@@ -1,3 +1,7 @@
+<!--
+One player's area in the Game tracker: life total and the taps that
+change it, with quick access to their counters menu.
+-->
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { COUNTERS, LOW_LIFE, cmdLethalOf, fmtClock, game, isOut, type Player, type Rotation } from '../../lib/game.svelte';

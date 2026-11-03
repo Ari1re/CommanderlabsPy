@@ -1,6 +1,10 @@
 //! What Commander Lab keeps on disk, and cleaning the parts that can be
 //! downloaded or rebuilt again. Decks (with their history, game plans and
 //! sources), settings and the game log are never touched.
+//!
+//! Things to work on:
+//! - Add the MPC Autofill tool (`data/tools/mpc-autofill`, ~55 MB) as a
+//!   removable category, like AI models.
 
 use anyhow::{bail, Result};
 use serde::Serialize;
@@ -128,6 +132,8 @@ pub struct StorageReport {
     pub folder: String,
 }
 
+/// (bytes, files) under a path, walked recursively. Symlinks aren't followed,
+/// so a link out of the data folder isn't counted or cleaned.
 fn size_of(path: &Path) -> (u64, u64) {
     let Ok(meta) = fs::symlink_metadata(path) else { return (0, 0) };
     if meta.is_file() {
@@ -148,10 +154,13 @@ fn size_of(path: &Path) -> (u64, u64) {
     (bytes, files)
 }
 
+/// `size_of` summed over a category's paths.
 fn paths_size(paths: &[&str]) -> (u64, u64) {
     paths.iter().map(|p| size_of(Path::new(p))).fold((0, 0), |(a, b), (c, d)| (a + c, b + d))
 }
 
+/// Where the updater leaves downloaded installers: outside the data folder,
+/// in the system temp dir. Counted under "Downloads".
 fn update_download_dir() -> PathBuf {
     std::env::temp_dir().join("commander-lab-update")
 }
@@ -190,6 +199,7 @@ pub fn report() -> StorageReport {
     }
 }
 
+/// Delete a file or folder; a path that's already gone is not an error.
 fn remove(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => {

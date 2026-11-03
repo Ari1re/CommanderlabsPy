@@ -1,3 +1,17 @@
+<!--
+Cards tab: the deck editor. Add cards by search, change quantities, move
+cards between the deck, sideboard and Considering, and manage tags
+Moxfield-style: tag chips filter the list, Group by switches between
+type, tag, mana value and color, checkboxes select cards for bulk
+tag/untag/move/remove (`edit_deck_bulk`), and Auto-tag tags by role.
+Tags are saved in the decklist as "#Tag".
+
+Things to work on:
+- Images view doesn't show tags or support selection yet.
+- No drag and drop between groups (Moxfield lets you drag a card onto a
+  tag group to tag it).
+- No keyboard shortcuts for quantity or moving cards.
+-->
 <script lang="ts">
   import { api } from '../../lib/api';
   import { app } from '../../lib/store.svelte';

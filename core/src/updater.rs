@@ -18,6 +18,10 @@
 //!   installs over the old app and keeps all data.
 //! - Built from a git checkout (./run-linux.sh): there's no build number, so
 //!   it compares with the remote branch, then pulls, rebuilds and restarts.
+//!
+//! Things to work on:
+//! - Builds are published from every push to main; a beta/stable channel
+//!   would let risky changes (like the built-in AI engine) bake first.
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
@@ -65,10 +69,13 @@ pub struct UpdateInfo {
     pub checked_at: u64,
 }
 
+/// Seconds since 1970, for `checked_at` and the re-check timer.
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// HTTP client with our user agent; `timeout` in seconds (20 to check, 600
+/// to download).
 fn client(timeout: u64) -> Result<Client> {
     Ok(Client::builder()
         .timeout(Duration::from_secs(timeout))
@@ -96,6 +103,8 @@ enum Install {
 }
 
 impl Install {
+    /// Short name stored in `UpdateInfo.kind`. The cached check is thrown away
+    /// when this changes (for example after moving from AppImage to the .sh install).
     fn kind(&self) -> &'static str {
         match self {
             Install::WindowsInstaller => "windows-installer",
@@ -111,6 +120,9 @@ impl Install {
     }
 }
 
+/// Where the Linux .sh installs the app: $COMMANDER_LAB_HOME, then
+/// $XDG_DATA_HOME/commander-lab, then ~/.local/share/commander-lab, plus "/app".
+/// Must stay in step with the install script.
 fn linux_app_dir() -> PathBuf {
     let base = std::env::var_os("COMMANDER_LAB_HOME")
         .map(PathBuf::from)
@@ -128,6 +140,7 @@ fn source_checkout() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// Can we replace files here? Writes and deletes an empty probe file.
 fn dir_writable(dir: &Path) -> bool {
     let probe = dir.join(".commander-lab-write-test");
     let ok = fs::write(&probe, b"").is_ok();
@@ -135,6 +148,8 @@ fn dir_writable(dir: &Path) -> bool {
     ok
 }
 
+/// Did the .deb put this program here? Only under /usr on a dpkg system,
+/// confirmed with `dpkg -S`.
 fn installed_by_dpkg(exe: &Path) -> bool {
     exe.starts_with("/usr")
         && Path::new("/var/lib/dpkg").exists()
@@ -146,6 +161,12 @@ fn installed_by_dpkg(exe: &Path) -> bool {
             .unwrap_or(false)
 }
 
+/// Work out how this copy was installed, so the right update file and method
+/// are used. Order matters: Android; on Windows, an uninstaller beside the exe
+/// means the installer, otherwise portable; on Linux, the .sh app dir, then
+/// AppImage, then a git checkout (only for builds with no build number), then
+/// .deb, then a standalone browser-edition binary in a writable folder.
+/// Anything else is Manual (open the download page).
 fn detect(platform: &str) -> Install {
     if platform == "android" {
         return Install::Android;
@@ -189,6 +210,8 @@ fn detect(platform: &str) -> Install {
     Install::Manual
 }
 
+/// Release asset file name for this kind of install. These names must match
+/// what CI uploads, or `download_url` comes back empty.
 fn asset_for(platform: &str, install: &Install) -> &'static str {
     match (platform, install) {
         ("android", _) => "CommanderLab-android.apk",
@@ -227,6 +250,10 @@ pub fn check(platform: &str, force: bool) -> Result<UpdateInfo> {
     Ok(info)
 }
 
+/// Ask GitHub for the latest release, read its build number from the
+/// `build-N` tag, find this platform's asset and describe how it would be
+/// installed. Builds with no build number (local builds) always report
+/// `install: "none"`.
 fn check_release(platform: &str, install: &Install) -> Result<UpdateInfo> {
     let release: Value = client(20)?
         // COMMANDERLAB_RELEASE_URL lets tests point the check elsewhere.
@@ -290,6 +317,8 @@ fn check_release(platform: &str, install: &Install) -> Result<UpdateInfo> {
     })
 }
 
+/// Run git in the checkout and return trimmed stdout. Fails with git's stderr,
+/// and never waits on a credential prompt.
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .arg("-C")
@@ -376,6 +405,9 @@ fn from_git_checkout() -> bool {
     source_checkout().is_some()
 }
 
+/// Stream a release file to `<to>.part` in 256 KB chunks with progress, check
+/// the size against Content-Length, then rename it into place. A cut-off
+/// download never leaves a half file under the real name.
 fn download(url: &str, to: &Path, mut progress: impl FnMut(u64, u64)) -> Result<()> {
     use std::io::{Read, Write};
     let mut response = client(600)?
@@ -407,12 +439,14 @@ fn download(url: &str, to: &Path, mut progress: impl FnMut(u64, u64)) -> Result<
     Ok(())
 }
 
+/// chmod 755, so a downloaded binary, AppImage or .sh can run.
 #[cfg(unix)]
 fn make_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
+/// Windows has no exec bit: nothing to do.
 #[cfg(not(unix))]
 fn make_executable(_: &Path) -> Result<()> {
     Ok(())
@@ -426,6 +460,8 @@ fn quit_soon() {
     });
 }
 
+/// Is `program` on PATH (`command -v`)? Only called with fixed names like
+/// "pkexec"; the name goes into a shell string, so never pass user text.
 fn have(program: &str) -> bool {
     Command::new("sh")
         .arg("-c")
