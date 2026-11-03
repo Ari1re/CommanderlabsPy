@@ -1,15 +1,14 @@
 //! "Ask about this deck": answers questions about one deck.
 //!
-//! With an AI model (built-in llama.cpp, Ollama or an online API) the model
-//! gets the whole deck every turn: each card's text and roles, the deck's
-//! stats, bracket, price, game plan and known combos. Without one (Android
+//! With an AI model (built-in llama.cpp, Ollama or an online API) each
+//! question is routed to a task playbook (`playbooks.rs`): the model gets
+//! that task's steps and rules plus only the data it needs, and its card
+//! suggestions are checked against the card database before they're shown. Without one (Android
 //! without an API key, or the model not started) Commander Lab answers from
 //! its own analysis: card text and roles, curve, mana, price, bracket, combos,
 //! mulligans, how the deck wins, what to cut and add.
 //!
 //! Things to work on:
-//! - The deck context is the same size for every question (~6,200 tokens).
-//!   Send less for simple questions, especially to the on-device model.
 //! - The offline (no AI) answers recognise a fixed set of question shapes;
 //!   log unanswered questions so the common ones can be added.
 
@@ -65,7 +64,7 @@ pub fn gather(deck: &ParsedDeck, db: &CardDb, combos: Option<ComboReport>, plan:
 }
 
 /// A card's roles as words ("ramp", "card draw"…).
-fn role_names(r: CardRoles) -> Vec<&'static str> {
+pub(crate) fn role_names(r: CardRoles) -> Vec<&'static str> {
     let mut out = Vec::new();
     for (on, name) in [
         (r.ramp, "ramp"),
@@ -86,7 +85,7 @@ fn role_names(r: CardRoles) -> Vec<&'static str> {
 }
 
 /// "$1.99", or "—" for basics and unpriced cards.
-fn price_of(c: &Card) -> String {
+pub(crate) fn price_of(c: &Card) -> String {
     match c.price_usd {
         Some(p) if !c.is_basic => format!("${p:.2}"),
         _ => "—".into(),
@@ -94,7 +93,7 @@ fn price_of(c: &Card) -> String {
 }
 
 /// Rules text squeezed onto one line and cut to `max` characters.
-fn one_line(text: &str, max: usize) -> String {
+pub(crate) fn one_line(text: &str, max: usize) -> String {
     let flat = text.replace('\n', " ");
     if flat.chars().count() <= max {
         flat
@@ -105,7 +104,7 @@ fn one_line(text: &str, max: usize) -> String {
 
 /// Lowercase words (apostrophes kept), for matching card names in
 /// questions.
-fn normalize(s: &str) -> String {
+pub(crate) fn normalize(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() || c == ' ' || c == '\'' { c } else { ' ' })
@@ -142,126 +141,6 @@ pub fn mentioned(facts: &DeckFacts, question: &str) -> Vec<Card> {
     found.into_iter().map(|(_, c)| c).collect()
 }
 
-/// The deck as text for the AI model.
-pub fn context_text(facts: &DeckFacts, focus: &[Card]) -> String {
-    let a = &facts.analysis;
-    let mut out = String::new();
-    let commanders: Vec<&Card> = facts.cards.iter().filter(|(_, _, cmd)| *cmd).map(|(_, c, _)| c).collect();
-    out.push_str(&format!(
-        "DECK: {} — {} — {} cards — commander(s): {}\n",
-        facts.deck.name,
-        facts.deck.format.label(),
-        a.total_cards,
-        if commanders.is_empty() { "none".into() } else { commanders.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(" + ") }
-    ));
-    for c in &commanders {
-        out.push_str(&format!("COMMANDER: {} | {} | {} | {}\n", c.name, c.mana_cost, c.type_line, c.oracle_text.replace('\n', " ")));
-    }
-    out.push_str(&format!(
-        "STATS: average mana value {:.2}; curve (MV 0..7+): {:?}; lands {}, creatures {}, artifacts {}, enchantments {}, instants {}, sorceries {}, planeswalkers {}\n",
-        a.avg_cmc, a.curve, a.types.lands, a.types.creatures, a.types.artifacts, a.types.enchantments, a.types.instants, a.types.sorceries, a.types.planeswalkers
-    ));
-    let r = &a.roles;
-    out.push_str(&format!(
-        "ROLES: ramp {}, card draw {}, tutors {}, removal {}, counterspells {}, board wipes {}, recursion {}, protection {}\n",
-        r.ramp, r.draw, r.tutors, r.removal, r.counters, r.wipes, r.recursion, r.protection
-    ));
-    let colors = ['W', 'U', 'B', 'R', 'G'];
-    let mana: Vec<String> = colors
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| a.pip_demand[*i] > 0 || a.direct_sources[*i] > 0)
-        .map(|(i, c)| format!("{c}: {} pips / {} sources", a.pip_demand[i], a.direct_sources[i]))
-        .collect();
-    out.push_str(&format!("MANA: {}\n", if mana.is_empty() { "colorless".into() } else { mana.join("; ") }));
-    out.push_str(&format!(
-        "BRACKET: {} — {}. Game Changers: {}\n",
-        a.bracket.display_name(),
-        a.bracket.reasons.join(" "),
-        if a.bracket.game_changers.is_empty() { "none".into() } else { a.bracket.game_changers.join(", ") }
-    ));
-    out.push_str(&format!("PRICE: ${:.2} (USD, Scryfall){}\n", a.total_price_usd, if a.unpriced_cards > 0 { format!(", {} cards unpriced", a.unpriced_cards) } else { String::new() }));
-    out.push_str(&format!(
-        "LEGALITY: {}\n",
-        if a.legality_issues.is_empty() { "legal".into() } else { a.legality_issues.join("; ") }
-    ));
-    if !a.tags.is_empty() {
-        out.push_str(&format!("THEMES: {}\n", a.tags.iter().take(6).map(|t| t.name.clone()).collect::<Vec<_>>().join(", ")));
-    }
-    if let Some(g) = &facts.guide {
-        out.push_str(&format!("GAME PLAN: {}\n", g.summary));
-        if !g.strengths.is_empty() {
-            out.push_str(&format!("STRENGTHS: {}\n", g.strengths.join(" | ")));
-        }
-        if !g.weaknesses.is_empty() {
-            out.push_str(&format!("WEAKNESSES: {}\n", g.weaknesses.join(" | ")));
-        }
-        for s in &g.sections {
-            out.push_str(&format!("{}: {} {}\n", s.title.to_uppercase(), s.text, s.points.join(" ")));
-        }
-    }
-    match &facts.combos {
-        Some(c) if !c.variants.is_empty() => {
-            out.push_str("COMBOS (Commander Spellbook):\n");
-            for v in c.variants.iter().take(15) {
-                out.push_str(&format!(
-                    "- {}{} → {}\n",
-                    v.cards.join(" + "),
-                    if v.almost { " (one card missing)" } else { "" },
-                    v.result
-                ));
-            }
-        }
-        Some(_) => out.push_str("COMBOS: Commander Spellbook found none.\n"),
-        None => out.push_str("COMBOS: not checked yet (the Combos tab checks Commander Spellbook).\n"),
-    }
-    if !a.cut_candidates.is_empty() {
-        out.push_str(&format!(
-            "WEAKEST CARDS (Commander Lab's estimate): {}\n",
-            a.cut_candidates.iter().take(8).map(|c| format!("{} ({})", c.card, c.reason)).collect::<Vec<_>>().join("; ")
-        ));
-    }
-    out.push_str("CARDS (quantity | name | cost | type | roles | price | rules text):\n");
-    for (q, c, _) in &facts.cards {
-        let full = focus.iter().any(|f| f.name == c.name);
-        let text = if c.is_basic { String::new() } else if full { c.oracle_text.replace('\n', " ") } else { one_line(&c.oracle_text, 170) };
-        out.push_str(&format!(
-            "{q} | {} | {} | {} | {} | {} | {}\n",
-            c.name,
-            c.mana_cost,
-            c.type_line,
-            role_names(classify_card(c)).join(", "),
-            price_of(c),
-            text
-        ));
-    }
-    if !facts.sideboard.is_empty() {
-        out.push_str(&format!("SIDEBOARD: {}\n", facts.sideboard.join(", ")));
-    }
-    if !facts.considering.is_empty() {
-        out.push_str(&format!("CONSIDERING (maybeboard): {}\n", facts.considering.join(", ")));
-    }
-    out
-}
-
-const SYSTEM: &str = r#"You are Commander Lab's assistant for one Magic: The Gathering deck. The user can ask anything about it: what a card does or why it's in the deck, how cards interact, rules questions, how to pilot it, mulligans, what to do in the first turns, how it wins, its combos, matchups and weaknesses, its curve, mana, price or bracket, and what to cut or add.
-
-How to answer:
-- Answer the question that was asked, directly, first. Then add only the detail that helps.
-- Ground every claim in DECK CONTEXT: the card list and rules text, stats, bracket, price, game plan and combos there are authoritative. Quote card names exactly.
-- Never invent cards, rules text, prices, statistics or combos. If something isn't in the context and you aren't sure, say so.
-- For rules questions, explain using the cards' actual text and the Magic comprehensive rules; say when a ruling is a judgment call.
-- Suggest changes only when asked, or when it clearly answers the question. Name specific cards and why.
-- Keep it short: a few sentences or a short list. Use plain language a newer player follows.
-- If the user wants the full decklist, write it as:
-Commander
-1 Card Name
-
-Deck
-1 Card Name
-"#;
-
-/// Answer with the AI model. Errors if no model is reachable.
 /// What [`ai_answer`] is doing, for the chat to show while it waits.
 pub trait AnswerProgress {
     /// A step, with what it's looking at.
@@ -270,50 +149,72 @@ pub trait AnswerProgress {
     fn text(&self, text: &str);
 }
 
-/// Answer with the AI model. The system prompt carries the whole deck
-/// context (~6,000 tokens for a 100-card deck), plus the player's notes and
-/// the last 20 chat turns. Reports each step and streams the answer through
-/// `progress`.
+/// Answer with the AI model, following a task playbook (`playbooks.rs`):
+/// 1. pick the playbook for the question (the model breaks ties);
+/// 2. run its steps, gathering Commander Lab's data for each;
+/// 3. send the model the playbook's brief plus that data and the last few
+///    chat turns, streaming the answer;
+/// 4. check every ADD/CUT line against the card database, the format and
+///    the colours, and drop the ones that don't check out.
+/// Each step is reported through `progress`, so the Agent tab shows it.
 pub fn ai_answer(
     facts: &DeckFacts,
+    db: &CardDb,
     history: &[(String, String)],
     question: &str,
     notes: &str,
     progress: &dyn AnswerProgress,
 ) -> Result<String> {
+    use crate::playbooks;
     progress.step("Connecting to the AI model", String::new());
     let ai = LocalAi::connect()?;
-    let focus = mentioned(facts, question);
-    if !focus.is_empty() {
-        progress.step("Looking at the cards you mentioned", focus.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "));
+
+    let ranked = playbooks::ranked(question);
+    let mut playbook = ranked.first().map(|(p, _)| *p).unwrap_or_else(playbooks::general);
+    if playbooks::is_tied(&ranked) {
+        let options: Vec<&playbooks::Playbook> = ranked.iter().take_while(|(_, s)| *s == ranked[0].1).map(|(p, _)| *p).collect();
+        progress.step("Choosing a playbook", options.iter().map(|p| p.title).collect::<Vec<_>>().join(" or "));
+        let pick = ai.chat("You sort requests into tasks. Reply with one task id only.", &[("user".into(), playbooks::choice_prompt(question, &options))]);
+        if let Some(p) = pick.ok().and_then(|reply| playbooks::parse_choice(&reply, &options)) {
+            playbook = p;
+        }
     }
-    let a = &facts.analysis;
-    progress.step(
-        "Summarizing the deck",
-        format!(
-            "{} cards · Bracket {} · {}{}",
-            facts.cards.iter().map(|(q, _, _)| q).sum::<u32>(),
-            a.bracket.bracket,
-            a.tags.iter().take(3).map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
-            facts.combos.as_ref().map(|r| format!(" · {} combos", r.included)).unwrap_or_default(),
-        ),
-    );
-    let mut system = format!("{SYSTEM}\nDECK CONTEXT\n{}", context_text(facts, &focus));
-    if !notes.trim().is_empty() {
-        system.push_str(&format!("\nUSER NOTES ABOUT THIS DECK\n{notes}\n"));
-    }
-    let mut turns: Vec<(String, String)> = history.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect();
+    progress.step(&format!("Playbook: {}", playbook.title), playbook.goal.to_string());
+
+    let data = playbooks::gather_data(playbook, facts, db, question, |label| progress.step(label, String::new()));
+    let system = playbooks::prompt(playbook, &data, notes);
+
+    // The playbook carries the context, so a few recent turns are enough
+    // (and keep small models inside their context window).
+    let mut turns: Vec<(String, String)> = history.iter().rev().take(6).cloned().collect::<Vec<_>>().into_iter().rev().collect();
     turns.push(("user".into(), question.to_string()));
     let model = crate::local_llm::preset(ai.model())
         .map(|p| format!("the built-in AI ({})", p.name))
         .unwrap_or_else(|| ai.model().to_string());
     progress.step(&format!("Asking {model}"), "Writing the answer".into());
-    Ok(ai.chat_streaming(&system, &turns, &|text| progress.text(text))?.trim().to_string())
+    let answer = ai.chat_streaming(&system, &turns, &|text| progress.text(text))?;
+
+    progress.step("Checking card names", String::new());
+    let checked = playbooks::check_answer(answer.trim(), facts, db);
+    if checked.adds + checked.cuts + checked.dropped.len() + checked.unknown.len() > 0 {
+        progress.step(
+            "Checked the suggestions",
+            format!(
+                "{} add(s), {} cut(s) kept, {} removed, {} unknown name(s) flagged",
+                checked.adds,
+                checked.cuts,
+                checked.dropped.len(),
+                checked.unknown.len()
+            ),
+        );
+    }
+    progress.text(&checked.text);
+    Ok(checked.text)
 }
 
 /// Does the question contain one of these words (or phrases)? Simple
 /// plurals count ("combos" matches "combo").
-fn has_word(q: &str, words: &[&str]) -> bool {
+pub(crate) fn has_word(q: &str, words: &[&str]) -> bool {
     let tokens: Vec<&str> = q.split_whitespace().collect();
     words.iter().any(|w| if w.contains(' ') { q.contains(w) } else { tokens.iter().any(|t| t == w || t.trim_end_matches('s') == *w) })
 }

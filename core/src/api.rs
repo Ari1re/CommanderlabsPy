@@ -2516,10 +2516,12 @@ impl Engine {
                 .filter(|m| m.role == "user" || m.role == "assistant")
                 .map(|m| (m.role.clone(), m.content.clone()))
                 .collect();
-            struct Progress<'a>(&'a crate::jobs::JobHandle);
+            struct Progress<'a>(&'a crate::jobs::JobHandle, std::sync::Mutex<Vec<String>>);
             impl crate::deck_chat::AnswerProgress for Progress<'_> {
-                /// Each step the answer takes becomes a progress line in the job.
+                /// Each step the answer takes becomes a progress line in the
+                /// job, and is kept to save with the answer.
                 fn step(&self, step: &str, detail: String) {
+                    self.1.lock().unwrap().push(if detail.is_empty() { step.to_string() } else { format!("{step} — {detail}") });
                     self.0.progress(50, step, detail);
                 }
                 /// The answer so far goes into the job's `partial` text.
@@ -2527,7 +2529,8 @@ impl Engine {
                     self.0.partial(text);
                 }
             }
-            let reply = match crate::deck_chat::ai_answer(&facts, &turns, &message, &history.agent_last_brief, &Progress(&job)) {
+            let progress = Progress(&job, Default::default());
+            let reply = match crate::deck_chat::ai_answer(&facts, &db, &turns, &message, &history.agent_last_brief, &progress) {
                 Ok(reply) if !reply.is_empty() => reply,
                 result => {
                     // Someone who set up an online AI should hear why it didn't answer.
@@ -2549,8 +2552,11 @@ impl Engine {
                 }
             };
             let mut chat = history.agent_chat.clone();
-            chat.push(AgentChatMessage { role: "user".into(), content: message.clone() });
-            chat.push(AgentChatMessage { role: "assistant".into(), content: reply });
+            chat.push(AgentChatMessage { role: "user".into(), content: message.clone(), steps: Vec::new() });
+            // Only playbook answers have steps worth keeping.
+            let steps = std::mem::take(&mut *progress.1.lock().unwrap());
+            let steps = if steps.iter().any(|s| s.starts_with("Playbook:")) { steps } else { Vec::new() };
+            chat.push(AgentChatMessage { role: "assistant".into(), content: reply, steps });
             save_agent_session(
                 &path,
                 &chat,

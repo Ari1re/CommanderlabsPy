@@ -47,6 +47,7 @@ pub mod precons;
 pub mod mpc;
 pub mod mpc_autofill;
 pub mod oracle_search;
+pub mod playbooks;
 pub mod ollama;
 pub mod printings;
 pub mod references;

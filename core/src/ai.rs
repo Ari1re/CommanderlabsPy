@@ -1043,6 +1043,10 @@ feedback_preferences: array of strings
 pub struct AgentChatMessage {
     pub role: String,
     pub content: String,
+    /// How an answer was made: the playbook and each step it ran (shown
+    /// folded under the answer in the Agent tab).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
 }
 
 /// An older deck chat for the agent (before deck_chat.rs). Nothing calls it

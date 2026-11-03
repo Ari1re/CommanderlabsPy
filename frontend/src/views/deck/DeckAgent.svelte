@@ -33,6 +33,8 @@ Things to work on:
   interface ChatMessage {
     role: 'user' | 'assistant';
     content: string;
+    /** The playbook and steps behind an answer (playbooks.rs). */
+    steps?: string[];
   }
 
   let ai = $state<any>(null);
@@ -108,6 +110,9 @@ Things to work on:
   /** Does the message ask to change the deck (rather than ask about it)? */
   function wantsChanges(text: string): boolean {
     const t = text.toLowerCase();
+    // Budget, mana, cuts and combos are chat playbooks, not deck rebuilds
+    // (the rebuilder only optimizes for speed or a stax lock).
+    if (/\b(cheaper|budget|price|mana ?base|lands?|fixing|combos?|cuts?)\b/.test(t)) return false;
     if (/\b(optimi[sz]e|upgrade|tweak|rebuild|power (it |this )?(up|down)|make (it|this|the deck)|turn (it|this|the deck) into|tune)\b/.test(t)) return true;
     // "What should I cut?" is a question; "Cut the weak ramp" is a request.
     if (/^(what|which|how|why|is|are|does|do|when|who|where|should|could)\b/.test(t)) return false;
@@ -292,7 +297,16 @@ Things to work on:
     {/if}
     {#each chat as m, i (i)}
       {#if m.role === 'assistant'}
-        <div class="msg assistant">{@html md(m.content)}</div>
+        <div class="msg assistant">
+          {@html md(m.content)}
+          {#if m.steps?.length}
+            <!-- Which playbook answered, and what it looked at. -->
+            <details class="how small">
+              <summary>{m.steps.find((s) => s.startsWith('Playbook:'))?.split(' — ')[0] ?? 'How this was answered'}</summary>
+              <ol>{#each m.steps as s, k (k)}<li>{s}</li>{/each}</ol>
+            </details>
+          {/if}
+        </div>
       {:else}
         <div class="msg user">{m.content}</div>
       {/if}
@@ -422,6 +436,17 @@ Things to work on:
   }
   .depth {
     max-width: 240px;
+  }
+  .how {
+    margin-top: 0.5rem;
+    color: var(--text-2);
+  }
+  .how summary {
+    cursor: pointer;
+  }
+  .how ol {
+    margin: 0.35rem 0 0;
+    padding-left: 1.2rem;
   }
   .thinking {
     display: grid;
