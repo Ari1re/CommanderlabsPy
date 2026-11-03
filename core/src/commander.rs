@@ -234,6 +234,20 @@ pub fn resolve_commander_name(
         {
             return Ok(Some(card));
         }
+        // The exact card exists but can't lead a deck: say so instead of
+        // quietly picking a similarly named commander (asking for "Delver
+        // of Secrets" used to get "Toski, Bearer of Secrets").
+        if card.name.eq_ignore_ascii_case(query) || card.name.split(" // ").next().is_some_and(|f| f.eq_ignore_ascii_case(query)) {
+            return Err(anyhow!(
+                "{} can't be a commander: {}",
+                card.name,
+                if card.commander_legal {
+                    "it isn't a legendary creature, and its text doesn't say it can be your commander"
+                } else {
+                    "it isn't legal in Commander"
+                }
+            ));
+        }
     }
 
     let candidates = commander_name_suggestions(query, db, 8)?;

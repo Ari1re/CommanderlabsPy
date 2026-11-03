@@ -90,6 +90,10 @@ pub struct GamePlan {
     /// How the deck was built (deep learning generation).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<crate::deep_generation::GenerationReport>,
+    /// How decks with this commander usually win, and which of those lines
+    /// this deck runs (see win_lines.rs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub win_lines: Vec<crate::win_lines::WinLine>,
 }
 
 /// What the generators return: the decklist plus its game plan.
@@ -1740,6 +1744,59 @@ for template in relevant_templates
     });
 }
 
+    // 5d: study how decks with this commander win: recurring combos (above)
+    // and finishers. Add the most common finishers that fit; every line is
+    // recorded so the primer can list the rest as potential changes.
+    let game_changers_ok = target_bracket.max_game_changers() > 0;
+    let mut win_lines = if reference_snapshot.deck_count() >= 3 {
+        crate::win_lines::study(&reference_snapshot, db, if reference_snapshot.deck_count() >= 10 { 0.15 } else { 0.3 })
+    } else {
+        Vec::new()
+    };
+    let finisher_target = if target_bracket.bracket <= 1 { 1 } else { 2 };
+    let mut finishers_added: Vec<String> = Vec::new();
+    for line in win_lines.iter().filter(|l| l.kind == "finisher") {
+        if finishers_added.len() >= finisher_target || main.len() >= spell_target {
+            break;
+        }
+        let Some(card) = db.get_card(&line.cards[0])? else { continue };
+        let key = card.name.to_ascii_lowercase();
+        if used.contains(&key) {
+            finishers_added.push(card.name.clone());
+            continue;
+        }
+        if !allowed(&card) || !identity_subset(&card.color_identity, &identity) || (card.game_changer && !game_changers_ok) {
+            continue;
+        }
+        used.insert(key.clone());
+        role_counts.add_card(&card, classify_card(&card));
+        if card_matches_theme(&card, selected_theme) {
+            theme_cards += 1;
+        }
+        if card_matches_engine(&card, &commander_engine_terms) {
+            commander_engine_cards += 1;
+        }
+        if edhrec_signals.contains_key(&key) {
+            edhrec_core_cards += 1;
+        }
+        main.push(DeckEntry { quantity: 1, name: card.name.clone(), ..Default::default() });
+        finishers_added.push(card.name.clone());
+    }
+    progress(GenerationProgress::new(
+        39,
+        "Studying win lines",
+        if win_lines.is_empty() {
+            "Too few reference decks to study how this commander wins".to_string()
+        } else {
+            format!(
+                "{} common win line(s) in {} reference deck(s) • finishers added: {}",
+                win_lines.len(),
+                reference_snapshot.deck_count(),
+                if finishers_added.is_empty() { "none".to_string() } else { finishers_added.join(", ") }
+            )
+        },
+    ));
+
     progress(GenerationProgress::new(
         40,
         "Win packages locked",
@@ -2525,6 +2582,24 @@ if budget.is_set() {
     notes.push(note.trim().to_string());
 }
 
+// Win lines: which common ones the finished deck runs and why the rest
+// aren't in it (the primer lists those as potential changes).
+crate::win_lines::mark(&mut win_lines, &deck, db, |card| {
+    crate::win_lines::why_blocked(card, format, &identity, &budget, game_changers_ok)
+});
+for line in win_lines.iter_mut().filter(|l| !l.included && l.kind == "combo") {
+    if let Some(b) = line.bracket.filter(|b| *b > target_bracket.bracket && format.is_commander()) {
+        line.why_not = Some(format!("Commander Spellbook rates it Bracket {b}, above this deck's Bracket {}", target_bracket.bracket));
+    }
+}
+if !win_lines.is_empty() {
+    let runs = win_lines.iter().filter(|l| l.included).count();
+    notes.push(format!(
+        "Win lines studied: {} common in this commander's reference decks; the deck runs {runs}. The rest are listed in the primer under Potential changes.",
+        win_lines.len()
+    ));
+}
+
 progress(GenerationProgress::new(
     97,
     "Bracket validated",
@@ -2903,6 +2978,7 @@ notes.insert(
             notes,
             sources,
             report,
+            win_lines,
         },
     })
 }
@@ -3525,6 +3601,25 @@ pub fn game_plan_markdown(plan: &GamePlan) -> String {
                 combo.result,
                 combo.source
             ));
+        }
+    }
+
+    if !plan.win_lines.is_empty() {
+        out.push_str("\n## Common Win Lines\n\n");
+        for line in plan.win_lines.iter().filter(|l| l.included) {
+            out.push_str(&format!("- In the deck: {}\n", crate::win_lines::describe(line)));
+        }
+        let skipped: Vec<_> = plan.win_lines.iter().filter(|l| !l.included).collect();
+        if !skipped.is_empty() {
+            out.push_str("\n## Potential Changes\n\nCommon in this commander's decklists but not in this deck:\n\n");
+            for line in skipped {
+                out.push_str(&format!(
+                    "- {}. Add: {}.{}\n",
+                    crate::win_lines::describe(line),
+                    line.missing.join(", "),
+                    line.why_not.as_ref().map(|w| format!(" Left out: {w}.")).unwrap_or_default()
+                ));
+            }
         }
     }
 

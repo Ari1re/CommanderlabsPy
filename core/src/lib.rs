@@ -61,6 +61,7 @@ pub mod tts;
 pub mod updater;
 pub mod user_reference;
 pub mod versions;
+pub mod win_lines;
 pub mod web_research;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

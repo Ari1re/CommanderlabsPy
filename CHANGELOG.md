@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.36.0
+
+- **Generated decks study how the commander's decks win.** Deep learn generation reads the reference decklists for recurring combos and finishers (overruns, drains, alternate wins, extra combats, damage doublers, infect) and how many decks run each. The most common finishers that fit the deck's format, colors, budget and bracket are added while it's built.
+- **Primer: Potential changes.** How to play lists the common win lines the deck doesn't run: what to add, why each was left out (not legal, outside the colors, over the budget, above the bracket, or no room), and cards you could cut that aren't part of how the deck wins. "How this deck wins" names the common lines it does run. Both follow your edits, so lines you add or take out move between the two. The deck's plan file has the same lists.
+- **More Moxfield-style editing in the Cards tab:**
+  - The add box takes a quantity and tags: `2x Sol Ring #Ramp #Mana`.
+  - Drag a card, or every ticked card, onto a group to move it (Sideboard, Considering, Commander) or, grouped by tag, to retag it.
+  - Keyboard shortcuts on the card under the pointer: + / − quantity, S sideboard, C Considering, M deck, Delete remove, X tick, / jump to the add box, Esc clear.
+  - The Images view shows each card's tags and has tick boxes for bulk actions.
+- **Fixed: asking for a card that can't be a commander picked a different one.** Changing the commander to "Delver of Secrets" silently made "Toski, Bearer of Secrets" the commander (the closest name that could be one). Now it says the card isn't a legendary creature; typos and short names ("Atraxa") still find the right commander.
+
 ## 0.35.0
 
 - **Settings → Storage: see what uses space and clean it without losing decks.** Shows Commander Lab's total size and each part: deck research (EDHREC, PDHREC, decklists), card images, printings and tags, AI web research, logs, leftover downloads, AI models and the card database. Tick what to clean, or **Select all caches** (everything but AI models), and clean.

@@ -616,6 +616,7 @@ where
             notes,
             sources: highlander_sources(&evidence),
             report: None,
+            win_lines: Vec::new(),
         },
     })
 }

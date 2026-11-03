@@ -167,9 +167,13 @@ Every generated deck is checked before it's saved: exactly 100 cards, singleton,
 
 **⋯ → Change commander…** gives the deck a new commander (or partner pair), for example to rebuild a precon around another legend. Choose whether the old commander moves into the deck, the sideboard, Considering, or out. Cards outside the new colors stay and are flagged so you can swap them.
 
-The **Cards** tab groups the deck by type, like Moxfield.
+The **Cards** tab is a Moxfield-style editor.
 
-- Type in **Add a card** to search every card and press Enter to add it.
+- Type in **Add a card** to search every card and press Enter to add it. Like Moxfield, it takes a quantity and tags: `2x Sol Ring #Ramp #Mana`.
+- **Group by** type, tag, mana value or color. Tag chips filter the list; **Auto-tag** tags every card by its role.
+- Tick cards (in the list or on their images) to tag, untag, move or remove them together.
+- **Drag** a card, or every ticked card, onto a group: onto **Sideboard**, **Considering** or **Commander** to move it, or in **Group by Tag** onto another tag to retag it (**Untagged** clears the tag). On a computer; on a phone, tick cards and use the bar.
+- **Keys** for the card under the pointer: **+ / −** quantity, **S** sideboard, **C** Considering, **M** deck, **Delete** remove, **X** tick, **/** jump to Add a card, **Esc** clear the ticks.
 - On **Suggestions**, each card can go to the deck (**Add**), **+ Sideboard** or **+ Considering**.
 - Use **+ / −** to change counts. The **⋯** menu moves cards to the sideboard, makes a card your commander, or removes it.
 - Click any card to see it full size. Choose **Change printing** to pick from every printing, with art and prices, and toggle **Foil**.
@@ -236,8 +240,11 @@ Every card in a listed combo is legal in the deck's format and colors, cards you
 - mulligan advice backed by simulation
 - your early-turn plan
 - your card-advantage engines
-- how the deck wins (combos, finishers, what to tutor for)
+- how the deck wins (combos, finishers, what to tutor for), including the win lines common in this commander's decklists that the deck runs
 - how to use your interaction
+- **Potential changes**: common win lines in this commander's decklists that the deck doesn't run, what to add, why each was left out (format, colors, budget, bracket, or no room), and cards you could cut that aren't part of how the deck wins
+
+Generated decks study those win lines while building: recurring combos and finishers (overruns, drains, alternate wins, extra combats, damage doublers, infect) from the reference decks, and the most common finishers that fit the deck are added. The primer re-checks them against the deck as it is now, so lines you add or remove move between the two lists.
 
 For questions in your own words, use the **AI Agent** chat.
 

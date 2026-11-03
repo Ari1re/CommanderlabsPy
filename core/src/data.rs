@@ -52,7 +52,7 @@ const DATA_DIR: &str = "./data";
 const DEBUG_DIR: &str = "./data/debug";
 const BULK_GZIP_PATH: &str = "./data/oracle-cards.jsonl.gz";
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Card {
     pub oracle_id: String,
     pub name: String,

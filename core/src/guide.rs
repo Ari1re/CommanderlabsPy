@@ -189,6 +189,34 @@ pub fn build_guide(
         v.sort_by(|a, b| b.cmc.partial_cmp(&a.cmc).unwrap_or(std::cmp::Ordering::Equal));
         v
     };
+
+    // Win lines studied in the commander's reference decks, checked against
+    // the deck as it is now (it may have been edited since it was built).
+    let studied: Vec<crate::win_lines::WinLine> = plan
+        .map(|p| {
+            let mut now = p.win_lines.clone();
+            crate::win_lines::mark(&mut now, deck, db, |_| None);
+            for (line, then) in now.iter_mut().zip(p.win_lines.iter()) {
+                if !line.included {
+                    line.why_not = if then.included {
+                        Some("taken out of the deck since it was built".into())
+                    } else {
+                        then.why_not.clone()
+                    };
+                }
+            }
+            now
+        })
+        .unwrap_or_default();
+    for line in studied.iter().filter(|l| l.included).take(4) {
+        points.push(format!("Common line you run: {}.", crate::win_lines::describe(line)));
+        win_cards.extend(line.cards.iter().cloned());
+    }
+    // Other finishers in the deck, not already named as a common line.
+    let finishers: Vec<&Card> = finishers
+        .into_iter()
+        .filter(|c| !studied.iter().any(|l| l.included && l.cards.iter().any(|n| n == &c.name)))
+        .collect();
     if !finishers.is_empty() {
         points.push(format!("Finishers: {}.", list(&names(&finishers, 4))));
         win_cards.extend(names(&finishers, 4));
@@ -215,8 +243,42 @@ pub fn build_guide(
             String::new()
         },
         points,
-        cards: win_cards,
+        cards: win_cards.clone(),
     });
+
+    // --- Potential changes: common win lines the deck doesn't run ---------
+    let skipped: Vec<&crate::win_lines::WinLine> = studied.iter().filter(|l| !l.included).take(8).collect();
+    if !skipped.is_empty() {
+        let mut points: Vec<String> = skipped
+            .iter()
+            .map(|l| {
+                format!(
+                    "{}. Add: {}.{}",
+                    crate::win_lines::describe(l),
+                    list(&l.missing),
+                    l.why_not.as_ref().map(|w| format!(" Left out: {w}.")).unwrap_or_default()
+                )
+            })
+            .collect();
+        // Never suggest cutting what the deck wins with.
+        let keep: std::collections::HashSet<&str> = win_cards.iter().map(String::as_str).collect();
+        let cuts: Vec<String> = analysis
+            .cut_candidates
+            .iter()
+            .filter(|c| !keep.contains(c.card.as_str()))
+            .take(4)
+            .map(|c| c.card.clone())
+            .collect();
+        if !cuts.is_empty() {
+            points.push(format!("To make room, the weakest cards by Commander Lab's estimate are {}.", list(&cuts)));
+        }
+        sections.push(GuideSection {
+            title: "Potential changes".into(),
+            text: "Win lines common in this commander's decklists that this deck doesn't run. Consider them if you want another way to close games.".into(),
+            points,
+            cards: skipped.iter().flat_map(|l| l.missing.iter().cloned()).take(12).collect(),
+        });
+    }
 
     // --- Interaction ------------------------------------------------------
     let interaction: Vec<&Card> = removal.iter().chain(counters.iter()).chain(wipes.iter()).copied().collect();

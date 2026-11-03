@@ -6,11 +6,16 @@ type, tag, mana value and color, checkboxes select cards for bulk
 tag/untag/move/remove (`edit_deck_bulk`), and Auto-tag tags by role.
 Tags are saved in the decklist as "#Tag".
 
-Things to work on:
-- Images view doesn't show tags or support selection yet.
-- No drag and drop between groups (Moxfield lets you drag a card onto a
-  tag group to tag it).
-- No keyboard shortcuts for quantity or moving cards.
+Also like Moxfield:
+- The add box takes "2x Sol Ring #Ramp #Mana": a quantity and tags.
+- Drag cards (or every selected card) onto a group: onto Sideboard,
+  Considering or Commander to move them; in Group by Tag, onto another tag
+  to retag them (Untagged clears the tag). Desktop only; phones use
+  select + the bulk bar.
+- Keys on the card under the pointer or focused: + / − quantity, S
+  sideboard, C Considering, M deck, Delete remove, X select, / add box,
+  Esc clear selection.
+- The Images view shows tags and has selection boxes too.
 -->
 <script lang="ts">
   import { api } from '../../lib/api';
@@ -42,9 +47,21 @@ Things to work on:
   let active = $state(0);
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  /** "2x Sol Ring #Ramp #Mana" → quantity 2, name "Sol Ring", tags. */
+  function parseAdd(text: string) {
+    let rest = text.trim();
+    const tags: string[] = [];
+    rest = rest.replace(/(^|\s)#([^#]+?)(?=\s+#|$)/g, (_m, _sp, t) => {
+      tags.push(String(t).trim());
+      return '';
+    }).trim();
+    const m = /^(\d+)\s*x?\s+(.+)$/i.exec(rest);
+    return m ? { qty: Math.max(1, parseInt(m[1])), name: m[2].trim(), tags } : { qty: 1, name: rest, tags };
+  }
+
   function search() {
     clearTimeout(timer);
-    const q = query.trim();
+    const q = parseAdd(query).name;
     if (q.length < 2) {
       results = [];
       return;
@@ -120,9 +137,108 @@ Things to work on:
   });
 
   async function add(card: CardView, zone: Zone = 'main') {
-    await edit({ action: 'add', card: card.name, zone }, `Added ${card.name}.`);
+    const { qty, tags } = parseAdd(query);
+    await edit({ action: 'add', card: card.name, zone, qty }, `Added ${qty > 1 ? `${qty} ` : ''}${card.name}${tags.length ? ` #${tags.join(' #')}` : ''}.`);
+    if (tags.length) {
+      const entry = deck.entries.find((e) => e.zone === zone && e.name.toLowerCase() === card.name.toLowerCase());
+      const merged = [...new Set([...(entry?.tags ?? []), ...tags])];
+      await edit({ action: 'tags', card: card.name, zone, tags: merged });
+    }
     query = '';
     results = [];
+  }
+
+  // --- drag and drop ----------------------------------------------------------
+  /** Cards being dragged: the dragged one, or every selected card if it's selected. */
+  let dragging = $state<Entry[]>([]);
+  let dragFrom = $state<string | null>(null);
+  let dropTarget = $state<string | null>(null);
+
+  function startDrag(ev: DragEvent, e: Entry, group: string) {
+    dragging = selected.has(key(e)) ? deck.entries.filter((x) => selected.has(key(x))) : [e];
+    dragFrom = group;
+    ev.dataTransfer?.setData('text/plain', e.name);
+    if (ev.dataTransfer) ev.dataTransfer.effectAllowed = 'move';
+  }
+
+  function endDrag() {
+    dragging = [];
+    dragFrom = null;
+    dropTarget = null;
+  }
+
+  const ZONE_GROUPS: Record<string, Zone> = { Sideboard: 'sideboard', Considering: 'considering', Commander: 'commander' };
+
+  /** What dropping on `group` would do, or null if nothing. */
+  function dropAction(group: string): string | null {
+    if (!dragging.length || group === dragFrom) return null;
+    if (ZONE_GROUPS[group]) {
+      if (group === 'Commander') return dragging.length === 1 && dragging[0].card?.commander_eligible && dragging[0].zone !== 'commander' ? 'Make commander' : null;
+      return dragging.every((d) => d.zone === ZONE_GROUPS[group]) ? null : `Move to ${group}`;
+    }
+    if (dragging.some((d) => d.zone !== 'main')) return 'Move to the deck';
+    if (groupBy === 'tag') return group === 'Untagged' ? `Remove #${dragFrom}` : `Tag #${group}`;
+    return null;
+  }
+
+  async function drop(group: string) {
+    const action = dropAction(group);
+    const cards = dragging;
+    const from = dragFrom;
+    endDrag();
+    if (!action) return;
+    const list = cards.map((c) => ({ card: c.name, zone: c.zone }));
+    const run = async (op: string, extra: Record<string, unknown>) =>
+      onchange(await api<Deck>('edit_deck_bulk', { name: deck.name, cards: list, op, ...extra }));
+    try {
+      if (group === 'Commander') {
+        await edit({ action: 'move', card: cards[0].name, zone: cards[0].zone, to: 'commander', qty: 1 }, `${cards[0].name} is now a commander.`);
+        return;
+      }
+      if (ZONE_GROUPS[group]) await run('move', { to: ZONE_GROUPS[group] });
+      else if (cards.some((c) => c.zone !== 'main')) await run('move', { to: 'main' });
+      else if (groupBy === 'tag') {
+        // Moving between tag groups swaps the tag, like Moxfield's categories.
+        if (from && from !== 'Untagged' && !ZONE_GROUPS[from]) await run('remove_tag', { tag: from });
+        if (group !== 'Untagged') await run('add_tag', { tag: group });
+      }
+      selected = new Set();
+      app.toast(`${action}: ${cards.length === 1 ? cards[0].name : `${cards.length} cards`}.`, 'success');
+    } catch (err) {
+      app.error(err);
+    }
+  }
+
+  // --- keyboard shortcuts -------------------------------------------------------
+  /** The card under the pointer (or focused) for shortcuts. */
+  let keyTarget = $state<Entry | null>(null);
+  let addInput: HTMLInputElement | undefined = $state();
+
+  function shortcut(ev: KeyboardEvent) {
+    const t = ev.target as HTMLElement | null;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || t?.closest('input, textarea, select, [contenteditable]')) return;
+    if (ev.key === '/') {
+      addInput?.focus();
+      ev.preventDefault();
+      return;
+    }
+    if (ev.key === 'Escape' && selected.size) {
+      selected = new Set();
+      return;
+    }
+    const e = keyTarget && deck.entries.find((x) => key(x) === key(keyTarget!));
+    if (!e) return;
+    const k = ev.key.toLowerCase();
+    const move = (to: Zone, label: string) => e.zone !== to && edit({ action: 'move', card: e.name, zone: e.zone, to }, `Moved ${e.name} to ${label}.`);
+    if ((k === '+' || k === '=') && e.zone !== 'commander') edit({ action: 'add', card: e.name, zone: e.zone });
+    else if ((k === '-' || k === '_') && e.zone !== 'commander') edit({ action: 'remove', card: e.name, zone: e.zone, qty: 1 });
+    else if (k === 's' && e.zone !== 'commander') move('sideboard', 'the sideboard');
+    else if (k === 'c' && e.zone !== 'commander') move('considering', 'Considering');
+    else if (k === 'm' && e.zone !== 'commander') move('main', 'the deck');
+    else if (k === 'delete' || k === 'backspace') edit({ action: 'remove', card: e.name, zone: e.zone }, `Removed ${e.name}.`);
+    else if (k === 'x') toggleSelect(e);
+    else return;
+    ev.preventDefault();
   }
 
   function onkey(e: KeyboardEvent) {
@@ -219,15 +335,16 @@ Things to work on:
 </script>
 
 <!-- Clicks in a card menu's tag box keep the menu open. -->
-<svelte:window onclick={(ev) => { if (!(ev.target as HTMLElement | null)?.closest('.menu-tags')) menuFor = null; }} />
+<svelte:window onclick={(ev) => { if (!(ev.target as HTMLElement | null)?.closest('.menu-tags')) menuFor = null; }} onkeydown={shortcut} />
 
 <div class="toolbar">
   <div class="add">
     <Icon name="search" size={17} />
     <input
       class="input"
-      placeholder="Add a card"
+      placeholder="Add a card (2x Sol Ring #Ramp)"
       bind:value={query}
+      bind:this={addInput}
       oninput={search}
       onkeydown={onkey}
       aria-label="Search cards to add"
@@ -302,12 +419,31 @@ Things to work on:
 <div class="layout" class:visual={view === 'visual'}>
   <div class="groups">
     {#each groups as g (g.title)}
-      <section class="group">
-        <h3>{g.title} <span class="muted num">{g.count}</span></h3>
+      <section
+        class="group"
+        class:drop-ok={dropTarget === g.title && !!dropAction(g.title)}
+        role="group"
+        aria-label={g.title}
+        ondragover={(ev) => { if (dropAction(g.title)) { ev.preventDefault(); dropTarget = g.title; } }}
+        ondragleave={(ev) => { if (!(ev.currentTarget as HTMLElement).contains(ev.relatedTarget as Node)) dropTarget = null; }}
+        ondrop={(ev) => { ev.preventDefault(); drop(g.title); }}
+      >
+        <h3>{g.title} <span class="muted num">{g.count}</span>
+          {#if dropTarget === g.title && dropAction(g.title)}<span class="drop-hint small">{dropAction(g.title)}</span>{/if}
+        </h3>
         {#if view === 'list'}
           <ul class="rows">
             {#each g.entries as e (key(e))}
-              <li class="entry" class:picked={selected.has(key(e))} onmouseenter={() => (hovered = e.card ? { ...e.card, image_uri: entryImage(e) } : null)}>
+              <li
+                class="entry"
+                class:picked={selected.has(key(e))}
+                class:dragging={dragging.some((d) => key(d) === key(e))}
+                draggable="true"
+                ondragstart={(ev) => startDrag(ev, e, g.title)}
+                ondragend={endDrag}
+                onmouseenter={() => { hovered = e.card ? { ...e.card, image_uri: entryImage(e) } : null; keyTarget = e; }}
+                onfocusin={() => (keyTarget = e)}
+              >
                 <input type="checkbox" class="pick" class:on={selected.size > 0} checked={selected.has(key(e))} onchange={() => toggleSelect(e)} aria-label="Select {e.name}" />
                 <span class="qty num">{e.quantity}</span>
                 <button class="name" onclick={() => e.card && app.open(e.card, { deck: deck.name, entry: e })} class:unknown={!e.card}>
@@ -363,20 +499,44 @@ Things to work on:
         {:else}
           <div class="images">
             {#each g.entries as e (key(e))}
-              <button class="image" class:foil={e.foil} onclick={() => e.card && app.open(e.card, { deck: deck.name, entry: e })} aria-label={e.name}>
-                {#if entryImage(e)}
-                  <img class="card-img" src={entryImage(e)} alt={e.name} loading="lazy" />
-                {:else}
-                  <span class="card-img placeholder">{e.name}</span>
+              <div
+                class="image-cell"
+                class:picked={selected.has(key(e))}
+                class:dragging={dragging.some((d) => key(d) === key(e))}
+                draggable="true"
+                role="listitem"
+                ondragstart={(ev) => startDrag(ev, e, g.title)}
+                ondragend={endDrag}
+                onmouseenter={() => (keyTarget = e)}
+                onfocusin={() => (keyTarget = e)}
+              >
+                <button class="image" class:foil={e.foil} onclick={() => e.card && app.open(e.card, { deck: deck.name, entry: e })} aria-label={e.name}>
+                  {#if entryImage(e)}
+                    <img class="card-img" src={entryImage(e)} alt={e.name} loading="lazy" draggable="false" />
+                  {:else}
+                    <span class="card-img placeholder">{e.name}</span>
+                  {/if}
+                  {#if e.quantity > 1}<span class="stack-qty num">×{e.quantity}</span>{/if}
+                </button>
+                <input type="checkbox" class="pick img-pick" class:on={selected.size > 0} checked={selected.has(key(e))} onchange={() => toggleSelect(e)} aria-label="Select {e.name}" />
+                {#if e.tags?.length}
+                  <span class="img-tags">
+                    {#each e.tags.slice(0, 3) as t (t)}<span class="tag small" class:active={tagFilter === t}>#{t}</span>{/each}
+                    {#if e.tags.length > 3}<span class="tag small">+{e.tags.length - 3}</span>{/if}
+                  </span>
                 {/if}
-                {#if e.quantity > 1}<span class="stack-qty num">×{e.quantity}</span>{/if}
-              </button>
+              </div>
             {/each}
           </div>
         {/if}
       </section>
     {/each}
   </div>
+
+  <p class="keys small muted">
+    Keys on the card under the pointer: <kbd>+</kbd> <kbd>−</kbd> quantity · <kbd>S</kbd> sideboard · <kbd>C</kbd> Considering ·
+    <kbd>M</kbd> deck · <kbd>Del</kbd> remove · <kbd>X</kbd> select · <kbd>/</kbd> add a card. Drag cards onto a group to move or retag them.
+  </p>
 
   {#if view === 'list'}
     <aside class="preview">
@@ -388,6 +548,68 @@ Things to work on:
 </div>
 
 <style>
+  .group.drop-ok {
+    outline: 2px dashed var(--brass);
+    outline-offset: 4px;
+    border-radius: var(--r-sm);
+  }
+  .drop-hint {
+    margin-left: 0.5rem;
+    color: var(--brass-strong);
+    font-weight: 700;
+  }
+  .entry.dragging,
+  .image-cell.dragging {
+    opacity: 0.45;
+  }
+  .image-cell {
+    position: relative;
+    min-width: 0;
+  }
+  .image-cell.picked .image {
+    outline: 3px solid var(--brass);
+    outline-offset: 2px;
+    border-radius: var(--r-card);
+  }
+  .img-pick {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 20px;
+    height: 20px;
+    z-index: 2;
+  }
+  .img-tags {
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    bottom: 8%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .img-tags .tag {
+    background: rgba(13, 10, 18, 0.82);
+    color: #fff;
+  }
+  .keys {
+    grid-column: 1 / -1;
+    margin: 0.5rem 0 0;
+  }
+  .keys kbd {
+    font: inherit;
+    font-weight: 700;
+    padding: 0 0.3rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  @media (hover: none) {
+    .keys {
+      display: none;
+    }
+  }
   .toolbar {
     display: flex;
     align-items: center;
@@ -518,6 +740,7 @@ Things to work on:
     margin: 0;
   }
   .entry:hover .pick,
+  .image-cell:hover .pick,
   .pick.on,
   .pick:focus-visible {
     opacity: 1;
