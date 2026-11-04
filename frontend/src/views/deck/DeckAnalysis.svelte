@@ -404,7 +404,7 @@ Things to work on:
   }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
     gap: 1.25rem;
     margin-bottom: 1.25rem;
   }
@@ -585,8 +585,11 @@ Things to work on:
   .box + .box {
     margin-top: 1.25rem;
   }
+  .grid > .box + .box {
+    margin: 0;
+  }
   .two {
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
   }
 
   @media (max-width: 760px) {
